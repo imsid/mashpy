@@ -81,7 +81,7 @@ def test_a_disabled_agent_takes_no_requests_until_enabled() -> None:
             "status": "disabled",
         }
 
-        body = {"message": "hi", "session_id": "s-1", "user_id": "u-1"}
+        body = {"message": "hi", "session_id": "s-1", "app_id": "app-1", "policy_id": "p-1"}
         submitted = client.post("/api/v1/agent/solo/request", json=body)
         assert submitted.status_code == 409
         assert submitted.json()["error"]["code"] == "AGENT_DISABLED"

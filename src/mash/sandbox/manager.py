@@ -2,7 +2,7 @@
 
 Every call into a sandbox goes through ``SandboxManager``: commands
 (``exec``), file reads and writes, and HTTP to a port in the sandbox
-(``proxy``). It is the one place that sees each use. It starts a user's
+(``proxy``). It is the one place that sees each use. It starts a policy's
 sandbox on first use, stops sandboxes left idle for ``idle_seconds``, and keeps
 at most ``max_running`` running, stopping the least recently used idle one to
 make room (``containers.ContainerManager``).
@@ -36,7 +36,7 @@ class SandboxCapacityError(RuntimeError):
 
 
 class SandboxManager(ContainerManager):
-    """Reaches users' sandboxes through a ``SandboxProvider``."""
+    """Reaches policies' sandboxes through a ``SandboxProvider``."""
 
     kind = "sandbox"
     kinds = "sandboxes"
@@ -57,7 +57,7 @@ class SandboxManager(ContainerManager):
 
     async def exec(
         self,
-        user_id: str,
+        policy_id: str,
         *,
         agent_id: str,
         command: str,
@@ -65,7 +65,7 @@ class SandboxManager(ContainerManager):
         stdin: str | None = None,
         env: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Run ``command`` for ``agent_id`` in ``user_id``'s sandbox."""
+        """Run ``command`` for ``agent_id`` in ``policy_id``'s sandbox."""
         body: dict[str, Any] = {"agent_id": agent_id, "command": command, "timeout": timeout}
         if stdin is not None:
             body["stdin"] = stdin
@@ -80,27 +80,27 @@ class SandboxManager(ContainerManager):
                 )
             if response.status_code != 200:
                 raise SandboxUnavailableError(
-                    f"sandbox for '{endpoint.user_id}' returned {response.status_code}: "
+                    f"sandbox for '{endpoint.policy_id}' returned {response.status_code}: "
                     f"{response.text}"
                 )
             return response.json()
 
-        return await self._use(user_id, forward)
+        return await self._use(policy_id, forward)
 
-    async def read_file(self, user_id: str, *, agent_id: str, path: str) -> httpx.Response:
-        """``GET /files`` in the user's sandbox; the daemon's response as is."""
+    async def read_file(self, policy_id: str, *, agent_id: str, path: str) -> httpx.Response:
+        """``GET /files`` in the policy's sandbox; the daemon's response as is."""
         url = daemon_path("files", agent_id, tail=path)
 
         async def forward(endpoint: SandboxEndpoint) -> httpx.Response:
             async with httpx.AsyncClient(timeout=_FILE_TIMEOUT_SECONDS) as client:
                 return await client.get(f"{endpoint.base_url}{url}", headers=bearer(endpoint))
 
-        return await self._use(user_id, forward)
+        return await self._use(policy_id, forward)
 
     async def write_file(
-        self, user_id: str, *, agent_id: str, path: str, data: bytes
+        self, policy_id: str, *, agent_id: str, path: str, data: bytes
     ) -> httpx.Response:
-        """``PUT /files`` in the user's sandbox; the daemon's response as is."""
+        """``PUT /files`` in the policy's sandbox; the daemon's response as is."""
         url = daemon_path("files", agent_id, tail=path)
 
         async def forward(endpoint: SandboxEndpoint) -> httpx.Response:
@@ -111,16 +111,16 @@ class SandboxManager(ContainerManager):
                     headers=bearer(endpoint),
                 )
 
-        return await self._use(user_id, forward)
+        return await self._use(policy_id, forward)
 
-    async def stream_file(self, user_id: str, *, agent_id: str, path: str) -> "Streamed":
-        """``GET /files`` in the user's sandbox, its body left unread for streaming."""
+    async def stream_file(self, policy_id: str, *, agent_id: str, path: str) -> "Streamed":
+        """``GET /files`` in the policy's sandbox, its body left unread for streaming."""
         url = daemon_path("files", agent_id, tail=path)
-        return await self._stream(user_id, "GET", url, timeout=_FILE_TIMEOUT_SECONDS)
+        return await self._stream(policy_id, "GET", url, timeout=_FILE_TIMEOUT_SECONDS)
 
     async def stream_proxy(
         self,
-        user_id: str,
+        policy_id: str,
         *,
         port: int,
         method: str,
@@ -129,19 +129,19 @@ class SandboxManager(ContainerManager):
         headers: Mapping[str, str] | None = None,
         body: AsyncIterator[bytes] | None = None,
     ) -> "Streamed":
-        """HTTP to ``port`` in the user's sandbox, through the daemon's ``/ports``.
+        """HTTP to ``port`` in the policy's sandbox, through the daemon's ``/ports``.
 
         ``body`` streams up and the response streams back. Raises
         ``UnsafePathError`` for a ``path`` with ``.`` or ``..`` segments.
         """
         url = daemon_path("ports", str(port), tail=path, query=query)
         return await self._stream(
-            user_id, method, url, headers=headers, body=body, timeout=_PROXY_TIMEOUT_SECONDS
+            policy_id, method, url, headers=headers, body=body, timeout=_PROXY_TIMEOUT_SECONDS
         )
 
     async def _stream(
         self,
-        user_id: str,
+        policy_id: str,
         method: str,
         url: str,
         *,
@@ -153,7 +153,7 @@ class SandboxManager(ContainerManager):
         # reaper cannot stop it mid-transfer.
         stack = contextlib.AsyncExitStack()
         try:
-            endpoint = await stack.enter_async_context(self.hold(user_id))
+            endpoint = await stack.enter_async_context(self.hold(policy_id))
             client = await stack.enter_async_context(httpx.AsyncClient(timeout=timeout))
 
             async def send(endpoint: SandboxEndpoint) -> httpx.Response:
@@ -172,12 +172,12 @@ class SandboxManager(ContainerManager):
             except httpx.ConnectError:
                 # The container was stopped or replaced behind the host's
                 # back; the call never reached it, so its body is unread.
-                self._endpoints.pop(user_id, None)
-                response = await send(await self._ensure(user_id))
+                self._endpoints.pop(policy_id, None)
+                response = await send(await self._ensure(policy_id))
             stack.push_async_callback(response.aclose)
         except httpx.HTTPError as exc:
             await stack.aclose()
-            raise self.unavailable_error(f"{self.kind} for '{user_id}' failed: {exc}") from exc
+            raise self.unavailable_error(f"{self.kind} for '{policy_id}' failed: {exc}") from exc
         except BaseException:
             await stack.aclose()
             raise

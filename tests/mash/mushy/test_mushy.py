@@ -15,7 +15,7 @@ from mash.mushy.catalog import EXPRESSIONS
 def test_agent_spec_captures_summary_by_default_without_a_second_provider():
     from conftest import build_test_stores
     from mash.runtime import AgentRuntime
-    from mash.testing.runtime_fixtures import build_spec
+    from mash.testing.runtime_fixtures import TEST_IDENTITY, build_spec
 
     async def run():
         spec = build_spec(agent_id="pilot", response_text="Answer")
@@ -32,7 +32,7 @@ def test_agent_spec_captures_summary_by_default_without_a_second_provider():
         )
         try:
             await runtime.open()
-            accepted = await runtime.submit_request(message="Hello", session_id="session", user_id="u-1")
+            accepted = await runtime.submit_request(message="Hello", session_id="session", **TEST_IDENTITY)
             cursor = 0
             for _ in range(100):
                 _, cursor, done = await runtime.stream_response_events(

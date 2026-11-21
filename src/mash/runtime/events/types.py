@@ -127,22 +127,34 @@ class RuntimeEvent:
 
 @dataclass(frozen=True)
 class RequestIdentity:
-    """The agent a request was accepted for, the user it acts for, its
+    """Who a request runs for: the agent it was accepted for, the app that
+    posted it, the policy it runs under with the snapshot it took, its
     session, and the request that started it with RunSubAgents, if any."""
 
     agent_id: str
-    user_id: Optional[str] = None
+    app_id: Optional[str] = None
+    policy_id: Optional[str] = None
+    policy: Optional[Dict[str, Any]] = None
     session_id: Optional[str] = None
     parent_request_id: Optional[str] = None
 
 
-def accepted_user_id(event: RuntimeEvent) -> Optional[str]:
-    """The ``user_id`` an accepted event's request carries, or None."""
+def _accepted_metadata_text(event: RuntimeEvent, key: str) -> Optional[str]:
     if event.event_type != RuntimeEventType.INVOKE_AGENT_START.value:
         return None
     request_metadata = (event.payload or {}).get("request_metadata") or {}
-    user_id = request_metadata.get("user_id")
-    return user_id if isinstance(user_id, str) and user_id else None
+    value = request_metadata.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def accepted_app_id(event: RuntimeEvent) -> Optional[str]:
+    """The ``app_id`` an accepted event's request carries, or None."""
+    return _accepted_metadata_text(event, "app_id")
+
+
+def accepted_policy_id(event: RuntimeEvent) -> Optional[str]:
+    """The ``policy_id`` an accepted event's request carries, or None."""
+    return _accepted_metadata_text(event, "policy_id")
 
 
 @dataclass(frozen=True)

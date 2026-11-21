@@ -57,20 +57,29 @@ def _submit(
     agent_id: str,
     host_id: str | None,
     session_id: str,
-    user_id: str,
+    app_id: str,
+    policy_id: str,
     message: str,
 ) -> tuple[str, str]:
     """Submit to the host or the agent; returns (agent_id, request_id)."""
     if host_id:
         accepted = client.submit_host_request(
-            host_id, message=message, session_id=session_id, user_id=user_id
+            host_id,
+            message=message,
+            session_id=session_id,
+            app_id=app_id,
+            policy_id=policy_id,
         )
         return (
             str(accepted.get("agent_id") or agent_id),
             str(accepted.get("request_id") or ""),
         )
     request_id = client.submit_request(
-        agent_id, message=message, session_id=session_id, user_id=user_id
+        agent_id,
+        message=message,
+        session_id=session_id,
+        app_id=app_id,
+        policy_id=policy_id,
     )
     return agent_id, request_id
 
@@ -81,7 +90,8 @@ async def _run(
     agent_id: str,
     host_id: str | None,
     session_id: str,
-    user_id: str,
+    app_id: str,
+    policy_id: str,
     message: str,
     json_output: bool,
     stdout: TextIO,
@@ -95,7 +105,8 @@ async def _run(
             agent_id=agent_id,
             host_id=host_id,
             session_id=session_id,
-            user_id=user_id,
+            app_id=app_id,
+            policy_id=policy_id,
             message=message,
         )
     )
@@ -150,7 +161,8 @@ def run_once(
     agent_id: str,
     host_id: str | None,
     session_id: str,
-    user_id: str,
+    app_id: str,
+    policy_id: str,
     message: str,
     json_output: bool = False,
     stdout: TextIO | None = None,
@@ -169,7 +181,8 @@ def run_once(
                 agent_id=agent_id,
                 host_id=host_id,
                 session_id=session_id,
-                user_id=user_id,
+                app_id=app_id,
+                policy_id=policy_id,
                 message=message,
                 json_output=json_output,
                 stdout=stdout,

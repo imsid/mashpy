@@ -17,7 +17,8 @@ from mash.runtime.events.types import (
     RuntimeEvent,
     RuntimeEventType,
     accepted_request,
-    accepted_user_id,
+    accepted_app_id,
+    accepted_policy_id,
     event_attributes,
     usage_totals,
 )
@@ -78,7 +79,8 @@ class _RequestState:
     status: RequestStatus
     terminal_seq: int | None
     agent_id: str | None = None
-    user_id: str | None = None
+    app_id: str | None = None
+    policy_id: str | None = None
     session_id: str | None = None
     started_by: str = "user"
     started_at: float | None = None
@@ -170,7 +172,8 @@ class _TestRuntimeStore:
         state.terminal_seq = request_seq if status.terminal else None
         state.updated_at = float(event.created_at)
         state.agent_id = state.agent_id or event.agent_id
-        state.user_id = state.user_id or accepted_user_id(event)
+        state.app_id = state.app_id or accepted_app_id(event)
+        state.policy_id = state.policy_id or accepted_policy_id(event)
         if start is not None:
             state.session_id = state.session_id or start.session_id
             state.started_at = (
@@ -193,7 +196,8 @@ class _TestRuntimeStore:
         return {
             "request_id": request_id,
             "agent_id": state.agent_id,
-            "user_id": state.user_id,
+            "app_id": state.app_id,
+            "policy_id": state.policy_id,
             "session_id": state.session_id,
             "message": str((accepted.payload or {}).get("message") or "")
             if accepted is not None
@@ -328,25 +332,36 @@ class _TestRuntimeStore:
             state.recoveries += 1
             return state.recoveries
 
-    async def get_other_session_user(self, session_id: str, user_id: str) -> str | None:
+    async def get_other_session_policy(self, session_id: str, policy_id: str) -> str | None:
         async with self._lock:
             for state in self._request_state.values():
                 if (
                     state.session_id == session_id
-                    and state.user_id is not None
-                    and state.user_id != user_id
+                    and state.policy_id is not None
+                    and state.policy_id != policy_id
                 ):
-                    return state.user_id
+                    return state.policy_id
         return None
 
     async def get_request_identity(self, request_id: str) -> RequestIdentity | None:
         async with self._lock:
             state = self._request_state.get(request_id)
+            accepted = next(
+                (
+                    e
+                    for e in self._events_by_request.get(request_id, ())
+                    if e.event_type == RuntimeEventType.INVOKE_AGENT_START.value
+                ),
+                None,
+            )
         if state is None or state.agent_id is None:
             return None
+        policy = ((accepted.payload or {}).get("request_metadata") or {}).get("policy") if accepted else None
         return RequestIdentity(
             agent_id=state.agent_id,
-            user_id=state.user_id,
+            app_id=state.app_id,
+            policy_id=state.policy_id,
+            policy=dict(policy) if isinstance(policy, dict) else None,
             session_id=state.session_id,
             parent_request_id=state.parent_request_id,
         )
@@ -705,7 +720,7 @@ class _TestMemoryStore:
         workflow_run_id: str | None = None,
         task_id: str | None = None,
         replayable: bool = True,
-        user_id: str | None = None,
+        app_id: str | None = None,
     ) -> str:
         if any(t["trace_id"] == trace_id for t in self._turns):
             return trace_id
@@ -723,7 +738,7 @@ class _TestMemoryStore:
                 "workflow_run_id": workflow_run_id,
                 "task_id": task_id,
                 "replayable": replayable,
-                "user_id": user_id,
+                "app_id": app_id,
                 "created_at": time.time(),
             }
         )
@@ -795,19 +810,19 @@ class _TestMemoryStore:
         tail = rows[summary_index + 1 :]
         return [rows[summary_index]] + (tail[-turns:] if turns > 0 else [])
 
-    def _user_turns(self, user_id: str, after: float) -> list[dict[str, Any]]:
+    def _app_turns(self, app_id: str, after: float) -> list[dict[str, Any]]:
         rows = [
             t
             for t in self._turns
-            if t.get("user_id") == user_id
+            if t.get("app_id") == app_id
             and t.get("workflow_id") is None
             and "subagent_id" not in (t.get("metadata") or {})
             and float(t.get("created_at") or 0.0) > after
         ]
         return sorted(rows, key=lambda t: (float(t.get("created_at") or 0.0), t["trace_id"]))
 
-    async def list_user_turns(
-        self, user_id: str, *, after: float = 0.0, limit: int = 200
+    async def list_app_turns(
+        self, app_id: str, *, after: float = 0.0, limit: int = 200
     ) -> list[dict[str, Any]]:
         return [
             {
@@ -818,11 +833,11 @@ class _TestMemoryStore:
                 "agent_response": t.get("agent_response", ""),
                 "created_at": float(t.get("created_at") or 0.0),
             }
-            for t in self._user_turns(user_id, after)[:limit]
+            for t in self._app_turns(app_id, after)[:limit]
         ]
 
-    async def count_user_turns(self, user_id: str, *, after: float = 0.0) -> int:
-        return len(self._user_turns(user_id, after))
+    async def count_app_turns(self, app_id: str, *, after: float = 0.0) -> int:
+        return len(self._app_turns(app_id, after))
 
     async def list_workflow_turns(
         self,
@@ -867,13 +882,13 @@ class _TestMemoryStore:
         return rows
 
     async def list_sessions(
-        self, agent_id: str, *, limit: int, user_id: str | None = None
+        self, agent_id: str, *, limit: int, app_id: str | None = None
     ) -> list[dict[str, Any]]:
         seen: dict[str, dict[str, Any]] = {}
         for t in self._turns:
             if t["agent_id"] != agent_id:
                 continue
-            if user_id is not None and t.get("user_id") != user_id:
+            if app_id is not None and t.get("app_id") != app_id:
                 continue
             row = seen.setdefault(
                 t["session_id"],
@@ -922,7 +937,7 @@ class _TestMemoryStore:
         return list(reversed(rows))[:max(1, int(limit))]
 
     async def get_turn_by_ids(
-        self, pairs: list[dict[str, str]], agent_id: str, user_id: str | None = None
+        self, pairs: list[dict[str, str]], agent_id: str, app_id: str | None = None
     ) -> list[dict[str, Any]] | None:
         found = []
         for pair in pairs:
@@ -931,7 +946,7 @@ class _TestMemoryStore:
                     t["session_id"] == pair.get("session_id")
                     and t["trace_id"] == pair.get("trace_id")
                     and t["agent_id"] == agent_id
-                    and (user_id is None or t.get("user_id") == user_id)
+                    and (app_id is None or t.get("app_id") == app_id)
                 ):
                     found.append(
                         {
@@ -950,7 +965,7 @@ class _TestMemoryStore:
         limit: int,
         session_id: str | None = None,
         agent_id: str | None = None,
-        user_id: str | None = None,
+        app_id: str | None = None,
     ) -> list[dict[str, Any]]:
         col = str(column)
         term = query_term.lower()
@@ -960,7 +975,7 @@ class _TestMemoryStore:
                 continue
             if agent_id is not None and t["agent_id"] != agent_id:
                 continue
-            if user_id is not None and t.get("user_id") != user_id:
+            if app_id is not None and t.get("app_id") != app_id:
                 continue
             text = str(t.get(col, "") or "")
             if term in text.lower():
@@ -983,9 +998,9 @@ class _TestMemoryStore:
         limit: int,
         session_id: str | None = None,
         agent_id: str | None = None,
-        user_id: str | None = None,
+        app_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        del column, query_term, query_embedding, limit, session_id, agent_id, user_id
+        del column, query_term, query_embedding, limit, session_id, agent_id, app_id
         return []
 
 
@@ -1134,6 +1149,22 @@ class _TestWorkflowStore:
 @pytest.fixture(autouse=True, scope="session")
 def _patch_hosted_runtime_for_tests():
     patcher = pytest.MonkeyPatch()
+    # Every in-memory policy store starts with the policy tests submit under,
+    # p-1 with the defaults, so a test reaches the host without creating it.
+    from mash.policies import Policy
+    from mash.policies.models import PolicyRecord
+    from mash.policies.store import _InMemoryPolicyStore
+    from mash.testing.runtime_fixtures import TEST_POLICY_ID
+
+    seeded_init = _InMemoryPolicyStore.__init__
+
+    def _init_with_test_policy(self) -> None:
+        seeded_init(self)
+        self.records[TEST_POLICY_ID] = PolicyRecord(
+            policy_id=TEST_POLICY_ID, policy=Policy(), created_at=0.0, updated_at=0.0
+        )
+
+    patcher.setattr(_InMemoryPolicyStore, "__init__", _init_with_test_policy)
     patcher.setenv("MASH_DATABASE_URL", "postgresql://test/runtime")
     patcher.setattr("mash.runtime.host.host.PostgresRuntimeStore", _TestRuntimeStore)
     patcher.setattr("mash.runtime.host.host.PostgresStore", _TestMemoryStore)

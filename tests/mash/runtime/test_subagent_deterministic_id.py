@@ -23,7 +23,7 @@ from mash.logging.trace_context import (
 from mash.runtime import AgentRuntime
 from mash.runtime.engine import loop as engine_loop
 from mash.runtime.engine.loop import RequestRun
-from mash.testing.runtime_fixtures import build_spec
+from mash.testing.runtime_fixtures import TEST_IDENTITY, build_spec
 from mash.tools.subagent import child_request_id
 
 
@@ -117,7 +117,7 @@ class DeterministicIdSubmitTests(unittest.IsolatedAsyncioTestCase):
         # itself never reads the prefix.
         runtime = await self._runtime()
         with bound_subagent_id_prefix("req-1-sub-0-0"):
-            accepted = await runtime.submit_request(message="hi", session_id="s-1", user_id="u-1")
+            accepted = await runtime.submit_request(message="hi", session_id="s-1", **TEST_IDENTITY)
         self.assertNotIn("-sub-", accepted["request_id"])
         self.assertEqual(uuid.UUID(accepted["request_id"]).version, 4)
 
@@ -125,10 +125,10 @@ class DeterministicIdSubmitTests(unittest.IsolatedAsyncioTestCase):
         runtime = await self._runtime()
         child_id = child_request_id("req-1-sub-0-0", 0)
         first = await runtime.submit_request(
-            message="hi", session_id="s-1", user_id="u-1", request_id=child_id
+            message="hi", session_id="s-1", **TEST_IDENTITY, request_id=child_id
         )
         again = await runtime.submit_request(
-            message="hi", session_id="s-1", user_id="u-1", request_id=child_id
+            message="hi", session_id="s-1", **TEST_IDENTITY, request_id=child_id
         )
         self.assertEqual(first["request_id"], again["request_id"])
         accepted = [

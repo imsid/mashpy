@@ -13,10 +13,11 @@ from .base import FunctionTool, Tool, ToolResult
 
 
 class RuntimeToolBuilder:
-    """Builder for runtime tools with app, session and user context.
+    """Builder for runtime tools with agent, session and app context.
 
-    Conversation tools reach the current session, or with ``user_id`` the
-    user's sessions with this agent. They never reach another user's turns.
+    Conversation tools reach this agent's turns of the request's app: in the
+    current session, or with scope ``app`` in every session of the app. They
+    never reach another app's turns, and without an app they reach none.
     """
 
     def __init__(
@@ -25,11 +26,11 @@ class RuntimeToolBuilder:
         agent_id: str,
         session_id: str | None = None,
         session_id_provider: Callable[[], str] | None = None,
-        user_id: str | None = None,
+        app_id: str | None = None,
     ) -> None:
         self._store = store
         self._agent_id = agent_id
-        self._user_id = user_id
+        self._app_id = app_id
         if session_id_provider is not None:
             self._session_id_provider = session_id_provider
         elif session_id is not None:
@@ -191,7 +192,7 @@ class RuntimeToolBuilder:
                     agent_id=self._agent_id,
                     limit=limit,
                     session_id=search_session_id,
-                    user_id=self._user_id,
+                    app_id=self._app_id,
                 )
             except (ValueError, NotImplementedError, RuntimeError) as exc:
                 return ToolResult.error(str(exc))
@@ -214,9 +215,9 @@ class RuntimeToolBuilder:
                 "Search stored conversation turns and return ranked previews plus "
                 "the session_id and trace_id needed to retrieve full messages. "
                 + (
-                    "Scope 'session' searches this conversation; 'user' searches all "
-                    "of this user's conversations with you."
-                    if self._user_id
+                    "Scope 'session' searches this conversation; 'app' searches all "
+                    "of your conversations in this app."
+                    if self._app_id
                     else "Searches this conversation."
                 )
             ),
@@ -233,7 +234,7 @@ class RuntimeToolBuilder:
         )
 
     def _search_scopes(self) -> list[str]:
-        return ["session", "user"] if self._user_id else ["session"]
+        return ["session", "app"] if self._app_id else ["session"]
 
     @staticmethod
     def _normalize_search_queries(query: str) -> list[str]:
@@ -250,7 +251,7 @@ class RuntimeToolBuilder:
         agent_id: str,
         limit: int,
         session_id: str | None,
-        user_id: str | None,
+        app_id: str | None,
     ) -> list[SearchResult]:
         merged: dict[tuple[str, str], SearchResult] = {}
         for prefixed_query in queries:
@@ -259,7 +260,7 @@ class RuntimeToolBuilder:
                 agent_id=agent_id,
                 limit=limit,
                 session_id=session_id,
-                user_id=user_id,
+                app_id=app_id,
             ):
                 key = (result.session_id, result.trace_id)
                 existing = merged.get(key)
@@ -293,23 +294,16 @@ class RuntimeToolBuilder:
                     {"session_id": session_id.strip(), "trace_id": trace_id.strip()}
                 )
 
-            # Without a user, only this session's turns are reachable; pairs
-            # from other sessions come back as missing.
-            lookup_pairs = normalized_pairs
-            if self._user_id is None:
-                current_session_id = self._session_id()
-                lookup_pairs = [
-                    pair for pair in normalized_pairs
-                    if pair["session_id"] == current_session_id
-                ]
+            # Only this agent's turns of the request's app are reachable; any
+            # other pair comes back as missing.
             try:
                 turns = (
                     await self._store.get_turn_by_ids(
-                        pairs=lookup_pairs,
+                        pairs=normalized_pairs,
                         agent_id=self._agent_id,
-                        user_id=self._user_id,
+                        app_id=self._app_id,
                     )
-                    if lookup_pairs
+                    if self._app_id
                     else []
                 )
             except Exception as exc:  # pragma: no cover

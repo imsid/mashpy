@@ -20,8 +20,8 @@ class AgentUnavailableError(AgentClientError):
     """The agent's server could not be reached (for example, its process is restarting)."""
 
 
-class SessionUserConflictError(AgentClientError):
-    """The session belongs to another user, so the request was refused (HTTP 409)."""
+class SessionPolicyConflictError(AgentClientError):
+    """The session runs under another policy, so the request was refused (HTTP 409)."""
 
 
 class InteractionClosedError(AgentClientError):
@@ -50,7 +50,9 @@ class AgentClientLike(Protocol):
         context: Optional[str] = None,
         host: Optional[Dict[str, Any]] = None,
         parent: Optional[Dict[str, Any]] = None,
-        user_id: Optional[str] = None,
+        app_id: Optional[str] = None,
+        policy_id: Optional[str] = None,
+        policy: Optional[Dict[str, Any]] = None,
         traceparent: Optional[str] = None,
         tracestate: Optional[str] = None,
         timeout: float = 30.0,
@@ -329,7 +331,9 @@ class AgentClient:
         context: Optional[str] = None,
         host: Optional[Dict[str, Any]] = None,
         parent: Optional[Dict[str, Any]] = None,
-        user_id: Optional[str] = None,
+        app_id: Optional[str] = None,
+        policy_id: Optional[str] = None,
+        policy: Optional[Dict[str, Any]] = None,
         traceparent: Optional[str] = None,
         tracestate: Optional[str] = None,
         timeout: float = 30.0,
@@ -353,8 +357,9 @@ class AgentClient:
             payload["host"] = dict(host)
         if parent is not None:
             payload["parent"] = dict(parent)
-        if user_id is not None:
-            payload["user_id"] = user_id
+        for key, value in (("app_id", app_id), ("policy_id", policy_id), ("policy", policy)):
+            if value is not None:
+                payload[key] = value
         if traceparent is not None:
             payload["traceparent"] = traceparent
             if tracestate is not None:
@@ -370,8 +375,8 @@ class AgentClient:
         except httpx.HTTPError as exc:
             raise self._http_error("POST request failed", exc) from exc
 
-        if response.status_code == 409 and self._error_code(response) == "SESSION_USER_MISMATCH":
-            raise SessionUserConflictError(self._extract_message(response))
+        if response.status_code == 409 and self._error_code(response) == "SESSION_POLICY_MISMATCH":
+            raise SessionPolicyConflictError(self._extract_message(response))
         if response.status_code not in (200, 202):
             raise AgentClientError(
                 f"POST request failed (status={response.status_code}): {self._extract_message(response)}"
@@ -633,7 +638,7 @@ class WorkflowRelayClient:
         dedup_key: Optional[str] = None,
         timeout: float = 30.0,
     ) -> dict[str, Any]:
-        """Start a run for the parent request's user; a known ``dedup_key`` returns its run."""
+        """Start a run for the parent request's app and policy; a known ``dedup_key`` returns its run."""
         payload: Dict[str, Any] = {
             "parent": {"request_id": parent_request_id},
             "input": dict(workflow_input),
@@ -688,7 +693,7 @@ __all__ = [
     "AgentClientError",
     "AgentClientLike",
     "AgentUnavailableError",
-    "SessionUserConflictError",
+    "SessionPolicyConflictError",
     "WorkflowInputError",
     "WorkflowRelayClient",
 ]

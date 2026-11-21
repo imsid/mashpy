@@ -52,7 +52,7 @@ def test_a_message_is_submitted_for_the_user_and_its_answer_printed() -> None:
     d = run(script, host)
     assert host.submitted == [
         {"agent_id": "primary", "message": "hello", "session_id": "s-1",
-         "user_id": "u-1", "request_id": "r-1"}
+         "app_id": "app-1", "policy_id": "p-1", "request_id": "r-1"}
     ]
     assert "Hello there." in d.output
     assert d.repl.context.last_request_id == "r-1"
@@ -773,7 +773,7 @@ def _piped(lines: str, host: FakeHost) -> str:
     buffer = io.StringIO()
     repl = Repl(
         host,  # type: ignore[arg-type]
-        Target(api_base_url="http://host", agent_id="primary", session_id="s-1", user_id="u-1"),
+        Target(api_base_url="http://host", agent_id="primary", session_id="s-1", app_id="app-1", policy_id="p-1"),
         console=Console(file=buffer, width=100, force_terminal=False, color_system=None,
                         theme=rich_theme()),
     )
@@ -855,7 +855,7 @@ def test_a_resumed_session_starts_with_its_last_two_turns() -> None:
     d = run(script, host, target={"session_id": "s-bills", "resumed": True,
                                   "title": "why was march high"})
     lines = [line.rstrip() for line in d.output.splitlines()]
-    assert lines[0] == "mash · u-1 · agent primary · why was march high · /help for commands"
+    assert lines[0] == "mash · app-1 · agent primary · why was march high · /help for commands"
     assert lines[1:9] == [
         "", "› why was march high", "", "Heating.", "", "› and april?", "", "Lower.",
     ]
@@ -863,14 +863,14 @@ def test_a_resumed_session_starts_with_its_last_two_turns() -> None:
     assert host.submitted[0]["session_id"] == "s-bills"
 
 
-def test_resume_picks_one_of_the_users_sessions() -> None:
+def test_resume_picks_one_of_the_apps_sessions() -> None:
     host = FakeHost()
     _sessions(host)
     host.script("r-1", chat_end("response", text="ok"), completed("ok"))
 
     async def script(d: ReplDriver) -> None:
         d.type("/resume" + ENTER)
-        await d.until(lambda: ("list_sessions", ("primary", "u-1", 20)) in host.calls)
+        await d.until(lambda: ("list_sessions", ("primary", "app-1", 20)) in host.calls)
         await asyncio.sleep(0.05)
         d.type(DOWN + ENTER)
         await d.until(lambda: d.repl.context.session_id == "s-solar")

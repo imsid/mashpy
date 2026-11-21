@@ -148,12 +148,12 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
             session_id="session-1",
         )
 
-    async def test_get_other_session_user_finds_only_another_user(self) -> None:
+    async def test_get_other_session_policy_finds_only_another_policy(self) -> None:
         session_id = f"session-{uuid.uuid4()}"
         ids = [f"{self.request_id}-{n}" for n in range(3)]
         self.addCleanup(_delete_request_rows, self.database_url, *ids)
-        for request_id, user_id in zip(ids, ("u-1", "u-1", None)):
-            metadata = {"user_id": user_id} if user_id else {}
+        for request_id, policy_id in zip(ids, ("p-1", "p-1", None)):
+            metadata = {"policy_id": policy_id} if policy_id else {}
             await self.store.append_event(
                 RuntimeEvent(
                     agent_id="store-test",
@@ -166,9 +166,9 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
 
-        self.assertIsNone(await self.store.get_other_session_user(session_id, "u-1"))
-        self.assertEqual(await self.store.get_other_session_user(session_id, "u-2"), "u-1")
-        self.assertIsNone(await self.store.get_other_session_user("no-such-session", "u-2"))
+        self.assertIsNone(await self.store.get_other_session_policy(session_id, "p-1"))
+        self.assertEqual(await self.store.get_other_session_policy(session_id, "p-2"), "p-1")
+        self.assertIsNone(await self.store.get_other_session_policy("no-such-session", "p-2"))
 
     async def test_reads_do_not_hide_later_committed_writes(self) -> None:
         self.assertFalse(await self.store.has_request(self.request_id))
@@ -276,11 +276,23 @@ class PostgresRuntimeStoreRegressionTests(unittest.IsolatedAsyncioTestCase):
                 event_type=RuntimeEventType.INVOKE_AGENT_START.value,
                 lifecycle=seed_lifecycle(RuntimeEventType.INVOKE_AGENT_START.value),
                 dedupe_key="request.accepted",
-                payload={"request_metadata": {"user_id": "u-1"}},
+                payload={
+                    "request_metadata": {
+                        "app_id": "app-1",
+                        "policy_id": "p-1",
+                        "policy": {"sandbox": False, "browser_sites": [], "wait_max_seconds": 60},
+                    }
+                },
             )
         )
         await self._append(END, "request.completed.0")
-        expected = RequestIdentity(agent_id="store-test", user_id="u-1", session_id="session-1")
+        expected = RequestIdentity(
+            agent_id="store-test",
+            app_id="app-1",
+            policy_id="p-1",
+            policy={"sandbox": False, "browser_sites": [], "wait_max_seconds": 60},
+            session_id="session-1",
+        )
         self.assertEqual(await self.store.get_request_identity(self.request_id), expected)
 
     async def test_read_request_stream_never_reports_undelivered_terminal(self) -> None:

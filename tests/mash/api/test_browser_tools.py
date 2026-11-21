@@ -16,7 +16,7 @@ from mash.runtime import AgentRuntime, HostBuilder
 from mash.runtime.engine.steps import start_browser_handoff
 from mash.sandbox.manager import SandboxManager
 from mash.testing.browsers import FakePage, LocalBrowserProvider
-from mash.testing.runtime_fixtures import build_spec, build_tool_calling_spec, metadata
+from mash.testing.runtime_fixtures import DEFAULT_POLICY, TEST_IDENTITY, build_spec, build_tool_calling_spec, metadata
 from mash.testing.sandboxes import LocalSandboxProvider
 from mash.tools.browser import browser_tool_names
 
@@ -48,7 +48,7 @@ class BrowserToolsEndToEndTests(unittest.IsolatedAsyncioTestCase):
             interactions: list[dict[str, Any]] = []
             try:
                 client = pool.get_client("billing")
-                request_id = await client.post_request("go", session_id="s-1", user_id="u-1")
+                request_id = await client.post_request("go", session_id="s-1", **TEST_IDENTITY)
                 events = []
                 async for event in client.stream_response(request_id, timeout=20):
                     events.append(event)
@@ -75,7 +75,7 @@ class BrowserToolsEndToEndTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("<web-content>", text)
         self.assertIn("PG&E account", text)
-        self.assertEqual(list(provider.browsers), ["u-1"])
+        self.assertEqual(list(provider.browsers), ["p-1"])
 
     async def test_the_sites_hold_for_the_model(self) -> None:
         text, _, _ = await self._run("browser_navigate", {"url": "https://evil.io/"})
@@ -125,6 +125,48 @@ class BrowserToolRegistrationTests(unittest.IsolatedAsyncioTestCase):
         for name in browser_tool_names():
             self.assertIn(name, runtime.agent.tools)
         self.assertNotIn("browser_evaluate", runtime.agent.tools)
+
+    def _turn_tools(self, runtime, policy):
+        return runtime.build_turn_agent(
+            session_id="s-1", trace_id="t-1", app_id="app-1", policy=policy
+        ).tools
+
+    async def test_the_policy_narrows_a_turns_sandbox_and_browser_tools(self) -> None:
+        from mash.tools.sandbox import SANDBOX_TOOL_NAMES
+
+        spec = build_spec(agent_id="billing")
+        spec.browser_sites = lambda: ["https://*.pge.com"]
+        runtime = await self._runtime(spec)
+        runtime.enable_sandbox_tools(host_api_url="http://host", token="t")
+        runtime.enable_browser_tools(host_api_url="http://host", token="t")
+        names = runtime.agent.tools.list_tools()
+
+        full = self._turn_tools(runtime, DEFAULT_POLICY)
+        # The base agent's tools, then the ones bound to the request.
+        self.assertEqual(full.list_tools()[: len(names)], names)
+        self.assertIn("https://*.pge.com", full.get("browser_navigate").description)
+
+        dry = self._turn_tools(runtime, {**DEFAULT_POLICY, "sandbox": False})
+        for name in (*SANDBOX_TOOL_NAMES, "browser_save", "browser_upload"):
+            self.assertNotIn(name, dry)
+        self.assertIn("browser_navigate", dry)
+
+        narrow = self._turn_tools(runtime, {**DEFAULT_POLICY, "browser_sites": ["https://m.pge.com"]})
+        description = narrow.get("browser_navigate").description
+        self.assertIn("https://m.pge.com", description)
+        self.assertNotIn("*.pge.com", description)
+        # The listed copy keeps its place in the tool list.
+        self.assertEqual(narrow.list_tools()[: len(names)], names)
+
+        for sites in ([], ["https://evil.io"]):
+            closed = self._turn_tools(runtime, {**DEFAULT_POLICY, "browser_sites": sites})
+            for name in browser_tool_names():
+                self.assertNotIn(name, closed)
+            self.assertIn("run_code", closed)
+
+        # The base agent's tools are untouched.
+        self.assertEqual(runtime.agent.tools.list_tools(), names)
+        self.assertNotIn("m.pge.com", runtime.agent.tools.get("browser_navigate").description)
 
     async def test_a_spec_with_its_own_browser_tool_fails(self) -> None:
         from mash.tools.base import FunctionTool, ToolResult

@@ -1,6 +1,6 @@
-"""The browser daemon: drives one user's Chromium for the host.
+"""The browser daemon: drives one policy's Chromium for the host.
 
-``mash browser serve`` runs this app in each user's browser container, next to
+``mash browser serve`` runs this app in each policy's browser container, next to
 Chromium and Playwright MCP (``processes.py``). The daemon is Playwright MCP's
 client. It holds one MCP session per request, each working in a tab of its
 own, and one CDP connection of its own (``cdp.py``) for downloads and cookies.
@@ -12,7 +12,7 @@ own, and one CDP connection of its own (``cdp.py``) for downloads and cookies.
   uploads folder and gives it to the file chooser that clicking ``target``
   opens.
 - ``POST /requests/<request_id>/front`` brings the request's tab to the front,
-  for the user's live view.
+  for the live view.
 - ``DELETE /requests/<request_id>`` closes the request's tab and session.
 - ``GET /downloads/<id>`` returns a finished download.
 - ``GET /sites`` and ``DELETE /sites/<domain>`` list and clear cookies.
@@ -25,7 +25,7 @@ URL outside them fails before it runs, and a call that leaves them, by a
 click or a redirect, goes back and returns an error instead of the page.
 
 Every route but ``/health`` requires ``Authorization: Bearer <token>``, the
-user's browser token (``mash.browser.tokens``). The host is the only caller.
+policy's browser token (``mash.browser.tokens``). The host is the only caller.
 """
 
 from __future__ import annotations
@@ -230,7 +230,7 @@ class _BearerAuth:
 
 
 class BrowserDaemon:
-    """The app of one user's browser."""
+    """The app of one policy's browser."""
 
     def __init__(
         self,
@@ -403,7 +403,7 @@ class BrowserDaemon:
         return JSONResponse(result.to_json())
 
     async def front(self, request: Request) -> Response:
-        """Bring the request's tab to the front, so the user's live view shows it."""
+        """Bring the request's tab to the front, so the live view shows it."""
         entry = self._requests.get(request.path_params["request_id"])
         if entry is None:
             return JSONResponse({"front": False})

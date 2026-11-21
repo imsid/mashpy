@@ -25,7 +25,7 @@ from mash.api.admin_ui import get_admin_static_dir
 from mash.api.routes.common import API_KEY_COOKIE
 from mash.runtime import Host, HostBuilder
 from mash.runtime.events import RuntimeEvent, RuntimeEventType
-from mash.testing.runtime_fixtures import patch_companion_llm, build_spec, metadata
+from mash.testing.runtime_fixtures import DEFAULT_POLICY, patch_companion_llm, build_spec, metadata
 from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
 from mash.workflows.store import WorkflowRunRecord, WorkflowStepEventRecord
 from mash.workflows.engine import WorkflowRunner
@@ -335,7 +335,7 @@ def test_host_request_routes_to_the_companion_and_streams_from_it() -> None:
         with _build_test_client(root) as client:
             submitted = client.post(
                 "/api/v1/hosts/assistant/request",
-                json={"message": "hello", "session_id": "s-host-1", "user_id": "u-1"},
+                json={"message": "hello", "session_id": "s-host-1", "app_id": "app-1", "policy_id": "p-1"},
             )
             assert submitted.status_code == 200
             accepted = submitted.json()["data"]
@@ -349,39 +349,46 @@ def test_host_request_routes_to_the_companion_and_streams_from_it() -> None:
 
             missing = client.post(
                 "/api/v1/hosts/unknown/request",
-                json={"message": "hello", "session_id": "s-host-2", "user_id": "u-1"},
+                json={"message": "hello", "session_id": "s-host-2", "app_id": "app-1", "policy_id": "p-1"},
             )
             assert missing.status_code == 404
             assert missing.json()["error"]["code"] == "HOST_NOT_FOUND"
 
 
-def test_host_and_agent_requests_require_a_user_id() -> None:
+def test_host_and_agent_requests_require_an_app_and_a_policy() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root) as client:
+            body = {"message": "hello", "app_id": "app-42", "policy_id": "p-1"}
             submitted = client.post(
-                "/api/v1/hosts/assistant/request",
-                json={"message": "hello", "session_id": "s-user-1", "user_id": "u-42"},
+                "/api/v1/hosts/assistant/request", json={**body, "session_id": "s-id-1"}
             )
             assert submitted.status_code == 200
-            assert submitted.json()["data"]["user_id"] == "u-42"
+            data = submitted.json()["data"]
+            assert (data["app_id"], data["policy_id"]) == ("app-42", "p-1")
 
             direct = client.post(
-                "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s-user-2", "user_id": "u-42"},
+                "/api/v1/agent/primary/request", json={**body, "session_id": "s-id-2"}
             )
             assert direct.status_code == 200
 
             for route in ("/api/v1/hosts/assistant/request", "/api/v1/agent/primary/request"):
-                invalid = client.post(
-                    route,
-                    json={"message": "hello", "session_id": "s-user-3", "user_id": "has space"},
+                for key, code in (("app_id", "INVALID_APP_ID"), ("policy_id", "INVALID_POLICY_ID")):
+                    invalid = client.post(
+                        route, json={**body, "session_id": "s-id-3", key: "has space"}
+                    )
+                    assert invalid.status_code == 400
+                    assert invalid.json()["error"]["code"] == code
+                    missing = {**body, "session_id": "s-id-4"}
+                    del missing[key]
+                    resp = client.post(route, json=missing)
+                    assert resp.status_code == 422
+                    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+                unknown = client.post(
+                    route, json={**body, "session_id": "s-id-5", "policy_id": "nope"}
                 )
-                assert invalid.status_code == 400
-                assert invalid.json()["error"]["code"] == "INVALID_USER_ID"
-                missing = client.post(route, json={"message": "hello", "session_id": "s-user-4"})
-                assert missing.status_code == 422
-                assert missing.json()["error"]["code"] == "VALIDATION_ERROR"
+                assert unknown.status_code == 404
+                assert unknown.json()["error"]["code"] == "POLICY_NOT_FOUND"
 
 
 def test_agent_scoped_request_and_session_routes() -> None:
@@ -390,7 +397,7 @@ def test_agent_scoped_request_and_session_routes() -> None:
         with _build_test_client(root) as client:
             submitted = client.post(
                 "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s1", "user_id": "u-1"},
+                json={"message": "hello", "session_id": "s1", "app_id": "app-1", "policy_id": "p-1"},
             )
             assert submitted.status_code == 200
             request_id = submitted.json()["data"]["request_id"]
@@ -399,7 +406,7 @@ def test_agent_scoped_request_and_session_routes() -> None:
 
             second = client.post(
                 "/api/v1/agent/primary/request",
-                json={"message": "again", "session_id": "s2", "user_id": "u-1"},
+                json={"message": "again", "session_id": "s2", "app_id": "app-1", "policy_id": "p-1"},
             )
             _collect_terminal_response(client, "primary", second.json()["data"]["request_id"])
 
@@ -411,17 +418,17 @@ def test_agent_scoped_request_and_session_routes() -> None:
             assert listed["limit"] == 50
             newest = client.get("/api/v1/agent/primary/sessions", params={"limit": 1})
             assert [s["session_id"] for s in newest.json()["data"]["sessions"]] == ["s2"]
-            # Each row carries the session's first message, and user_id
-            # keeps only that user's sessions.
+            # Each row carries the session's first message, and app_id keeps
+            # only the sessions with that app's turns.
             assert [s["first_message"] for s in listed["sessions"]] == ["again", "hello"]
             other = client.post(
                 "/api/v1/agent/primary/request",
-                json={"message": "mine", "session_id": "s3", "user_id": "u-2"},
+                json={"message": "mine", "session_id": "s3", "app_id": "app-2", "policy_id": "p-1"},
             )
             _collect_terminal_response(client, "primary", other.json()["data"]["request_id"])
-            mine = client.get("/api/v1/agent/primary/sessions", params={"user_id": "u-2"})
+            mine = client.get("/api/v1/agent/primary/sessions", params={"app_id": "app-2"})
             assert [s["session_id"] for s in mine.json()["data"]["sessions"]] == ["s3"]
-            theirs = client.get("/api/v1/agent/primary/sessions", params={"user_id": "u-1"})
+            theirs = client.get("/api/v1/agent/primary/sessions", params={"app_id": "app-1"})
             assert [s["session_id"] for s in theirs.json()["data"]["sessions"]] == ["s2", "s1"]
 
             history = client.get("/api/v1/agent/primary/sessions/s1/history")
@@ -455,7 +462,7 @@ def test_agent_request_accepts_structured_output_schema_payload() -> None:
                     json={
                         "message": "hello",
                         "session_id": "s1",
-                        "user_id": "u-1",
+                        "app_id": "app-1", "policy_id": "p-1",
                         "structured_output": {
                             "title": "Result",
                             "type": "object",
@@ -480,7 +487,7 @@ def test_agent_request_rejects_invalid_structured_output_schema_payload() -> Non
                 json={
                     "message": "hello",
                     "session_id": "s1",
-                    "user_id": "u-1",
+                    "app_id": "app-1", "policy_id": "p-1",
                     "structured_output": ["not-a-schema"],
                 },
             )
@@ -494,7 +501,7 @@ def test_session_signals_route_returns_definitions_and_turn_rows() -> None:
         with _build_test_client(root) as client:
             first = client.post(
                 "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s1", "user_id": "u-1"},
+                json={"message": "hello", "session_id": "s1", "app_id": "app-1", "policy_id": "p-1"},
             )
             assert first.status_code == 200
             first_request_id = first.json()["data"]["request_id"]
@@ -502,7 +509,7 @@ def test_session_signals_route_returns_definitions_and_turn_rows() -> None:
 
             second = client.post(
                 "/api/v1/agent/primary/request",
-                json={"message": "hello again", "session_id": "s1", "user_id": "u-1"},
+                json={"message": "hello again", "session_id": "s1", "app_id": "app-1", "policy_id": "p-1"},
             )
             assert second.status_code == 200
             second_request_id = second.json()["data"]["request_id"]
@@ -571,7 +578,7 @@ def test_invoke_route_is_removed() -> None:
         with _build_test_client(root) as client:
             response = client.post(
                 "/api/v1/agent/primary/invoke",
-                json={"message": "hello", "session_id": "s1", "user_id": "u-1"},
+                json={"message": "hello", "session_id": "s1", "app_id": "app-1", "policy_id": "p-1"},
             )
             assert response.status_code == 404
 
@@ -622,7 +629,7 @@ def test_async_request_stream_and_auth() -> None:
             headers = {"Authorization": "Bearer secret"}
             submitted = client.post(
                 "/api/v1/agent/research/request",
-                json={"message": "hello", "session_id": "s1", "user_id": "u-1"},
+                json={"message": "hello", "session_id": "s1", "app_id": "app-1", "policy_id": "p-1"},
                 headers=headers,
             )
             assert submitted.status_code == 200
@@ -674,7 +681,7 @@ def test_request_events_carry_ids_and_start_after_a_cursor() -> None:
         with _build_test_client(Path(tmp)) as client:
             submitted = client.post(
                 "/api/v1/agent/research/request",
-                json={"message": "hello", "session_id": "s1", "user_id": "u-1"},
+                json={"message": "hello", "session_id": "s1", "app_id": "app-1", "policy_id": "p-1"},
             )
             request_id = submitted.json()["data"]["request_id"]
             url = f"/api/v1/agent/research/request/{request_id}/events"
@@ -728,12 +735,12 @@ def test_same_session_overlap_completes_without_waiting_event() -> None:
             with TestClient(app) as client:
                 first = client.post(
                     "/api/v1/agent/primary/request",
-                    json={"message": "first", "session_id": "shared", "user_id": "u-1"},
+                    json={"message": "first", "session_id": "shared", "app_id": "app-1", "policy_id": "p-1"},
                 )
                 assert first.status_code == 200
                 second = client.post(
                     "/api/v1/agent/primary/request",
-                    json={"message": "second", "session_id": "shared", "user_id": "u-1"},
+                    json={"message": "second", "session_id": "shared", "app_id": "app-1", "policy_id": "p-1"},
                 )
                 assert second.status_code == 200
                 request_id = second.json()["data"]["request_id"]
@@ -923,7 +930,7 @@ def test_telemetry_events_filter_by_agent() -> None:
         with _build_test_client(root) as client:
             submitted = client.post(
                 "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s-1", "user_id": "u-1"},
+                json={"message": "hello", "session_id": "s-1", "app_id": "app-1", "policy_id": "p-1"},
             )
             assert submitted.status_code == 200
             request_id = submitted.json()["data"]["request_id"]
@@ -948,7 +955,7 @@ def test_submit_routes_store_a_callers_traceparent() -> None:
         with _build_test_client(Path(tmp)) as client:
             agent = client.post(
                 "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s-tp", "user_id": "u-1"},
+                json={"message": "hello", "session_id": "s-tp", "app_id": "app-1", "policy_id": "p-1"},
                 headers={"traceparent": traceparent, "tracestate": "vendor=1"},
             )
             request_id = agent.json()["data"]["request_id"]
@@ -959,7 +966,7 @@ def test_submit_routes_store_a_callers_traceparent() -> None:
 
             hosted = client.post(
                 "/api/v1/hosts/assistant/request",
-                json={"message": "hello", "session_id": "s-tp2", "user_id": "u-1"},
+                json={"message": "hello", "session_id": "s-tp2", "app_id": "app-1", "policy_id": "p-1"},
                 headers={"traceparent": traceparent},
             )
             hosted_id = hosted.json()["data"]["request_id"]
@@ -969,7 +976,7 @@ def test_submit_routes_store_a_callers_traceparent() -> None:
             # An invalid header is dropped; the request starts its own trace.
             invalid = client.post(
                 "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s-tp3", "user_id": "u-1"},
+                json={"message": "hello", "session_id": "s-tp3", "app_id": "app-1", "policy_id": "p-1"},
                 headers={"traceparent": "not-a-traceparent", "tracestate": "vendor=1"},
             )
             invalid_id = invalid.json()["data"]["request_id"]
@@ -984,7 +991,7 @@ def test_trace_analysis_returns_the_projection() -> None:
         with _build_test_client(Path(tmp)) as client:
             submitted = client.post(
                 "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s-proj", "user_id": "u-1"},
+                json={"message": "hello", "session_id": "s-proj", "app_id": "app-1", "policy_id": "p-1"},
             )
             request_id = submitted.json()["data"]["request_id"]
             _collect_terminal_response(client, "primary", request_id)
@@ -1013,7 +1020,7 @@ def test_telemetry_sessions_rollup_from_events() -> None:
         with _build_test_client(root) as client:
             submitted = client.post(
                 "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s-roll", "user_id": "u-1"},
+                json={"message": "hello", "session_id": "s-roll", "app_id": "app-1", "policy_id": "p-1"},
             )
             assert submitted.status_code == 200
             request_id = submitted.json()["data"]["request_id"]
@@ -1074,7 +1081,7 @@ def test_telemetry_sessions_participant_and_workflow_filters() -> None:
             # Primary owns the session; research participates as a subagent.
             submitted = client.post(
                 "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s-multi", "user_id": "u-1"},
+                json={"message": "hello", "session_id": "s-multi", "app_id": "app-1", "policy_id": "p-1"},
             )
             assert submitted.status_code == 200
             request_id = submitted.json()["data"]["request_id"]
@@ -1225,7 +1232,7 @@ def test_reasoning_trace_route_returns_compact_trace() -> None:
         with _build_test_client(root) as client:
             submitted = client.post(
                 "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s-1", "user_id": "u-1"},
+                json={"message": "hello", "session_id": "s-1", "app_id": "app-1", "policy_id": "p-1"},
             )
             assert submitted.status_code == 200
             request_id = submitted.json()["data"]["request_id"]
@@ -1266,7 +1273,7 @@ def test_memory_search_uses_agent_memory_store_by_default() -> None:
         with _build_test_client(root) as client:
             submitted = client.post(
                 "/api/v1/agent/primary/request",
-                json={"message": "hello world", "session_id": "s-1", "user_id": "u-1"},
+                json={"message": "hello world", "session_id": "s-1", "app_id": "app-1", "policy_id": "p-1"},
             )
             assert submitted.status_code == 200
             request_id = submitted.json()["data"]["request_id"]
@@ -1358,7 +1365,7 @@ def test_workflow_routes_list_and_run_registered_workflows() -> None:
             hold = _hold_runs()
             with hold:
                 submitted = client.post(
-                    "/api/v1/workflow/changelog/run", json={"user_id": "u-1"}
+                    "/api/v1/workflow/changelog/run", json={"app_id": "app-1", "policy_id": "p-1"}
                 )
             assert submitted.status_code == 200
             payload = submitted.json()["data"]
@@ -1440,27 +1447,38 @@ def test_workflow_run_accepts_input_object() -> None:
             with hold:
                 submitted = client.post(
                     "/api/v1/workflow/changelog/run",
-                    json={"input": {"target_agent_id": "primary"}, "user_id": "u-1"},
+                    json={"input": {"target_agent_id": "primary"}, "app_id": "app-1", "policy_id": "p-1"},
                 )
             assert submitted.status_code == 200
             [run] = hold.started
             assert run.workflow_input == {"target_agent_id": "primary"}
-            assert run.user_id == "u-1"
+            assert (run.app_id, run.policy_id, run.policy) == ("app-1", "p-1", DEFAULT_POLICY)
 
 
-def test_workflow_run_with_agents_requires_a_user_id() -> None:
+def test_workflow_run_with_agents_requires_an_app_and_a_policy() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root, workflow_enabled=True) as client:
             with patch.object(WorkflowRunner, "start") as start:
                 missing = client.post("/api/v1/workflow/changelog/run", json={})
-                invalid = client.post(
-                    "/api/v1/workflow/changelog/run", json={"user_id": "has space"}
+                app_only = client.post(
+                    "/api/v1/workflow/changelog/run", json={"app_id": "app-1"}
                 )
-            assert missing.status_code == 400
-            assert missing.json()["error"]["code"] == "USER_ID_REQUIRED"
+                invalid = client.post(
+                    "/api/v1/workflow/changelog/run",
+                    json={"app_id": "has space", "policy_id": "p-1"},
+                )
+                unknown = client.post(
+                    "/api/v1/workflow/changelog/run",
+                    json={"app_id": "app-1", "policy_id": "nope"},
+                )
+            for resp in (missing, app_only):
+                assert resp.status_code == 400
+                assert resp.json()["error"]["code"] == "APP_AND_POLICY_REQUIRED"
             assert invalid.status_code == 400
-            assert invalid.json()["error"]["code"] == "INVALID_USER_ID"
+            assert invalid.json()["error"]["code"] == "INVALID_APP_ID"
+            assert unknown.status_code == 404
+            assert unknown.json()["error"]["code"] == "POLICY_NOT_FOUND"
             start.assert_not_called()
 
 
@@ -1482,7 +1500,7 @@ def test_workflow_run_rejects_invalid_typed_input_before_enqueue() -> None:
             with patch.object(WorkflowRunner, "start") as start:
                 response = client.post(
                     "/api/v1/workflow/changelog/run",
-                    json={"input": {"count": "not-an-integer"}, "user_id": "u-1"},
+                    json={"input": {"count": "not-an-integer"}, "app_id": "app-1", "policy_id": "p-1"},
                 )
             assert response.status_code == 422
             assert response.json()["error"]["code"] == "WORKFLOW_INPUT_INVALID"
@@ -1508,11 +1526,11 @@ def test_workflow_run_returns_conflict_for_duplicate_active_dedup_key() -> None:
             with _hold_runs():
                 first = client.post(
                     "/api/v1/workflow/changelog/run",
-                    json={"dedup_key": "manual", "user_id": "u-1"},
+                    json={"dedup_key": "manual", "app_id": "app-1", "policy_id": "p-1"},
                 )
                 response = client.post(
                     "/api/v1/workflow/changelog/run",
-                    json={"dedup_key": "manual", "user_id": "u-1"},
+                    json={"dedup_key": "manual", "app_id": "app-1", "policy_id": "p-1"},
                 )
             assert response.status_code == 409
             payload = response.json()["error"]

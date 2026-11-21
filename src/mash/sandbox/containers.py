@@ -1,6 +1,6 @@
-"""The lifecycle the host keeps for per-user containers: sandboxes and browsers.
+"""The lifecycle the host keeps for per-policy containers: sandboxes and browsers.
 
-``ContainerManager`` starts a user's container on first use, under a per-user
+``ContainerManager`` starts a policy's container on first use, under a per-policy
 lock, stops containers left idle for ``idle_seconds``, and keeps at most
 ``max_running`` running, stopping the least recently used idle one to make
 room. Every call into a container goes through ``_use``, which counts it as in
@@ -26,15 +26,15 @@ T = TypeVar("T")
 
 
 class ContainerEndpoint(Protocol):
-    user_id: str
+    policy_id: str
     base_url: str
     token: str
 
 
 class ContainerProvider(Protocol):
-    async def ensure(self, user_id: str) -> Any: ...
+    async def ensure(self, policy_id: str) -> Any: ...
 
-    async def stop(self, user_id: str) -> None: ...
+    async def stop(self, policy_id: str) -> None: ...
 
     async def list(self) -> list[Any]: ...
 
@@ -42,7 +42,7 @@ class ContainerProvider(Protocol):
 
 
 class ContainerManager:
-    """Reaches users' containers of one kind through a provider."""
+    """Reaches policies' containers of one kind through a provider."""
 
     #: Used in log lines and errors: "sandbox", "browser".
     kind = "container"
@@ -69,12 +69,12 @@ class ContainerManager:
         self.max_running = int(max_running)
         self._clock = clock
         self._endpoints: dict[str, Any] = {}
-        # Users whose container runs, or is being started, with their last use.
+        # Policies whose container runs, or is being started, with their last use.
         self._last_used: dict[str, float] = {}
         self._in_flight: dict[str, int] = defaultdict(int)
-        self._user_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._policy_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._capacity_lock = asyncio.Lock()
-        # Users whose container a caller is stopping to make room; each stays
+        # Policies whose container a caller is stopping to make room; each stays
         # in _last_used, so counted against the cap, until its stop is done.
         self._evicting: set[str] = set()
         self._eviction_done = asyncio.Event()
@@ -88,7 +88,7 @@ class ContainerManager:
         now = self._clock()
         for info in await self.provider.list():
             if info.running:
-                self._last_used.setdefault(info.user_id, now)
+                self._last_used.setdefault(info.policy_id, now)
         if self._reaper is None:
             self._reaper = asyncio.create_task(self._reap_forever())
 
@@ -106,98 +106,98 @@ class ContainerManager:
     def running(self) -> list[str]:
         return list(self._last_used)
 
-    async def endpoint(self, user_id: str) -> Any:
-        """The user's running container, started if needed."""
-        return await self._use(user_id, _identity)
+    async def endpoint(self, policy_id: str) -> Any:
+        """The policy's running container, started if needed."""
+        return await self._use(policy_id, _identity)
 
-    async def _use(self, user_id: str, forward: Callable[[Any], Awaitable[T]]) -> T:
-        """Call ``forward`` with the user's running container, counting it as in use."""
-        self._in_flight[user_id] += 1
+    async def _use(self, policy_id: str, forward: Callable[[Any], Awaitable[T]]) -> T:
+        """Call ``forward`` with the policy's running container, counting it as in use."""
+        self._in_flight[policy_id] += 1
         try:
             try:
-                return await forward(await self._ensure(user_id))
+                return await forward(await self._ensure(policy_id))
             except httpx.ConnectError:
                 # The container was stopped or replaced behind the host's back;
                 # the call never reached it.
-                self._endpoints.pop(user_id, None)
-                return await forward(await self._ensure(user_id))
+                self._endpoints.pop(policy_id, None)
+                return await forward(await self._ensure(policy_id))
         except httpx.HTTPError as exc:
-            raise self.unavailable_error(f"{self.kind} for '{user_id}' failed: {exc}") from exc
+            raise self.unavailable_error(f"{self.kind} for '{policy_id}' failed: {exc}") from exc
         finally:
-            self._in_flight[user_id] -= 1
-            if user_id in self._endpoints:
-                self._last_used[user_id] = self._clock()
+            self._in_flight[policy_id] -= 1
+            if policy_id in self._endpoints:
+                self._last_used[policy_id] = self._clock()
 
     @contextlib.asynccontextmanager
-    async def hold(self, user_id: str) -> AsyncIterator[Any]:
-        """The user's running container, counted as in use until the block ends."""
-        self._in_flight[user_id] += 1
+    async def hold(self, policy_id: str) -> AsyncIterator[Any]:
+        """The policy's running container, counted as in use until the block ends."""
+        self._in_flight[policy_id] += 1
         try:
-            yield await self._ensure(user_id)
+            yield await self._ensure(policy_id)
         finally:
-            self._in_flight[user_id] -= 1
-            self.touch(user_id)
+            self._in_flight[policy_id] -= 1
+            self.touch(policy_id)
 
-    def touch(self, user_id: str) -> None:
-        """Count the user's container as used now, e.g. while a person views it."""
-        if user_id in self._last_used:
-            self._last_used[user_id] = self._clock()
+    def touch(self, policy_id: str) -> None:
+        """Count the policy's container as used now, e.g. while a person views it."""
+        if policy_id in self._last_used:
+            self._last_used[policy_id] = self._clock()
 
-    async def stop(self, user_id: str) -> None:
-        async with self._user_locks[user_id]:
-            await self._stop_locked(user_id)
+    async def stop(self, policy_id: str) -> None:
+        async with self._policy_locks[policy_id]:
+            await self._stop_locked(policy_id)
 
     async def reap_idle(self) -> list[str]:
         """Stop every container with nothing in flight and no use for ``idle_seconds``."""
         now = self._clock()
         stopped: list[str] = []
-        for user_id, last in list(self._last_used.items()):
-            if self._in_flight[user_id] == 0 and now - last >= self.idle_seconds:
-                async with self._user_locks[user_id]:
+        for policy_id, last in list(self._last_used.items()):
+            if self._in_flight[policy_id] == 0 and now - last >= self.idle_seconds:
+                async with self._policy_locks[policy_id]:
                     # A call may have started while this waited for the lock.
-                    if self._in_flight[user_id] == 0:
-                        await self._stop_locked(user_id)
-                        stopped.append(user_id)
+                    if self._in_flight[policy_id] == 0:
+                        await self._stop_locked(policy_id)
+                        stopped.append(policy_id)
         return stopped
 
-    async def _ensure(self, user_id: str) -> Any:
-        async with self._user_locks[user_id]:
-            endpoint = self._endpoints.get(user_id)
+    async def _ensure(self, policy_id: str) -> Any:
+        async with self._policy_locks[policy_id]:
+            endpoint = self._endpoints.get(policy_id)
             if endpoint is not None:
                 return endpoint
-            await self._reserve(user_id)
+            await self._reserve(policy_id)
             try:
-                endpoint = await self.provider.ensure(user_id)
+                endpoint = await self.provider.ensure(policy_id)
             except Exception as exc:
-                self._last_used.pop(user_id, None)
+                self._last_used.pop(policy_id, None)
                 if isinstance(exc, self.unavailable_error):
                     raise
                 raise self.unavailable_error(
-                    f"{self.kind} for '{user_id}' did not start: {exc}"
+                    f"{self.kind} for '{policy_id}' did not start: {exc}"
                 ) from exc
-            self._endpoints[user_id] = endpoint
+            self._endpoints[policy_id] = endpoint
             return endpoint
 
-    async def _reserve(self, user_id: str) -> None:
-        """Count the user's container as running, stopping another if the cap is hit.
+    async def _reserve(self, policy_id: str) -> None:
+        """Count the policy's container as running, stopping another if the cap is hit.
 
         The capacity lock only picks a victim; the stop runs outside it, so
-        other users' cold starts don't wait behind a ``docker stop``. The
+        other policies' cold starts don't wait behind a ``docker stop``. The
         victim stays counted until its stop is done, so the cap holds.
         """
         while True:
             victim: str | None = None
             async with self._capacity_lock:
-                if user_id in self._last_used or len(self._last_used) < self.max_running:
-                    self._last_used[user_id] = self._clock()
+                if policy_id in self._last_used or len(self._last_used) < self.max_running:
+                    self._last_used[policy_id] = self._clock()
                     return
                 idle = [
-                    user
-                    for user in self._last_used
-                    if self._in_flight[user] == 0 and user not in self._evicting
+                    policy_id
+                    for policy_id in self._last_used
+                    if self._in_flight[policy_id] == 0 and policy_id not in self._evicting
                 ]
                 if idle:
-                    victim = min(idle, key=lambda user: self._last_used[user])
+                    victim = min(idle, key=lambda policy_id: self._last_used[policy_id])
                     self._evicting.add(victim)
                 elif not self._evicting:
                     raise self.capacity_error(
@@ -214,7 +214,7 @@ class ContainerManager:
                 # reaper's or an explicit stop of the same container, and look
                 # again once the lock is ours: a call may have started, or that
                 # stop may have freed the slot already.
-                async with self._user_locks[victim]:
+                async with self._policy_locks[victim]:
                     if victim in self._last_used and self._in_flight[victim] == 0:
                         logger.info("stopping %s for %s to make room", self.kind, victim)
                         await self._stop_locked(victim)
@@ -223,10 +223,10 @@ class ContainerManager:
                 self._eviction_done.set()
                 self._eviction_done = asyncio.Event()
 
-    async def _stop_locked(self, user_id: str) -> None:
-        await self.provider.stop(user_id)
-        self._endpoints.pop(user_id, None)
-        self._last_used.pop(user_id, None)
+    async def _stop_locked(self, policy_id: str) -> None:
+        await self.provider.stop(policy_id)
+        self._endpoints.pop(policy_id, None)
+        self._last_used.pop(policy_id, None)
 
     async def _reap_forever(self) -> None:
         interval = min(60.0, self.idle_seconds / 4)

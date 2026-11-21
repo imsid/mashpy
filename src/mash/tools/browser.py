@@ -1,4 +1,4 @@
-"""Browser tools: act in the request user's browser through the host.
+"""Browser tools: act in the request policy's browser through the host.
 
 An agent whose spec lists sites (``AgentSpec.browser_sites()``) gets a subset
 of Playwright MCP's tools under their own names (``mash.browser.catalog``),
@@ -7,8 +7,8 @@ sandbox folder, ``browser_upload`` gives a file from that folder to a file
 input, and ``browser_handoff`` asks the user to take over the browser, for a
 sign-in. The tools run in the agent's runtime and reach the browser only
 through the host's relay (``{host}/browser``), with the agent's token and the
-current request id; the host picks the user from the request and adds the
-agent's sites.
+current request id; the host picks the policy from the request and allows the
+sites both the agent and the policy list.
 
 The durable runtime intercepts ``browser_handoff`` and turns it into an
 interaction (``mash.runtime.engine.workflow``); its ``execute`` only runs
@@ -17,7 +17,8 @@ outside one.
 
 from __future__ import annotations
 
-from typing import Any, Dict
+import copy
+from typing import Any, Dict, Sequence
 
 import httpx
 
@@ -26,6 +27,7 @@ from mash.logging.trace_context import get_request_id
 
 from .base import ToolImage, ToolResult
 
+BROWSER_NAVIGATE = "browser_navigate"
 BROWSER_SAVE = "browser_save"
 BROWSER_UPLOAD = "browser_upload"
 BROWSER_HANDOFF = "browser_handoff"
@@ -100,7 +102,7 @@ class _BrowserTool:
 
 
 class RelayedBrowserTool(_BrowserTool):
-    """One Playwright MCP tool, run in the request user's browser."""
+    """One Playwright MCP tool, run in the request policy's browser."""
 
     def __init__(self, schema: Dict[str, Any], *, relay: _Relay) -> None:
         self._relay = relay
@@ -229,6 +231,16 @@ def build_browser_tools(*, host_api_url: str, token: str) -> list[Any]:
     return tools
 
 
+def listing_sites(tool: Any, sites: Sequence[str]) -> Any:
+    """A copy of ``tool`` whose description lists the sites a request may open."""
+    listed = copy.copy(tool)
+    listed.description = (
+        f"{tool.description}\n\nSites you may open: {', '.join(sites)}. "
+        "Other URLs are refused."
+    )
+    return listed
+
+
 def browser_tool_names() -> tuple[str, ...]:
     return tuple(schema["name"] for schema in relayed_tool_schemas()) + (
         BROWSER_SAVE,
@@ -239,6 +251,7 @@ def browser_tool_names() -> tuple[str, ...]:
 
 __all__ = [
     "BROWSER_HANDOFF",
+    "BROWSER_NAVIGATE",
     "BROWSER_SAVE",
     "BROWSER_UPLOAD",
     "BrowserHandoffTool",
@@ -248,5 +261,6 @@ __all__ = [
     "UNTRUSTED_NOTE",
     "browser_tool_names",
     "build_browser_tools",
+    "listing_sites",
     "result_from_payload",
 ]

@@ -6,6 +6,7 @@ import asyncio
 from typing import Any
 
 from mash.core.config import AgentConfig
+from mash.policies import Policy
 from mash.core.context import ToolCall
 from mash.core.llm import LLMProvider
 from mash.core.llm.types import (
@@ -17,6 +18,18 @@ from mash.core.llm.types import (
 from mash.runtime import AgentSpec, AgentMetadata
 from mash.skills.registry import SkillRegistry
 from mash.tools.registry import ToolRegistry
+
+
+# The policy tests submit under: the defaults, as a request's snapshot holds it.
+DEFAULT_POLICY: dict[str, Any] = Policy().model_dump()
+# The app and policy tests act for, and the identity arguments a runtime submit takes.
+TEST_APP_ID = "app-1"
+TEST_POLICY_ID = "p-1"
+TEST_IDENTITY: dict[str, Any] = {
+    "app_id": TEST_APP_ID,
+    "policy_id": TEST_POLICY_ID,
+    "policy": DEFAULT_POLICY,
+}
 
 
 class DeterministicLLMProvider(LLMProvider):

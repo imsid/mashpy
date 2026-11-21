@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowRegistry, WorkflowSpec
 from mash.workflows.engine import FORWARD_PIPELINE_STRATEGY, WorkflowExecutionContext
 from mash.workflows.runs import make_run_id
+from mash.testing.runtime_fixtures import DEFAULT_POLICY
 from mash.workflows.store import (
     RUN_COMPLETED,
     RUN_FAILED,
@@ -149,7 +150,9 @@ class ForwardPipelineEngineTests(unittest.IsolatedAsyncioTestCase):
                     workflow_id=workflow_id,
                     status=RUN_QUEUED,
                     workflow_input=workflow_input,
-                    user_id="u-1",
+                    app_id="app-1",
+                    policy_id="p-1",
+                    policy=DEFAULT_POLICY,
                     created_at=1.0,
                 )
             )
@@ -159,7 +162,9 @@ class ForwardPipelineEngineTests(unittest.IsolatedAsyncioTestCase):
                 workflow=self.registry.get(workflow_id),
                 run_id=run_id,
                 workflow_input=workflow_input,
-                user_id="u-1",
+                app_id="app-1",
+                policy_id="p-1",
+                policy=DEFAULT_POLICY,
             )
         )
         return run_id, output

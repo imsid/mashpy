@@ -124,7 +124,7 @@ def test_agents_get_sandbox_and_browser_tools() -> None:
                     session_id="s-1",
                     trace_id="trace-2",
                     host=pool.snapshot_for(pool.get_host(GUIDE_HOST_ID)),
-                    user_id="u-1",
+                    app_id="app-1",
                 )
                 assert {
                     "RunSubAgents", "RunWorkflow", "ListAgentTraces",

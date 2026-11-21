@@ -41,7 +41,7 @@ def _client():
 def _submit(client: TestClient, agent_id: str, **body) -> str:
     resp = client.post(
         f"/api/v1/agent/{agent_id}/request",
-        json={"session_id": "s-1", "user_id": "u-1", **body},
+        json={"session_id": "s-1", "app_id": "app-1", "policy_id": "p-1", **body},
     )
     assert resp.status_code == 200, resp.text
     return resp.json()["data"]["request_id"]

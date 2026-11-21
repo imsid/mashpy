@@ -18,14 +18,15 @@ class CLIConfig:
     """Persisted Mash CLI connection settings.
 
     ``host_id`` is not part of the connection; ``mash compose`` pins the host
-    composition it defines here. ``user_id`` is the user requests and workflow
-    runs act for.
+    composition it defines here. Requests and workflow runs act for ``app_id``
+    under ``policy_id``.
     """
 
     api_base_url: str
     api_key: Optional[str] = None
     host_id: Optional[str] = None
-    user_id: Optional[str] = None
+    app_id: Optional[str] = None
+    policy_id: Optional[str] = None
 
 
 def load_config() -> Optional[CLIConfig]:
@@ -42,15 +43,17 @@ def load_config() -> Optional[CLIConfig]:
     api_base_url = str(payload.get("api_base_url") or "").strip()
     if not api_base_url:
         return None
-    api_key_value = payload.get("api_key")
-    host_id_value = payload.get("host_id")
-    user_id_value = payload.get("user_id")
     return CLIConfig(
         api_base_url=api_base_url,
-        api_key=str(api_key_value).strip() if isinstance(api_key_value, str) and api_key_value.strip() else None,
-        host_id=str(host_id_value).strip() if isinstance(host_id_value, str) and host_id_value.strip() else None,
-        user_id=str(user_id_value).strip() if isinstance(user_id_value, str) and user_id_value.strip() else None,
+        api_key=_text(payload.get("api_key")),
+        host_id=_text(payload.get("host_id")),
+        app_id=_text(payload.get("app_id")),
+        policy_id=_text(payload.get("policy_id")),
     )
+
+
+def _text(value: object) -> Optional[str]:
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def save_config(config: CLIConfig) -> Path:
@@ -61,7 +64,8 @@ def save_config(config: CLIConfig) -> Path:
         "api_base_url": config.api_base_url,
         "api_key": config.api_key,
         "host_id": config.host_id,
-        "user_id": config.user_id,
+        "app_id": config.app_id,
+        "policy_id": config.policy_id,
     }
     # The file holds the API key: only its owner may read it.
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

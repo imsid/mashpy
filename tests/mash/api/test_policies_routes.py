@@ -49,7 +49,7 @@ def test_an_empty_body_creates_the_default_policy() -> None:
 def test_put_replaces_the_whole_policy() -> None:
     with _client() as client:
         first = client.put(
-            "/api/v1/policies/p-1",
+            "/api/v1/policies/p-2",
             json={"sandbox": False, "browser_sites": ["https://*.pge.com"], "wait_max_seconds": None},
         ).json()["data"]
         assert (first["sandbox"], first["browser_sites"], first["wait_max_seconds"]) == (
@@ -58,7 +58,7 @@ def test_put_replaces_the_whole_policy() -> None:
             None,
         )
 
-        second = client.put("/api/v1/policies/p-1", json={"wait_max_seconds": 600}).json()["data"]
+        second = client.put("/api/v1/policies/p-2", json={"wait_max_seconds": 600}).json()["data"]
         assert (second["sandbox"], second["browser_sites"], second["wait_max_seconds"]) == (
             True,
             None,
@@ -93,11 +93,11 @@ def test_a_bad_policy_fails_validation_and_stores_nothing() -> None:
             {"sandbox": "maybe"},
             {"memory": "app"},
         ):
-            resp = client.put("/api/v1/policies/p-1", json=body)
+            resp = client.put("/api/v1/policies/p-new", json=body)
             assert resp.status_code == 422, body
-        assert client.get("/api/v1/policies/p-1").status_code == 404
+        assert client.get("/api/v1/policies/p-new").status_code == 404
 
-        resp = client.put("/api/v1/policies/p-1", json={"browser_sites": ["pge.com"]})
+        resp = client.put("/api/v1/policies/p-new", json={"browser_sites": ["pge.com"]})
         assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
         [error] = resp.json()["error"]["details"]["errors"]
         assert "must be an http(s) origin" in error["msg"]

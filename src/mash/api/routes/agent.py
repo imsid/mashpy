@@ -29,7 +29,8 @@ from .common import (
     build_runtime_event_sse_payload,
     get_client,
     parse_limit,
-    require_user_id,
+    require_app_id,
+    require_policy_id,
     require_agent_id,
     require_message,
     require_session_id,
@@ -195,12 +196,16 @@ def build_agent_router() -> APIRouter:
                 message=str(exc),
                 status_code=400,
             ) from exc
+        policy_id = require_policy_id(body.policy_id)
+        policy = await state_from_request(request).pool.read_policy(policy_id)
         request_id = await client.post_request(
             require_message(body.message),
             session_id=require_session_id(body.session_id),
             structured_output=structured_output,
             metadata=body.metadata,
-            user_id=require_user_id(body.user_id),
+            app_id=require_app_id(body.app_id),
+            policy_id=policy_id,
+            policy=policy,
             traceparent=request.headers.get("traceparent"),
             tracestate=request.headers.get("tracestate"),
         )
@@ -411,7 +416,7 @@ def build_agent_router() -> APIRouter:
         request: Request,
         agent_id: str,
         limit: Optional[int] = Query(default=None),
-        user_id: Optional[str] = Query(default=None),
+        app_id: Optional[str] = Query(default=None),
     ) -> dict[str, Any]:
         resolved_agent_id, store = _session_store(request, agent_id)
         resolved_limit = parse_limit(
@@ -423,7 +428,7 @@ def build_agent_router() -> APIRouter:
                     store,
                     agent_id=resolved_agent_id,
                     limit=resolved_limit,
-                    user_id=normalize_optional_text(user_id),
+                    app_id=normalize_optional_text(app_id),
                 ),
                 "limit": resolved_limit,
             }

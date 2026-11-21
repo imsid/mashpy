@@ -83,9 +83,14 @@ def build_parser() -> argparse.ArgumentParser:
     repl = subparsers.add_parser("repl", help="Enter the REPL of a composed host")
     repl.add_argument("--session-id", default=None, help="Remote session id")
     repl.add_argument(
-        "--user-id",
+        "--app-id",
         default=None,
-        help="User to act for (falls back to `mash connect --user-id`)",
+        help="App to act for (falls back to `mash connect --app-id`)",
+    )
+    repl.add_argument(
+        "--policy-id",
+        default=None,
+        help="Policy to run under (falls back to `mash connect --policy-id`)",
     )
     repl.add_argument(
         "--host",
@@ -230,14 +235,19 @@ def _run_repl(
         agent_id = COMPANION_AGENT_ID
 
     saved = load_config()
-    user_id = args.user_id or (saved.user_id if saved else None)
-    if not user_id:
-        raise ValueError("a user id is required. Use --user-id or `mash connect --user-id`.")
+    app_id = args.app_id or (saved.app_id if saved else None)
+    policy_id = args.policy_id or (saved.policy_id if saved else None)
+    if not app_id or not policy_id:
+        raise ValueError(
+            "an app id and a policy id are required. Use --app-id and --policy-id, "
+            "or `mash connect --app-id <app> --policy-id <policy>`."
+        )
     target = Target(
         api_base_url=base_url,
         agent_id=agent_id,
         session_id=args.session_id or Repl.new_session_id(),
-        user_id=user_id,
+        app_id=app_id,
+        policy_id=policy_id,
         host_id=host_id,
     )
     # /agents and /workflow are host-scoped natively by mash >= 0.5.3

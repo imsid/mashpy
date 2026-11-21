@@ -1,15 +1,15 @@
-"""Sandbox providers: where each user's sandbox runs.
+"""Sandbox providers: where each policy's sandbox runs.
 
-``SandboxProvider.ensure(user_id)`` makes sure the user's sandbox exists and is
+``SandboxProvider.ensure(policy_id)`` makes sure the policy's sandbox exists and is
 running and returns how the host reaches its daemon. ``DockerSandboxProvider``
-runs each sandbox as a container with a named volume for the user's
+runs each sandbox as a container with a named volume for the policy's
 workspaces. Sandboxes run Mash's sandbox image,
 ``ghcr.io/imsid/mash-sandbox:<mashpy version>``, unless ``MASH_SANDBOX_IMAGE``
 names another. A container made from another image, such as after a mashpy
-upgrade, is replaced; the user's files stay in the volume.
+upgrade, is replaced; the policy's files stay in the volume.
 
-Each user's sandbox has a network of its own, named like the container, so
-code in one user's sandbox cannot reach another's. The network exists while
+Each policy's sandbox has a network of its own, named like the container, so
+code in one policy's sandbox cannot reach another's. The network exists while
 the sandbox runs: ``ensure`` creates it and attaches the container, and
 ``stop`` disconnects everything from it and removes it. Docker's own address
 pools hold about 30 networks, so each network gets a /28 from
@@ -17,7 +17,7 @@ pools hold about 30 networks, so each network gets a /28 from
 
 Two networking modes, picked by whether the host itself runs in a container:
 
-- In a container: the host joins each running user's network and reaches the
+- In a container: the host joins each running policy's network and reaches the
   daemon by container name (``http://<ns>-sandbox-<key>:9000``).
 - On the Docker host (local development): each daemon's port is published on
   ``127.0.0.1`` at a port fixed when the container is created.
@@ -45,7 +45,7 @@ from .tokens import derive_sandbox_token
 
 logger = logging.getLogger(__name__)
 
-USER_LABEL = "mash.sandbox.user"
+POLICY_LABEL = "mash.sandbox.policy"
 NAMESPACE_LABEL = "mash.namespace"
 DEFAULT_NAMESPACE = "mash"
 MASH_SANDBOX_IMAGE_ENV = "MASH_SANDBOX_IMAGE"
@@ -53,7 +53,7 @@ MASH_SANDBOX_MOUNTS_ENV = "MASH_SANDBOX_MOUNTS"
 MASH_SANDBOX_NAMESPACE_ENV = "MASH_SANDBOX_NAMESPACE"
 MASH_SANDBOX_SUBNETS_ENV = "MASH_SANDBOX_SUBNETS"
 DEFAULT_SANDBOX_SUBNETS = "10.213.0.0/16"
-#: Each user's network: room for the sandbox, the host and the gateway.
+#: Each policy's network: room for the sandbox, the host and the gateway.
 NETWORK_PREFIX = 28
 SANDBOX_IMAGE_REPOSITORY = "ghcr.io/imsid/mash-sandbox"
 _NAMESPACE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,62}$")
@@ -70,9 +70,9 @@ def default_sandbox_image() -> str:
 
 @dataclass(frozen=True)
 class SandboxEndpoint:
-    """How the host reaches one user's sandbox daemon."""
+    """How the host reaches one policy's sandbox daemon."""
 
-    user_id: str
+    policy_id: str
     base_url: str
     token: str
 
@@ -81,20 +81,20 @@ class SandboxEndpoint:
 class SandboxInfo:
     """One sandbox the provider knows, running or stopped."""
 
-    user_id: str
+    policy_id: str
     name: str
     running: bool
     status: str
 
 
 class SandboxUnavailableError(RuntimeError):
-    """A user's sandbox could not be started or reached."""
+    """A policy's sandbox could not be started or reached."""
 
 
 class SandboxProvider(Protocol):
-    async def ensure(self, user_id: str) -> SandboxEndpoint: ...
+    async def ensure(self, policy_id: str) -> SandboxEndpoint: ...
 
-    async def stop(self, user_id: str) -> None: ...
+    async def stop(self, policy_id: str) -> None: ...
 
     async def list(self) -> list[SandboxInfo]: ...
 
@@ -121,20 +121,24 @@ def resolve_namespace(
     return value
 
 
-def sandbox_key(user_id: str) -> str:
-    """A Docker-safe name part for a user: Docker names allow no '@' or ':'."""
-    return hashlib.sha256(user_id.encode()).hexdigest()[:16]
+def sandbox_key(policy_id: str) -> str:
+    """A Docker-safe name part for a policy: Docker names allow no '@' or ':'.
+
+    The id is hashed under a ``policy:`` prefix, so no policy gets the name,
+    and so the volume, of a sandbox made before sandboxes were per policy.
+    """
+    return hashlib.sha256(f"policy:{policy_id}".encode()).hexdigest()[:16]
 
 
-def sandbox_name(user_id: str, namespace: str = DEFAULT_NAMESPACE) -> str:
-    """The user's container and volume name."""
-    return f"{namespace}-sandbox-{sandbox_key(user_id)}"
+def sandbox_name(policy_id: str, namespace: str = DEFAULT_NAMESPACE) -> str:
+    """The policy's container and volume name."""
+    return f"{namespace}-sandbox-{sandbox_key(policy_id)}"
 
 
 def resolve_subnets(
     explicit_value: str | None = None, environ: Mapping[str, str] | None = None
 ) -> ipaddress.IPv4Network:
-    """The IPv4 range users' networks are carved from, in /28s."""
+    """The IPv4 range policies' networks are carved from, in /28s."""
     env = os.environ if environ is None else environ
     value = str(
         explicit_value or env.get(MASH_SANDBOX_SUBNETS_ENV) or DEFAULT_SANDBOX_SUBNETS
@@ -150,8 +154,8 @@ def resolve_subnets(
     return subnets
 
 
-def sandbox_labels(user_id: str, namespace: str = DEFAULT_NAMESPACE) -> dict[str, str]:
-    return {USER_LABEL: user_id, NAMESPACE_LABEL: namespace}
+def sandbox_labels(policy_id: str, namespace: str = DEFAULT_NAMESPACE) -> dict[str, str]:
+    return {POLICY_LABEL: policy_id, NAMESPACE_LABEL: namespace}
 
 
 def parse_mounts(entries: Sequence[str]) -> list[dict]:
@@ -189,19 +193,19 @@ def _attachment(container: dict, network: str, network_id: str) -> str:
     return "attached" if known in ("", network_id) else "stale"
 
 
-async def ensure_user_network(
+async def ensure_policy_network(
     engine: DockerEngine,
-    user_id: str,
+    policy_id: str,
     namespace: str,
     subnets: ipaddress.IPv4Network,
 ) -> str:
-    """Create the user's network unless it exists; return its id.
+    """Create the policy's network unless it exists; return its id.
 
     The network gets the first /28 of ``subnets`` that overlaps no network on
     the daemon. One created by someone else between the listing and the
     create makes Docker refuse the subnet (403), and the next is tried.
     """
-    name = sandbox_name(user_id, namespace)
+    name = sandbox_name(policy_id, namespace)
     existing = await engine.inspect_network(name)
     if existing is not None:
         return str(existing["Id"])
@@ -215,7 +219,7 @@ async def ensure_user_network(
             continue
         try:
             return await engine.create_network(
-                name, labels=sandbox_labels(user_id, namespace), subnet=str(block)
+                name, labels=sandbox_labels(policy_id, namespace), subnet=str(block)
             )
         except DockerEngineError as exc:
             if exc.status_code == 409:
@@ -233,7 +237,7 @@ async def ensure_user_network(
     )
 
 
-async def remove_user_network(engine: DockerEngine, name: str) -> None:
+async def remove_policy_network(engine: DockerEngine, name: str) -> None:
     """Disconnect everything from the network ``name`` and remove it.
 
     Docker removes a network that only stopped containers name, and those
@@ -248,35 +252,35 @@ async def remove_user_network(engine: DockerEngine, name: str) -> None:
     await engine.remove_network(name)
 
 
-async def stop_sandbox(engine: DockerEngine, user_id: str, *, namespace: str) -> None:
-    """Stop the user's sandbox and remove its network; the volume is kept."""
-    name = sandbox_name(user_id, namespace)
+async def stop_sandbox(engine: DockerEngine, policy_id: str, *, namespace: str) -> None:
+    """Stop the policy's sandbox and remove its network; the volume is kept."""
+    name = sandbox_name(policy_id, namespace)
     await engine.stop_container(name)
-    await remove_user_network(engine, name)
+    await remove_policy_network(engine, name)
 
 
 async def start_sandbox(
     engine: DockerEngine,
-    user_id: str,
+    policy_id: str,
     *,
     namespace: str,
     environ: Mapping[str, str] | None = None,
 ) -> None:
-    """Start the user's existing sandbox on its network, as ``mash sandbox shell`` does.
+    """Start the policy's existing sandbox on its network, as ``mash sandbox shell`` does.
 
     The host joins the network on its next call to the sandbox.
     """
-    name = sandbox_name(user_id, namespace)
+    name = sandbox_name(policy_id, namespace)
     container = await engine.inspect_container(name)
     if container is None:
         raise ValueError(f"no sandbox named {name}")
-    network_id = await ensure_user_network(
-        engine, user_id, namespace, resolve_subnets(environ=environ)
+    network_id = await ensure_policy_network(
+        engine, policy_id, namespace, resolve_subnets(environ=environ)
     )
     attachment = _attachment(container, name, network_id)
     if (container.get("HostConfig") or {}).get("NetworkMode") != name or attachment == "stale":
         raise ValueError(
-            f"{name} was made for another network; the host replaces it on the user's next request"
+            f"{name} was made for another network; the host replaces it on the policy's next request"
         )
     if attachment == "detached":
         await engine.connect_network(name, name)
@@ -312,7 +316,7 @@ async def wait_healthy(base_url: str, *, timeout: float, what: str) -> None:
 
 
 class DockerSandboxProvider:
-    """Sandboxes as Docker containers, one per user, with a volume each."""
+    """Sandboxes as Docker containers, one per policy, with a volume each."""
 
     def __init__(
         self,
@@ -371,33 +375,33 @@ class DockerSandboxProvider:
                     raise RuntimeError("cannot inspect the host's own container")
                 self._own_id = str(own["Id"])
             for network in await self._engine.list_networks(
-                labels=[USER_LABEL, f"{NAMESPACE_LABEL}={self.namespace}"]
+                labels=[POLICY_LABEL, f"{NAMESPACE_LABEL}={self.namespace}"]
             ):
                 name = str(network["Name"])
                 container = await self._engine.inspect_container(name)
                 if container is None or not container["State"].get("Running"):
                     logger.info("removing network %s of a stopped sandbox", name)
-                    await remove_user_network(self._engine, name)
+                    await remove_policy_network(self._engine, name)
             self._prepared = True
 
-    async def ensure(self, user_id: str) -> SandboxEndpoint:
+    async def ensure(self, policy_id: str) -> SandboxEndpoint:
         await self.prepare()
-        name = sandbox_name(user_id, self.namespace)
-        token = derive_sandbox_token(self._host_secret, user_id)
-        await self._engine.ensure_volume(name, labels=sandbox_labels(user_id, self.namespace))
-        network_id = await ensure_user_network(
-            self._engine, user_id, self.namespace, self._subnets
+        name = sandbox_name(policy_id, self.namespace)
+        token = derive_sandbox_token(self._host_secret, policy_id)
+        await self._engine.ensure_volume(name, labels=sandbox_labels(policy_id, self.namespace))
+        network_id = await ensure_policy_network(
+            self._engine, policy_id, self.namespace, self._subnets
         )
         container = await self._engine.inspect_container(name)
         if container is not None and self._must_replace(container, name, network_id):
             # Made from another image, such as an older mashpy's sandbox image, so
             # it would keep running that image's daemon; or made for another
             # network, such as the shared one sandboxes used before. Replace
-            # it; the user's files are in the volume and carry over.
+            # it; the policy's files are in the volume and carry over.
             await self._engine.remove_container(name)
             container = None
         if container is None:
-            await self._engine.create_container(name, self._container_config(user_id, token))
+            await self._engine.create_container(name, self._container_config(policy_id, token))
         elif _attachment(container, name, network_id) == "detached":
             # Its network was removed by a stop, or it was started without one.
             await self._engine.connect_network(name, name)
@@ -407,23 +411,23 @@ class DockerSandboxProvider:
             await self._engine.connect_network(name, self._own_id)
         container = await self._engine.inspect_container(name)
         endpoint = SandboxEndpoint(
-            user_id=user_id, base_url=self._base_url(name, container), token=token
+            policy_id=policy_id, base_url=self._base_url(name, container), token=token
         )
         await wait_healthy(
             endpoint.base_url, timeout=self._health_timeout, what=f"sandbox {name}"
         )
         return endpoint
 
-    async def stop(self, user_id: str) -> None:
-        await stop_sandbox(self._engine, user_id, namespace=self.namespace)
+    async def stop(self, policy_id: str) -> None:
+        await stop_sandbox(self._engine, policy_id, namespace=self.namespace)
 
     async def list(self) -> list[SandboxInfo]:
         containers = await self._engine.list_containers(
-            labels=[USER_LABEL, f"{NAMESPACE_LABEL}={self.namespace}"]
+            labels=[POLICY_LABEL, f"{NAMESPACE_LABEL}={self.namespace}"]
         )
         return [
             SandboxInfo(
-                user_id=str(summary["Labels"][USER_LABEL]),
+                policy_id=str(summary["Labels"][POLICY_LABEL]),
                 name=str((summary.get("Names") or ["/"])[0]).lstrip("/"),
                 running=summary.get("State") == "running",
                 status=str(summary.get("Status") or summary.get("State") or ""),
@@ -438,8 +442,8 @@ class DockerSandboxProvider:
             or _attachment(container, name, network_id) == "stale"
         )
 
-    def _container_config(self, user_id: str, token: str) -> dict:
-        name = sandbox_name(user_id, self.namespace)
+    def _container_config(self, policy_id: str, token: str) -> dict:
+        name = sandbox_name(policy_id, self.namespace)
         host_config: dict = {
             # Restart a daemon that crashes; a stop by the reaper sticks.
             "RestartPolicy": {"Name": "unless-stopped"},
@@ -467,7 +471,7 @@ class DockerSandboxProvider:
             "Cmd": ["mash", "sandbox", "serve", "--host", "0.0.0.0", "--port", str(SANDBOX_PORT)],
             # The sandbox's only variable: nothing from the host's environment.
             "Env": [f"{MASH_SANDBOX_TOKEN_ENV}={token}"],
-            "Labels": sandbox_labels(user_id, self.namespace),
+            "Labels": sandbox_labels(policy_id, self.namespace),
             "ExposedPorts": {f"{SANDBOX_PORT}/tcp": {}},
             "HostConfig": host_config,
             "NetworkingConfig": {"EndpointsConfig": {name: {}}},
@@ -495,11 +499,11 @@ __all__ = [
     "SandboxInfo",
     "SandboxProvider",
     "SandboxUnavailableError",
-    "USER_LABEL",
+    "POLICY_LABEL",
     "default_sandbox_image",
-    "ensure_user_network",
+    "ensure_policy_network",
     "parse_mounts",
-    "remove_user_network",
+    "remove_policy_network",
     "resolve_namespace",
     "resolve_subnets",
     "running_in_container",

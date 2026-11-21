@@ -21,7 +21,8 @@ from ...types import (
     RuntimeEvent,
     RuntimeEventType,
     accepted_request,
-    accepted_user_id,
+    accepted_app_id,
+    accepted_policy_id,
     event_attributes,
     usage_totals,
 )
@@ -136,15 +137,16 @@ async def _project_lifecycle(
     await cursor.execute(
         """
         INSERT INTO runtime_request
-            (request_id, status, terminal_seq, updated_at, agent_id, user_id,
-             session_id, started_by, started_at, parent_request_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, COALESCE(%s, 'user'), %s, %s)
+            (request_id, status, terminal_seq, updated_at, agent_id, app_id,
+             policy_id, session_id, started_by, started_at, parent_request_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, COALESCE(%s, 'user'), %s, %s)
         ON CONFLICT (request_id) DO UPDATE
             SET status = EXCLUDED.status,
                 terminal_seq = EXCLUDED.terminal_seq,
                 updated_at = EXCLUDED.updated_at,
                 agent_id = COALESCE(runtime_request.agent_id, EXCLUDED.agent_id),
-                user_id = COALESCE(runtime_request.user_id, EXCLUDED.user_id),
+                app_id = COALESCE(runtime_request.app_id, EXCLUDED.app_id),
+                policy_id = COALESCE(runtime_request.policy_id, EXCLUDED.policy_id),
                 session_id = COALESCE(runtime_request.session_id, EXCLUDED.session_id),
                 started_by = COALESCE(runtime_request.started_by, EXCLUDED.started_by),
                 started_at = COALESCE(runtime_request.started_at, EXCLUDED.started_at),
@@ -158,7 +160,8 @@ async def _project_lifecycle(
             request_seq if status.terminal else None,
             float(event.created_at),
             event.agent_id,
-            accepted_user_id(event),
+            accepted_app_id(event),
+            accepted_policy_id(event),
             start.session_id if start else None,
             start.started_by if start else None,
             start.started_at if start else None,
@@ -604,45 +607,59 @@ async def set_export_cursor(pool: Any, name: str, event_id: int) -> None:
 
 
 async def get_request_identity(pool: Any, request_id: str) -> RequestIdentity | None:
-    """The agent, user, session and parent of a request, or None if unknown."""
+    """The agent, app, policy, session and parent of a request, or None.
+
+    The policy snapshot lives only in the accepted event's request metadata.
+    """
     async with pool.connection() as conn:
         async with conn.cursor() as cursor:
             await cursor.execute(
                 """
-                SELECT agent_id, user_id, session_id, parent_request_id
-                FROM runtime_request WHERE request_id = %s
+                SELECT r.agent_id, r.app_id, r.policy_id, r.session_id,
+                       r.parent_request_id,
+                       (
+                           SELECT e.payload -> 'request_metadata' -> 'policy'
+                           FROM runtime_event_log AS e
+                           WHERE e.request_id = r.request_id
+                             AND e.event_type = 'invoke_agent.start'
+                           ORDER BY e.seq ASC
+                           LIMIT 1
+                       ) AS policy
+                FROM runtime_request AS r WHERE r.request_id = %s
                 """,
                 (request_id,),
             )
             row = await cursor.fetchone()
     if row is None or row["agent_id"] is None:
         return None
+    policy = row["policy"]
     return RequestIdentity(
         agent_id=str(row["agent_id"]),
-        user_id=row["user_id"],
+        app_id=row["app_id"],
+        policy_id=row["policy_id"],
+        policy=dict(policy) if isinstance(policy, dict) else None,
         session_id=row["session_id"],
         parent_request_id=row["parent_request_id"],
     )
 
 
-async def get_other_session_user(pool: Any, session_id: str, user_id: str) -> str | None:
-    """A user other than ``user_id`` with a request on the session, or None.
-
-    Requests from before user ids were recorded (NULL) belong to no one.
-    """
+async def get_other_session_policy(
+    pool: Any, session_id: str, policy_id: str
+) -> str | None:
+    """A policy other than ``policy_id`` with a request on the session, or None."""
     async with pool.connection() as conn:
         async with conn.cursor() as cursor:
             await cursor.execute(
                 """
-                SELECT user_id
+                SELECT policy_id
                 FROM runtime_request
-                WHERE session_id = %s AND user_id IS NOT NULL AND user_id <> %s
+                WHERE session_id = %s AND policy_id IS NOT NULL AND policy_id <> %s
                 LIMIT 1
                 """,
-                (session_id, user_id),
+                (session_id, policy_id),
             )
             row = await cursor.fetchone()
-    return str(row["user_id"]) if row is not None else None
+    return str(row["policy_id"]) if row is not None else None
 
 
 async def get_request_status(pool: Any, request_id: str) -> RequestStatus | None:
@@ -889,7 +906,8 @@ def request_row_to_record(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "request_id": str(row["request_id"]),
         "agent_id": str(row["agent_id"]) if row.get("agent_id") else None,
-        "user_id": str(row["user_id"]) if row.get("user_id") else None,
+        "app_id": str(row["app_id"]) if row.get("app_id") else None,
+        "policy_id": str(row["policy_id"]) if row.get("policy_id") else None,
         "session_id": str(row["session_id"]) if row.get("session_id") else None,
         "message": str(row["message"]) if row.get("message") is not None else "",
         "status": str(row["status"]),
@@ -904,7 +922,7 @@ def request_row_to_record(row: dict[str, Any]) -> dict[str, Any]:
 
 
 _REQUEST_RECORD_SELECT = """
-    SELECT r.request_id, r.agent_id, r.user_id, r.session_id, r.status,
+    SELECT r.request_id, r.agent_id, r.app_id, r.policy_id, r.session_id, r.status,
            r.started_by, r.parent_request_id, r.started_at,
            (
                SELECT e.payload ->> 'message'

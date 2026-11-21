@@ -40,7 +40,7 @@ def _run(host: FakeHost, *, err: io.StringIO | None = None, **kwargs: Any) -> tu
             "agent_id": "primary",
             "host_id": None,
             "session_id": "s-1",
-            "user_id": "u-1",
+            "app_id": "app-1", "policy_id": "p-1",
             "message": "hello",
             "stdout": out,
             "stderr": err,
@@ -67,7 +67,7 @@ def test_the_answer_is_printed_as_is_and_nothing_else_reaches_stdout() -> None:
     assert (code, out, err) == (EXIT_OK, "The **answer**.\n", "")
     assert host.submitted == [
         {"agent_id": "primary", "message": "hello", "session_id": "s-1",
-         "user_id": "u-1", "request_id": "r-1"}
+         "app_id": "app-1", "policy_id": "p-1", "request_id": "r-1"}
     ]
 
 

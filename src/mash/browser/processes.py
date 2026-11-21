@@ -1,7 +1,7 @@
 """The processes a browser container runs next to its daemon.
 
 ``mash browser serve`` starts them as its children and restarts any that
-exits: a virtual display (Xvfb), Chromium drawing to it with the user's
+exits: a virtual display (Xvfb), Chromium drawing to it with the policy's
 profile, a VNC server for the live view, and Playwright MCP attached to
 Chromium over CDP. All of them listen on ``127.0.0.1`` only; the daemon is
 the container's one reachable port.
@@ -48,7 +48,7 @@ def find_chromium() -> str:
 
 @dataclass(frozen=True)
 class BrowserLayout:
-    """Where a browser's files live, under the user's volume."""
+    """Where a browser's files live, under the policy's volume."""
 
     home: Path
 

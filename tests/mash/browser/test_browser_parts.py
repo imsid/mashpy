@@ -10,7 +10,7 @@ from pathlib import Path
 from mash.browser.catalog import PLAYWRIGHT_MCP_VERSION, RELAYED_TOOLS, load_catalog
 from mash.browser.daemon import shape_result
 from mash.browser.processes import BrowserLayout, child_commands
-from mash.browser.sites import check_sites, origin_of, url_allowed
+from mash.browser.sites import check_sites, intersect_sites, origin_of, request_sites, url_allowed
 from mash.browser.tokens import derive_browser_token, make_view_token, read_view_token
 
 REPO = Path(__file__).resolve().parents[3]
@@ -20,8 +20,8 @@ class TokenTests(unittest.TestCase):
     def test_browser_tokens_differ_by_user_and_from_sandbox_tokens(self) -> None:
         from mash.sandbox.tokens import derive_sandbox_token
 
-        self.assertNotEqual(derive_browser_token("s", "u-1"), derive_browser_token("s", "u-2"))
-        self.assertNotEqual(derive_browser_token("s", "u-1"), derive_sandbox_token("s", "u-1"))
+        self.assertNotEqual(derive_browser_token("s", "p-1"), derive_browser_token("s", "p-2"))
+        self.assertNotEqual(derive_browser_token("s", "p-1"), derive_sandbox_token("s", "p-1"))
 
     def test_view_token_reads_back_until_it_expires(self) -> None:
         token = make_view_token("s", "u@1", "req-1", 2000)
@@ -30,7 +30,7 @@ class TokenTests(unittest.TestCase):
         self.assertIsNone(read_view_token("s", token, now=2000))
 
     def test_view_token_from_another_secret_or_tampered_is_refused(self) -> None:
-        token = make_view_token("s", "u-1", "req-1", 2000)
+        token = make_view_token("s", "p-1", "req-1", 2000)
         claims, signature = token.split(".")
 
         self.assertIsNone(read_view_token("other", token, now=0))
@@ -52,6 +52,29 @@ class SiteTests(unittest.TestCase):
         self.assertTrue(url_allowed("https://m.www.pge.com/x", sites))
         self.assertFalse(url_allowed("https://notpge.com/", sites))
         self.assertFalse(url_allowed("https://pge.com.evil.io/", sites))
+
+    def test_the_intersection_keeps_the_narrower_of_each_overlap(self) -> None:
+        self.assertEqual(intersect_sites(["https://*.pge.com"], ["https://m.pge.com"]), ["https://m.pge.com"])
+        self.assertEqual(intersect_sites(["https://pge.com"], ["https://*.pge.com"]), ["https://pge.com"])
+        self.assertEqual(intersect_sites(["*"], ["https://a.com"]), ["https://a.com"])
+        self.assertEqual(intersect_sites(["https://a.com"], ["*"]), ["https://a.com"])
+        self.assertEqual(
+            intersect_sites(["https://*.pge.com", "https://pge.com"], ["https://*.pge.com"]),
+            ["https://*.pge.com"],
+        )
+        # Scheme, port and host must all overlap.
+        self.assertEqual(intersect_sites(["http://a.com"], ["https://a.com"]), [])
+        self.assertEqual(intersect_sites(["https://a.com:8443"], ["https://a.com"]), [])
+        self.assertEqual(intersect_sites(["https://*.pge.com"], ["https://notpge.com"]), [])
+        self.assertEqual(intersect_sites(["https://a.com"], []), [])
+
+    def test_a_policy_narrows_a_request_and_never_widens_it(self) -> None:
+        agent = ["https://*.pge.com"]
+        self.assertEqual(request_sites(agent, None), agent)
+        self.assertEqual(request_sites(agent, {"browser_sites": None}), agent)
+        self.assertEqual(request_sites(agent, {"browser_sites": []}), [])
+        self.assertEqual(request_sites(agent, {"browser_sites": ["*"]}), agent)
+        self.assertEqual(request_sites(agent, {"browser_sites": ["https://evil.io"]}), [])
 
     def test_star_allows_everything_and_blank_is_always_allowed(self) -> None:
         self.assertTrue(url_allowed("https://anything.io/", ["*"]))

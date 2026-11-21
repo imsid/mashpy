@@ -9,6 +9,8 @@ from contextlib import nullcontext
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Optional
 
+from pydantic import ValidationError
+
 from ..logging.trace_context import (
     bound_host_id,
     bound_workflow_ids,
@@ -18,13 +20,14 @@ from ..logging.trace_context import (
 )
 from .errors import (
     RequestStaleError,
-    SessionUserMismatchError,
+    SessionPolicyMismatchError,
     classify_error,
 )
 from ..otel import semconv
 from .events import RequestStatus, RuntimeEvent, RuntimeEventType
 from .events.types import STARTED_BY_USER, EndStatus, end_status
 from .structured_output import serialize_structured_output
+from ..policies import Policy, validate_policy_id
 
 if TYPE_CHECKING:
     from .service import AgentRuntime
@@ -33,7 +36,7 @@ if TYPE_CHECKING:
 # Caller-supplied request ids end up in URLs and in subagent and workflow
 # request ids, so they are kept to a conservative charset.
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,255}$")
-_USER_ID_RE = re.compile(r"^[A-Za-z0-9._:@-]{1,255}$")
+_APP_ID_RE = re.compile(r"^[A-Za-z0-9._:@-]{1,255}$")
 
 
 class RequestIdConflictError(ValueError):
@@ -48,12 +51,22 @@ def validate_request_id(request_id: Any) -> str:
     return request_id
 
 
-def validate_user_id(user_id: Any) -> str:
-    if not isinstance(user_id, str) or not _USER_ID_RE.match(user_id):
+def validate_app_id(app_id: Any) -> str:
+    if not isinstance(app_id, str) or not _APP_ID_RE.match(app_id):
         raise ValueError(
-            "user_id must be 1-255 characters of letters, digits, '.', '_', ':', '@' or '-'"
+            "app_id must be 1-255 characters of letters, digits, '.', '_', ':', '@' or '-'"
         )
-    return user_id
+    return app_id
+
+
+def validate_policy_snapshot(policy: Any) -> dict[str, Any]:
+    """The policy document a request runs under, checked and normalized."""
+    if not isinstance(policy, dict):
+        raise ValueError("policy must be an object")
+    try:
+        return Policy.model_validate(policy).model_dump()
+    except ValidationError as exc:
+        raise ValueError(f"invalid policy: {exc}") from exc
 
 
 def _require_str(parent: dict[str, Any], key: str) -> str:
@@ -147,7 +160,9 @@ async def submit_request(
     *,
     message: str,
     session_id: str,
-    user_id: str,
+    app_id: str,
+    policy_id: str,
+    policy: dict[str, Any],
     structured_output: Any = None,
     host_snapshot: dict[str, Any] | None = None,
     context: str | None = None,
@@ -164,11 +179,17 @@ async def submit_request(
     """
     if request_id is not None:
         validate_request_id(request_id)
-    validate_user_id(user_id)
+    validate_app_id(app_id)
+    validate_policy_id(policy_id)
+    snapshot = validate_policy_snapshot(policy)
     normalized_structured_output = serialize_structured_output(structured_output)
-    # ``user_id`` is caller context like ``metadata``: stored with the
-    # request, never shown to the model.
-    request_metadata: dict[str, Any] = {"user_id": user_id}
+    # The app, the policy and its snapshot are caller context like
+    # ``metadata``: stored with the request, never shown to the model.
+    request_metadata: dict[str, Any] = {
+        "app_id": app_id,
+        "policy_id": policy_id,
+        "policy": snapshot,
+    }
     if parent is not None:
         request_metadata.update(parent_request_metadata(parent, agent_id=self.agent_id))
     if normalized_structured_output is not None:
@@ -212,14 +233,14 @@ async def _submit_request(
         if existing is not None:
             return existing
 
-    # A session is one user's conversation: its turns replay into every
-    # request on it, so a request for another user is refused.
-    user_id = user_id_from_request_metadata(request_metadata)
-    if user_id is not None:
-        owner = await self.runtime_store.get_other_session_user(target_session_id, user_id)
-        if owner is not None:
-            raise SessionUserMismatchError(
-                f"session '{target_session_id}' belongs to another user"
+    # A session runs under the policy of its first request: its turns replay
+    # into every request on it, so a request under another policy is refused.
+    policy_id = policy_id_from_request_metadata(request_metadata)
+    if policy_id is not None:
+        other = await self.runtime_store.get_other_session_policy(target_session_id, policy_id)
+        if other is not None:
+            raise SessionPolicyMismatchError(
+                f"session '{target_session_id}' runs under another policy"
             )
 
     # Only a workflow-parented request binds workflow ids here; binding None
@@ -292,11 +313,29 @@ def pending_interactions(events: list[RuntimeEvent]) -> list[str]:
     return list(pending)
 
 
-def user_id_from_request_metadata(
+def _metadata_text(request_metadata: Optional[dict[str, Any]], key: str) -> Optional[str]:
+    value = dict(request_metadata or {}).get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def app_id_from_request_metadata(
     request_metadata: Optional[dict[str, Any]],
 ) -> Optional[str]:
-    user_id = dict(request_metadata or {}).get("user_id")
-    return user_id if isinstance(user_id, str) and user_id else None
+    return _metadata_text(request_metadata, "app_id")
+
+
+def policy_id_from_request_metadata(
+    request_metadata: Optional[dict[str, Any]],
+) -> Optional[str]:
+    return _metadata_text(request_metadata, "policy_id")
+
+
+def policy_from_request_metadata(
+    request_metadata: Optional[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """The policy snapshot a request runs under, or None."""
+    policy = dict(request_metadata or {}).get("policy")
+    return dict(policy) if isinstance(policy, dict) else None
 
 
 def caller_metadata_from_request_metadata(
@@ -640,11 +679,13 @@ def to_public_event(event: RuntimeEvent) -> dict[str, Any]:
             "session_id": event.session_id,
             "status": "accepted",
         }
-        user_id = user_id_from_request_metadata(
-            (event.payload or {}).get("request_metadata")
-        )
-        if user_id is not None:
-            data["user_id"] = user_id
+        request_metadata = (event.payload or {}).get("request_metadata")
+        for key, value in (
+            ("app_id", app_id_from_request_metadata(request_metadata)),
+            ("policy_id", policy_id_from_request_metadata(request_metadata)),
+        ):
+            if value is not None:
+                data[key] = value
         return {"event": "request.accepted", "data": data}
     if event.event_type == RuntimeEventType.CONTEXT_LOAD_START.value:
         return {

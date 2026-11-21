@@ -23,7 +23,7 @@ from mash.runtime.engine.steps import (
 )
 from mash.runtime.events import RuntimeEvent, RuntimeEventType
 from mash.runtime.requests import pending_interactions, to_public_event
-from mash.testing.runtime_fixtures import build_spec
+from mash.testing.runtime_fixtures import TEST_IDENTITY, build_spec
 
 
 def _test_stores() -> dict:
@@ -281,7 +281,7 @@ class CancelRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancel_completed_request_is_idempotent(self) -> None:
         runtime = await self._runtime()
-        accepted = await runtime.submit_request(message="hi", session_id="s-1", user_id="u-1")
+        accepted = await runtime.submit_request(message="hi", session_id="s-1", **TEST_IDENTITY)
         request_id = str(accepted["request_id"])
         # Drain to completion.
         cursor, done = 0, False

@@ -1,4 +1,4 @@
-"""Sandbox tools: run code in the request user's sandbox and move files to it.
+"""Sandbox tools: run code in the request policy's sandbox and move files to it.
 
 ``run_code`` runs Python, JavaScript or shell code in the agent's folder of the
 sandbox, and ``edit_file`` creates a text file there or replaces one exact piece
@@ -6,7 +6,7 @@ of one. ``sandbox_put`` copies a file from the machine the agent process runs
 on into that folder, and ``sandbox_get`` copies one back. The tools run in the
 agent's runtime and reach the sandbox only through the host's relay
 (``{host}/sandbox``), with the agent's token and the current request id; the
-host picks the user from the request.
+host picks the policy from the request.
 
 ``sandbox_put`` and ``sandbox_get`` exist only for an agent whose spec declares
 file roots (``AgentSpec.sandbox_file_roots()``), and they read and write only
@@ -158,7 +158,7 @@ def check_sandbox_env(env: Mapping[str, SandboxVariable]) -> dict[str, SandboxVa
 
 
 class RunCodeTool:
-    """Python, JavaScript or shell in the request user's sandbox."""
+    """Python, JavaScript or shell in the request policy's sandbox."""
 
     def __init__(
         self,
@@ -174,14 +174,14 @@ class RunCodeTool:
         folder = f"{WORKSPACES_ROOT}/{agent_id}"
         self.name = "run_code"
         self.description = (
-            "Run code on your computer: a Linux sandbox that belongs to the user you "
-            "are working for. Use it to analyse data, build files, pages and charts, "
+            "Run code on your computer: a Linux sandbox that keeps its files across "
+            "your conversations. Use it to analyse data, build files, pages and charts, "
             "keep databases, and run servers.\n"
             "\n"
             "How it runs:\n"
             f"- Each call writes `code` to a file and runs it in your folder, {folder}, "
-            "as a new process. Files in the folder persist across calls and requests "
-            "for this user; variables and shell state do not, so keep data between "
+            "as a new process. Files in the folder persist across calls and "
+            "requests; variables and shell state do not, so keep data between "
             "calls in files.\n"
             "- language `python` runs python3, `javascript` runs node, `shell` runs bash, "
             "which stops at the first command that fails.\n"

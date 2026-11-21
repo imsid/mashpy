@@ -227,7 +227,7 @@ class PostgresStore(MemoryStore):
         workflow_run_id: Optional[str] = None,
         task_id: Optional[str] = None,
         replayable: bool = True,
-        user_id: Optional[str] = None,
+        app_id: Optional[str] = None,
     ) -> str:
         timestamp = time.time()
         metadata_json = json.dumps(metadata or {}, default=str)
@@ -254,7 +254,7 @@ class PostgresStore(MemoryStore):
                             replayable,
                             metadata,
                             created_at,
-                            user_id
+                            app_id
                         )
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
                         ON CONFLICT (trace_id) DO NOTHING
@@ -288,7 +288,7 @@ class PostgresStore(MemoryStore):
                             bool(replayable),
                             metadata_json,
                             timestamp,
-                            user_id,
+                            app_id,
                         ),
                     )
                     if signals:
@@ -471,16 +471,16 @@ class PostgresStore(MemoryStore):
             )
         return replay
 
-    _USER_TURNS_FILTER = """
-        user_id = %s
+    _APP_TURNS_FILTER = """
+        app_id = %s
         AND workflow_id IS NULL
         AND NOT (metadata ? 'subagent_id')
         AND created_at > %s
     """
 
-    async def list_user_turns(
+    async def list_app_turns(
         self,
-        user_id: str,
+        app_id: str,
         *,
         after: float = 0.0,
         limit: int = 200,
@@ -489,12 +489,12 @@ class PostgresStore(MemoryStore):
         sql = f"""
             SELECT trace_id, session_id, agent_id, user_message, agent_response, created_at
             FROM memory_turns
-            WHERE {self._USER_TURNS_FILTER}
+            WHERE {self._APP_TURNS_FILTER}
             ORDER BY created_at ASC, trace_id ASC
             LIMIT %s
         """
         async with self._pool.connection() as conn:
-            rows = await self._fetchall(conn, sql, [user_id, float(after), int(limit)])
+            rows = await self._fetchall(conn, sql, [app_id, float(after), int(limit)])
         return [
             {
                 "trace_id": str(row["trace_id"]),
@@ -507,11 +507,11 @@ class PostgresStore(MemoryStore):
             for row in rows
         ]
 
-    async def count_user_turns(self, user_id: str, *, after: float = 0.0) -> int:
+    async def count_app_turns(self, app_id: str, *, after: float = 0.0) -> int:
         await self.open()
-        sql = f"SELECT COUNT(*) AS n FROM memory_turns WHERE {self._USER_TURNS_FILTER}"
+        sql = f"SELECT COUNT(*) AS n FROM memory_turns WHERE {self._APP_TURNS_FILTER}"
         async with self._pool.connection() as conn:
-            rows = await self._fetchall(conn, sql, [user_id, float(after)])
+            rows = await self._fetchall(conn, sql, [app_id, float(after)])
         return int(rows[0]["n"]) if rows else 0
 
     async def list_workflow_turns(
@@ -633,20 +633,20 @@ class PostgresStore(MemoryStore):
         ]
 
     async def list_sessions(
-        self, agent_id: str, *, limit: int, user_id: Optional[str] = None
+        self, agent_id: str, *, limit: int, app_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         params: List[Any] = [agent_id]
-        user_filter = ""
-        if user_id is not None:
-            # A session belongs to the user of its turns.
-            user_filter = """
+        app_filter = ""
+        if app_id is not None:
+            # A session of the app: one with a turn of the app.
+            app_filter = """
                   AND EXISTS (
                       SELECT 1 FROM memory_turns AS u
                       WHERE u.session_id = s.session_id
                         AND u.agent_id = s.agent_id
-                        AND u.user_id = %s
+                        AND u.app_id = %s
                   )"""
-            params.append(user_id)
+            params.append(app_id)
         params.append(int(limit))
         await self.open()
         async with self._pool.connection() as conn:
@@ -663,7 +663,7 @@ class PostgresStore(MemoryStore):
                            LIMIT 1
                        ) AS first_message
                 FROM memory_session AS s
-                WHERE s.agent_id = %s{user_filter}
+                WHERE s.agent_id = %s{app_filter}
                 ORDER BY s.last_activity_at DESC, s.session_id ASC
                 LIMIT %s
                 """,
@@ -749,7 +749,7 @@ class PostgresStore(MemoryStore):
         self,
         pairs: List[Dict[str, str]],
         agent_id: str,
-        user_id: Optional[str] = None,
+        app_id: Optional[str] = None,
     ) -> Optional[List[Dict[str, Any]]]:
         await self.open()
         if not pairs:
@@ -771,10 +771,10 @@ class PostgresStore(MemoryStore):
         for session_id, trace_id, idx in requested_rows:
             params.extend([session_id, trace_id, idx])
         params.append(agent_id)
-        user_filter = ""
-        if user_id is not None:
-            user_filter = "AND t.user_id = %s"
-            params.append(user_id)
+        app_filter = ""
+        if app_id is not None:
+            app_filter = "AND t.app_id = %s"
+            params.append(app_id)
         sql = f"""
             WITH requested(session_id, trace_id, ord) AS (
                 VALUES {values_sql}
@@ -789,7 +789,7 @@ class PostgresStore(MemoryStore):
             JOIN memory_turns AS t
               ON t.session_id = r.session_id
              AND t.trace_id = r.trace_id
-            WHERE t.agent_id = %s {user_filter}
+            WHERE t.agent_id = %s {app_filter}
             ORDER BY r.ord ASC
         """
 
@@ -822,7 +822,7 @@ class PostgresStore(MemoryStore):
         limit: int,
         session_id: Optional[str] = None,
         agent_id: Optional[str] = None,
-        user_id: Optional[str] = None,
+        app_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         normalized_limit = max(0, int(limit))
         if normalized_limit <= 0:
@@ -844,9 +844,9 @@ class PostgresStore(MemoryStore):
         if agent_id is not None:
             filters.append("agent_id = %s")
             params.append(agent_id)
-        if user_id is not None:
-            filters.append("user_id = %s")
-            params.append(user_id)
+        if app_id is not None:
+            filters.append("app_id = %s")
+            params.append(app_id)
 
         sql = f"""
             SELECT
@@ -883,9 +883,9 @@ class PostgresStore(MemoryStore):
         limit: int,
         session_id: Optional[str] = None,
         agent_id: Optional[str] = None,
-        user_id: Optional[str] = None,
+        app_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        del column, query_term, query_embedding, limit, session_id, agent_id, user_id
+        del column, query_term, query_embedding, limit, session_id, agent_id, app_id
         raise NotImplementedError("PostgresStore.semantic_search is not implemented yet")
 
     @staticmethod

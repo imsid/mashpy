@@ -2,8 +2,9 @@
 
 The relay is for agent processes. Each call carries the calling agent's token
 and the id of the request it serves. The host looks up the request, checks it
-belongs to the caller, and acts in the browser of the user the request acts
-for, on the sites the caller's spec lists. The agent names neither.
+belongs to the caller, and acts in the browser of the policy the request runs
+under, on the sites both the caller's spec and the policy list. The agent
+names neither.
 
 - ``POST /browser/call`` takes ``{request_id, tool, arguments}`` and runs one
   relayed tool in the request's tab.
@@ -12,16 +13,16 @@ for, on the sites the caller's spec lists. The agent names neither.
 - ``POST /browser/upload`` takes ``{request_id, target, element, path}`` and
   gives a file from that folder to the file chooser ``target`` opens.
 - ``POST /browser/handoff`` takes ``{request_id}`` and returns a live-view link
-  for the request's user, ``{url, expires_at, timeout_seconds}``;
+  for the request's policy, ``{url, expires_at, timeout_seconds}``;
   ``POST /browser/handoff/end`` revokes it and returns the page.
 
 The live view is for users: ``/s/<view token>/browser/`` serves noVNC's client
-and bridges its websocket to the user's browser. The view token names the
-user and the request and lapses when the handoff ends or expires; a view
+and bridges its websocket to the policy's browser. The view token names the
+policy and the request and lapses when the handoff ends or expires; a view
 connected then is closed.
 
-Apps read and clear a user's signed-in sites under
-``/api/v1/browser/users/{user_id}`` (``build_browser_api_router``).
+Apps read and clear a policy's signed-in sites under
+``/api/v1/browser/policies/{policy_id}`` (``build_browser_api_router``).
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from mash.browser.catalog import RELAYED_TOOLS
 from mash.browser.manager import BrowserCapacityError
 from mash.browser.provider import BrowserUnavailableError
-from mash.browser.sites import check_sites
+from mash.browser.sites import check_sites, request_sites
 from mash.runtime.host.tokens import agent_for_token
 from mash.sandbox.containers import UnsafePathError
 from mash.sandbox.daemon import resolve_workspace_path
@@ -58,12 +59,14 @@ _SANDBOX_ERRORS = (SandboxCapacityError, SandboxUnavailableError, UnsafePathErro
 class _Caller:
     state: AppRuntimeState
     agent_id: str
-    user_id: str
+    policy_id: str
     sites: list[str]
+    # Whether the policy gives requests a sandbox, which save and upload use.
+    sandbox: bool
 
 
 async def _caller(request: Request, request_id: object) -> _Caller | JSONResponse:
-    """Who is calling, for which user and sites; or the error response."""
+    """Who is calling, under which policy and sites; or the error response."""
     state = state_from_request(request)
     if not state.host_secret:
         return h2a_error(503, "BROWSER_UNAVAILABLE", "host secret is not configured")
@@ -86,9 +89,23 @@ async def _caller(request: Request, request_id: object) -> _Caller | JSONRespons
         return h2a_error(404, "REQUEST_NOT_FOUND", "Request not found")
     if identity.agent_id != caller:
         return h2a_error(403, "FORBIDDEN", f"request does not belong to agent '{caller}'")
-    if identity.user_id is None:
-        return h2a_error(403, "FORBIDDEN", "request acts for no user")
-    return _Caller(state=state, agent_id=caller, user_id=identity.user_id, sites=sites)
+    if identity.policy_id is None:
+        return h2a_error(403, "FORBIDDEN", "request runs under no policy")
+    # The agent's sites, narrowed by the policy the request runs under.
+    sites = request_sites(sites, identity.policy)
+    if not sites:
+        return h2a_error(
+            403,
+            "FORBIDDEN",
+            f"policy '{identity.policy_id}' allows none of the sites agent '{caller}' lists",
+        )
+    return _Caller(
+        state=state,
+        agent_id=caller,
+        policy_id=identity.policy_id,
+        sites=sites,
+        sandbox=bool((identity.policy or {}).get("sandbox", True)),
+    )
 
 
 async def _body(request: Request) -> dict[str, Any] | JSONResponse:
@@ -136,7 +153,7 @@ def build_browser_router() -> APIRouter:
             return h2a_error(400, "INVALID_REQUEST", "arguments must be an object")
         try:
             result = await caller.state.pool.get_browsers().call(
-                caller.user_id,
+                caller.policy_id,
                 request_id=body["request_id"],
                 tool=tool,
                 arguments=arguments,
@@ -157,6 +174,8 @@ def build_browser_router() -> APIRouter:
         sandboxes = caller.state.pool.get_sandboxes()
         if sandboxes is None:
             return _result("Saving downloads needs the sandbox, and this host has none.", is_error=True)
+        if not caller.sandbox:
+            return _result("Saving downloads needs the sandbox, and this request has none.", is_error=True)
         download_id = body.get("download_id")
         path = resolve_workspace_path(str(body.get("path") or ""))
         if not isinstance(download_id, str) or not download_id.strip():
@@ -164,7 +183,7 @@ def build_browser_router() -> APIRouter:
         if path is None:
             return _result("path must be relative and stay in your folder", is_error=True)
         try:
-            response = await caller.state.pool.get_browsers().download(caller.user_id, download_id)
+            response = await caller.state.pool.get_browsers().download(caller.policy_id, download_id)
         except _BROWSER_ERRORS as exc:
             return _browser_error(exc)
         if response.status_code != 200:
@@ -174,7 +193,7 @@ def build_browser_router() -> APIRouter:
             )
         try:
             written = await sandboxes.write_file(
-                caller.user_id, agent_id=caller.agent_id, path=path, data=response.content
+                caller.policy_id, agent_id=caller.agent_id, path=path, data=response.content
             )
         except _SANDBOX_ERRORS as exc:
             return _result(f"Sandbox error: {exc}", is_error=True)
@@ -194,6 +213,8 @@ def build_browser_router() -> APIRouter:
         sandboxes = caller.state.pool.get_sandboxes()
         if sandboxes is None:
             return _result("Uploads come from the sandbox, and this host has none.", is_error=True)
+        if not caller.sandbox:
+            return _result("Uploads come from the sandbox, and this request has none.", is_error=True)
         path = resolve_workspace_path(str(body.get("path") or ""))
         target = body.get("target")
         if path is None:
@@ -201,14 +222,14 @@ def build_browser_router() -> APIRouter:
         if not isinstance(target, str) or not target.strip():
             return _result("target is required", is_error=True)
         try:
-            read = await sandboxes.read_file(caller.user_id, agent_id=caller.agent_id, path=path)
+            read = await sandboxes.read_file(caller.policy_id, agent_id=caller.agent_id, path=path)
         except _SANDBOX_ERRORS as exc:
             return _result(f"Sandbox error: {exc}", is_error=True)
         if read.status_code != 200:
             return _result(f"No file at {path} in your folder.", is_error=True)
         try:
             result = await caller.state.pool.get_browsers().upload(
-                caller.user_id,
+                caller.policy_id,
                 request_id=body["request_id"],
                 name=posixpath.basename(path),
                 data=read.content,
@@ -229,10 +250,10 @@ def build_browser_router() -> APIRouter:
         if isinstance(caller, JSONResponse):
             return caller
         browsers = caller.state.pool.get_browsers()
-        handoff = browsers.start_handoff(caller.user_id, body["request_id"])
+        handoff = browsers.start_handoff(caller.policy_id, body["request_id"])
         # Best effort: the view shows whatever tab is in front.
         with contextlib.suppress(*_BROWSER_ERRORS):
-            await browsers.front(caller.user_id, body["request_id"])
+            await browsers.front(caller.policy_id, body["request_id"])
         return JSONResponse(
             {
                 "url": view_url(caller.state.public_url, handoff.token),
@@ -253,7 +274,7 @@ def build_browser_router() -> APIRouter:
         browsers.end_handoff(body["request_id"])
         try:
             result = await browsers.call(
-                caller.user_id,
+                caller.policy_id,
                 request_id=body["request_id"],
                 tool="browser_snapshot",
                 arguments={},
@@ -293,7 +314,7 @@ def build_browser_link_router() -> APIRouter:
             return _view_error()
         try:
             response = await state_from_request(request).pool.get_browsers().view(
-                handoff.user_id, path=path, query=request.url.query
+                handoff.policy_id, path=path, query=request.url.query
             )
         except UnsafePathError:
             return Response(b"no such file", status_code=404, media_type="text/plain")
@@ -319,7 +340,7 @@ def build_browser_link_router() -> APIRouter:
             return
         browsers = state_from_request(websocket).pool.get_browsers()
         try:
-            endpoint = await browsers.endpoint(handoff.user_id)
+            endpoint = await browsers.endpoint(handoff.policy_id)
         except _BROWSER_ERRORS:
             await websocket.close(code=1011)
             return
@@ -344,7 +365,7 @@ def build_browser_link_router() -> APIRouter:
                 if message["type"] == "websocket.disconnect":
                     return
                 await upstream.send(message.get("bytes") or (message.get("text") or "").encode())
-                browsers.touch(handoff.user_id)
+                browsers.touch(handoff.policy_id)
 
         async def from_browser() -> None:
             async for message in upstream:
@@ -371,8 +392,8 @@ def build_browser_link_router() -> APIRouter:
 
 
 def build_browser_api_router() -> APIRouter:
-    """Apps' view of users' browsers: the sites they are signed in to."""
-    router = APIRouter(prefix="/browser/users/{user_id}")
+    """Apps' view of policies' browsers: the sites they are signed in to."""
+    router = APIRouter(prefix="/browser/policies/{policy_id}")
 
     def _browsers(request: Request):
         browsers = state_from_request(request).pool.get_browsers()
@@ -381,30 +402,30 @@ def build_browser_api_router() -> APIRouter:
         return browsers
 
     @router.get("/sites")
-    async def list_sites(request: Request, user_id: str) -> dict[str, Any]:
+    async def list_sites(request: Request, policy_id: str) -> dict[str, Any]:
         try:
-            sites = await _browsers(request).sites(user_id)
+            sites = await _browsers(request).sites(policy_id)
         except _BROWSER_ERRORS as exc:
             raise APIError(code="BROWSER_UNAVAILABLE", message=str(exc), status_code=503) from exc
-        return success({"user_id": user_id, "sites": sites})
+        return success({"policy_id": policy_id, "sites": sites})
 
     @router.delete("/sites/{domain}")
-    async def clear_site(request: Request, user_id: str, domain: str) -> dict[str, Any]:
+    async def clear_site(request: Request, policy_id: str, domain: str) -> dict[str, Any]:
         try:
-            cleared = await _browsers(request).clear_site(user_id, domain)
+            cleared = await _browsers(request).clear_site(policy_id, domain)
         except UnsafePathError as exc:
             raise APIError(code="INVALID_REQUEST", message=str(exc), status_code=400) from exc
         except _BROWSER_ERRORS as exc:
             raise APIError(code="BROWSER_UNAVAILABLE", message=str(exc), status_code=503) from exc
-        return success({"user_id": user_id, **cleared})
+        return success({"policy_id": policy_id, **cleared})
 
     @router.delete("")
-    async def delete_profile(request: Request, user_id: str) -> dict[str, Any]:
+    async def delete_profile(request: Request, policy_id: str) -> dict[str, Any]:
         try:
-            await _browsers(request).delete_profile(user_id)
+            await _browsers(request).delete_profile(policy_id)
         except _BROWSER_ERRORS as exc:
             raise APIError(code="BROWSER_UNAVAILABLE", message=str(exc), status_code=503) from exc
-        return success({"user_id": user_id, "deleted": True})
+        return success({"policy_id": policy_id, "deleted": True})
 
     return router
 

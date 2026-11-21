@@ -111,7 +111,7 @@ class RequestStartStoreTests(unittest.IsolatedAsyncioTestCase):
             agent_id=agent_id,
             payload={
                 "message": message,
-                "request_metadata": {"user_id": "u-1"},
+                "request_metadata": {"app_id": "app-1", "policy_id": "p-1"},
                 "started_by": started_by,
                 "parent_request_id": parent_request_id,
             },
@@ -181,7 +181,7 @@ class RequestStartStoreTests(unittest.IsolatedAsyncioTestCase):
             {
                 "request_id": newer,
                 "agent_id": "start-agent",
-                "user_id": "u-1",
+                "app_id": "app-1", "policy_id": "p-1",
                 "session_id": self.session_id,
                 "message": "newer",
                 "status": "running",

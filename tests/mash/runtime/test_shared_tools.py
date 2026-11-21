@@ -18,6 +18,7 @@ from mash.runtime.spec import AgentSpec
 from mash.skills.registry import SkillRegistry
 from mash.tools.base import ToolResult
 from mash.tools.registry import ToolRegistry
+from mash.testing.runtime_fixtures import TEST_IDENTITY
 
 
 class _CountingTool:
@@ -109,7 +110,7 @@ class _Spec(AgentSpec):
 class SharedToolsTests(unittest.IsolatedAsyncioTestCase):
     async def _run(self, runtime: AgentRuntime, session_id: str) -> str:
         accepted = await runtime.submit_request(
-            message="go", session_id=session_id, user_id="u-1"
+            message="go", session_id=session_id, **TEST_IDENTITY
         )
         cursor, done, events = 0, False, []
         while not done:
@@ -155,7 +156,7 @@ class SharedToolsTests(unittest.IsolatedAsyncioTestCase):
                     memory_store=memory_store,
                 )
                 try:
-                    turn = runtime.build_turn_agent(session_id="s-1", trace_id="t-1", user_id="u-1")
+                    turn = runtime.build_turn_agent(session_id="s-1", trace_id="t-1", app_id="app-1")
                     self.assertIs(turn.tools.get("count"), spec.tool)
                     self.assertIs(turn.llm, runtime.agent.llm)
                     self.assertIn("search_conversations", turn.tools)

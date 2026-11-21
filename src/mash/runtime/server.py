@@ -14,15 +14,17 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from .engine import InteractionClosedError, InvalidInteractionResponseError
-from .errors import RequestStaleError, SessionUserMismatchError
+from .errors import RequestStaleError, SessionPolicyMismatchError
 from .events import PostgresRuntimeStore
 from ..otel.context import normalize_trace_context
 from .requests import (
     RequestIdConflictError,
     parent_request_metadata,
+    validate_app_id,
+    validate_policy_snapshot,
     validate_request_id,
-    validate_user_id,
 )
+from ..policies import validate_policy_id
 from .service import AgentRuntime
 from .structured_output import serialize_structured_output
 
@@ -236,11 +238,16 @@ class AgentServer:
             except ValueError as exc:
                 return _json_error(400, "INVALID_PARENT", str(exc))
 
-        user_id = payload.get("user_id")
-        if user_id is None:
-            return _json_error(400, "INVALID_REQUEST", "user_id is required")
+        app_id = payload.get("app_id")
+        policy_id = payload.get("policy_id")
+        policy = payload.get("policy")
+        for name, value in (("app_id", app_id), ("policy_id", policy_id), ("policy", policy)):
+            if value is None:
+                return _json_error(400, "INVALID_REQUEST", f"{name} is required")
         try:
-            validate_user_id(user_id)
+            validate_app_id(app_id)
+            validate_policy_id(policy_id)
+            validate_policy_snapshot(policy)
         except ValueError as exc:
             return _json_error(400, "INVALID_REQUEST", str(exc))
 
@@ -272,14 +279,16 @@ class AgentServer:
                 metadata=metadata,
                 request_id=request_id,
                 parent=parent,
-                user_id=user_id,
+                app_id=app_id,
+                policy_id=policy_id,
+                policy=policy,
                 traceparent=traceparent,
                 tracestate=tracestate,
             )
         except RequestIdConflictError as exc:
             return _json_error(409, "REQUEST_ID_CONFLICT", str(exc))
-        except SessionUserMismatchError as exc:
-            return _json_error(409, "SESSION_USER_MISMATCH", str(exc))
+        except SessionPolicyMismatchError as exc:
+            return _json_error(409, "SESSION_POLICY_MISMATCH", str(exc))
         return JSONResponse(accepted, status_code=202)
 
     async def compact_session(self, request: Request) -> Response:
@@ -391,9 +400,9 @@ class AgentServer:
             result = await operation(request_id)
         except RequestStaleError as exc:
             return _json_error(409, "REQUEST_STALE", str(exc))
-        except SessionUserMismatchError as exc:
-            # A rerun submits again, onto a session that moved to another user.
-            return _json_error(409, "SESSION_USER_MISMATCH", str(exc))
+        except SessionPolicyMismatchError as exc:
+            # A rerun submits again, onto a session that moved to another policy.
+            return _json_error(409, "SESSION_POLICY_MISMATCH", str(exc))
         except KeyError:
             return _json_error(404, "REQUEST_NOT_FOUND", "Request not found")
         return JSONResponse(result)

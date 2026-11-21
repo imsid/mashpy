@@ -399,7 +399,9 @@ def _build_execute_experiment_rows(context: MasherRuntimeContext):
                     workflow_run_id=ctx.run_id,
                     task_id=f"execute:{row.row_id}",
                     session_id=row.session_id or f"eval:{ctx.run_id}:{row.row_id}",
-                    user_id=ctx.user_id,
+                    app_id=ctx.app_id,
+                    policy_id=ctx.policy_id,
+                    policy=ctx.policy,
                     host_snapshot=host_snapshot,
                 )
             except Exception as exc:  # noqa: BLE001 - row failures are isolated
@@ -482,7 +484,9 @@ def _build_judge_experiment_rows(context: MasherRuntimeContext):
                     workflow_run_id=ctx.run_id,
                     task_id=f"judge:{row.row_id}",
                     session_id=row.session_id or f"eval:{ctx.run_id}:{row.row_id}",
-                    user_id=ctx.user_id,
+                    app_id=ctx.app_id,
+                    policy_id=ctx.policy_id,
+                    policy=ctx.policy,
                 )
             except Exception as exc:  # noqa: BLE001 - row failures are isolated
                 await finish(active, None, _error_text(exc))

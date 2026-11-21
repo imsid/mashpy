@@ -287,6 +287,11 @@ class RequestRun:
         timeout_seconds: int,
         extra: dict[str, Any] | None,
     ) -> dict[str, Any]:
+        # The policy caps every interaction's deadline. The cap is read here,
+        # inside the checkpointed step, so a recovered request keeps it.
+        wait_max = (self.request_metadata.get("policy") or {}).get("wait_max_seconds")
+        if wait_max is not None:
+            timeout_seconds = min(int(timeout_seconds), int(wait_max))
         await emit_interaction_create(
             self.runtime,
             self.request_id,

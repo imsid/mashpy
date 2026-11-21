@@ -205,8 +205,9 @@ def register(shell) -> None:
                 workflow_id,
                 dedup_key=dedup_key,
                 workflow_input=workflow_input,
-                # A workflow of code steps runs without a user.
-                user_id=ctx.user_id or None,
+                # A workflow of code steps runs without an app or a policy.
+                app_id=ctx.app_id or None,
+                policy_id=ctx.policy_id or None,
             )
             ctx.renderer.info(f"Workflow: {run.get('workflow_id') or workflow_id}")
             run_id = str(run.get("run_id") or "")
@@ -326,16 +327,16 @@ def register(shell) -> None:
         try:
             if not args:
                 try:
-                    user = ctx.client.get_cortex_user(ctx.user_id)
+                    cortex = ctx.client.get_cortex_app(ctx.app_id)
                 except MashHostClientError as exc:
                     if exc.code != "CORTEX_NOT_FOUND":
                         raise
-                    ctx.renderer.warn("Nothing is remembered about you yet.")
+                    ctx.renderer.warn("Nothing is remembered in this app yet.")
                     return
-                profile = str(user.get("profile") or "").strip()
+                profile = str(cortex.get("profile") or "").strip()
                 if profile:
                     ctx.renderer.markdown(profile)
-                entries = ctx.client.list_cortex_entries(ctx.user_id)
+                entries = ctx.client.list_cortex_entries(ctx.app_id)
                 if entries:
                     ctx.renderer.table(
                         ["ID", "Topic", "Remembered", "From"],
@@ -344,7 +345,7 @@ def register(shell) -> None:
                                 escape(str(entry.get("entry_id") or "")[:8]),
                                 escape(str(entry.get("topic") or "")),
                                 escape(clip(str(entry.get("content") or ""), 70)),
-                                "you"
+                                "the app"
                                 if entry.get("origin") == "app"
                                 else "conversations",
                             ]
@@ -352,7 +353,7 @@ def register(shell) -> None:
                         ],
                     )
                 elif not profile:
-                    ctx.renderer.warn("Nothing is remembered about you yet.")
+                    ctx.renderer.warn("Nothing is remembered in this app yet.")
                 return
             if args[0] == "add" and len(args) > 1:
                 text = " ".join(args[1:]).strip()
@@ -361,14 +362,14 @@ def register(shell) -> None:
                 if not content.strip() or len(topic) > 60:
                     topic, content = "note", text
                 entry = ctx.client.create_cortex_entry(
-                    ctx.user_id, topic=topic.strip(), content=content.strip()
+                    ctx.app_id, topic=topic.strip(), content=content.strip()
                 )
                 ctx.renderer.info(
                     f"Remembered ({escape(str(entry.get('entry_id') or '')[:8])})."
                 )
                 return
             if args[0] == "forget" and len(args) == 2:
-                entries = ctx.client.list_cortex_entries(ctx.user_id, limit=200)
+                entries = ctx.client.list_cortex_entries(ctx.app_id, limit=200)
                 matches = [
                     entry
                     for entry in entries
@@ -381,7 +382,7 @@ def register(shell) -> None:
                         else f"'{args[1]}' matches {len(matches)} entries; type more of the id."
                     )
                     return
-                ctx.client.delete_cortex_entry(ctx.user_id, str(matches[0]["entry_id"]))
+                ctx.client.delete_cortex_entry(ctx.app_id, str(matches[0]["entry_id"]))
                 ctx.renderer.info(
                     f"Forgot: {escape(clip(str(matches[0].get('content') or ''), 70))}"
                 )
@@ -396,9 +397,9 @@ def register(shell) -> None:
 
     def browser_command(ctx, args: list[str]) -> None:
         if not args:
-            sites = ctx.client.list_browser_sites(ctx.user_id)
+            sites = ctx.client.list_browser_sites(ctx.policy_id)
             if not sites:
-                ctx.renderer.warn("Your browser is not signed in to any site.")
+                ctx.renderer.warn("The policy's browser is not signed in to any site.")
                 return
             ctx.renderer.table(
                 ["Site", "Cookies"],
@@ -412,7 +413,7 @@ def register(shell) -> None:
             )
             return
         if args[0] == "forget" and len(args) == 2:
-            cleared = ctx.client.clear_browser_site(ctx.user_id, args[1])
+            cleared = ctx.client.clear_browser_site(ctx.policy_id, args[1])
             count = int(cleared.get("cookies") or 0)
             ctx.renderer.info(
                 f"Signed out of {escape(args[1])} "
@@ -444,13 +445,13 @@ def register(shell) -> None:
     )
     add(
         "memory",
-        "What is remembered about you: /memory | add <text> | forget <id>",
+        "What this app remembers: /memory | add <text> | forget <id>",
         memory_command,
         GROUP_DEPLOYMENT,
     )
     add(
         "browser",
-        "Sites your browser is signed in to: /browser | forget <site>",
+        "Sites the policy's browser is signed in to: /browser | forget <site>",
         browser_command,
         GROUP_DEPLOYMENT,
     )

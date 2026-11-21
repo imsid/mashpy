@@ -28,6 +28,6 @@ def test_the_agents_uid_comes_from_the_map_on_the_volume() -> None:
 
 
 def test_a_shell_needs_an_agent_or_root(capsys) -> None:
-    code = _run_shell(Namespace(user_id="u-1", agent=None, root=False, namespace=None))
+    code = _run_shell(Namespace(policy_id="p-1", agent=None, root=False, namespace=None))
     assert code == 1
     assert "--agent" in capsys.readouterr().out + capsys.readouterr().err

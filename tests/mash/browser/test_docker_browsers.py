@@ -45,13 +45,13 @@ class DockerBrowserProviderTests(unittest.IsolatedAsyncioTestCase):
         kwargs.update(overrides)
         return DockerBrowserProvider(**kwargs)
 
-    async def test_the_users_browser_gets_its_own_volume_network_and_token(self) -> None:
-        endpoint = await self._provider().ensure("u@acme.io")
+    async def test_the_policys_browser_gets_its_own_volume_network_and_token(self) -> None:
+        endpoint = await self._provider().ensure("acme-ws")
 
-        name = f"mash-browser-{sandbox_key('u@acme.io')}"
-        self.assertEqual(browser_name("u@acme.io", "mash"), name)
+        name = f"mash-browser-{sandbox_key('acme-ws')}"
+        self.assertEqual(browser_name("acme-ws", "mash"), name)
         self.assertEqual(
-            self.daemon.volumes, {name: {"mash.browser.user": "u@acme.io", "mash.namespace": "mash"}}
+            self.daemon.volumes, {name: {"mash.browser.policy": "acme-ws", "mash.namespace": "mash"}}
         )
         self.assertIn("mash-browsers", self.daemon.networks)
         self.assertNotIn("mash-sandboxes", self.daemon.networks)
@@ -67,22 +67,22 @@ class DockerBrowserProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(create["HostConfig"]["ShmSize"], 512 * 1024 * 1024)
         self.assertEqual(create["NetworkingConfig"], {"EndpointsConfig": {"mash-browsers": {}}})
         # Only its token: nothing from the host's environment.
-        self.assertEqual(create["Env"], [f"MASH_BROWSER_TOKEN={derive_browser_token('secret', 'u@acme.io')}"])
-        self.assertEqual(endpoint.token, derive_browser_token("secret", "u@acme.io"))
+        self.assertEqual(create["Env"], [f"MASH_BROWSER_TOKEN={derive_browser_token('secret', 'acme-ws')}"])
+        self.assertEqual(endpoint.token, derive_browser_token("secret", "acme-ws"))
 
     async def test_a_host_in_a_container_reaches_the_daemon_by_name(self) -> None:
         self.daemon.add_container("myhost", running=True, config={"Image": "host", "Labels": {}})
         with patch("mash.browser.provider.socket.gethostname", return_value="myhost"):
-            endpoint = await self._provider(in_container=True).ensure("u-1")
+            endpoint = await self._provider(in_container=True).ensure("p-1")
 
-        self.assertEqual(endpoint.base_url, f"http://{browser_name('u-1', 'mash')}:9000")
+        self.assertEqual(endpoint.base_url, f"http://{browser_name('p-1', 'mash')}:9000")
         self.assertIn("myhost", self.daemon.attached("mash-browsers"))
 
     async def test_delete_removes_the_container_and_the_profile_volume(self) -> None:
         provider = self._provider()
-        await provider.ensure("u-1")
+        await provider.ensure("p-1")
 
-        await provider.delete("u-1")
+        await provider.delete("p-1")
 
         self.assertEqual(self.daemon.containers, {})
         self.assertEqual(self.daemon.volumes, {})

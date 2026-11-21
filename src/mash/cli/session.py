@@ -93,7 +93,8 @@ class Target:
     api_base_url: str
     agent_id: str
     session_id: str
-    user_id: str
+    app_id: str
+    policy_id: str
     host_id: str | None = None
     # The session has earlier turns: the REPL starts by showing the last two.
     resumed: bool = False
@@ -200,7 +201,8 @@ class Repl:
             api_base_url=target.api_base_url,
             agent_id=target.agent_id,
             session_id=target.session_id,
-            user_id=target.user_id,
+            app_id=target.app_id,
+            policy_id=target.policy_id,
             client=client,
             renderer=self.renderer,
             session_ids={target.agent_id: target.session_id},
@@ -481,7 +483,8 @@ class Repl:
                 ctx.host_id,
                 message=message,
                 session_id=ctx.session_id,
-                user_id=ctx.user_id,
+                app_id=ctx.app_id,
+                policy_id=ctx.policy_id,
             )
             request_id = str(accepted.get("request_id") or "")
             accepted_agent_id = str(accepted.get("agent_id") or "").strip()
@@ -492,7 +495,8 @@ class Repl:
                 ctx.agent_id,
                 message=message,
                 session_id=ctx.session_id,
-                user_id=ctx.user_id,
+                app_id=ctx.app_id,
+                policy_id=ctx.policy_id,
             )
         ctx.last_request_id = request_id or None
         return request_id
@@ -1145,7 +1149,7 @@ class Repl:
         target = f"host {ctx.host_id}" if ctx.host_id else f"agent {ctx.agent_id}"
         title = f" · {escape(clip(self._title, 40))}" if self._title else ""
         self.renderer.muted(
-            f"{self.app_name} · {ctx.user_id} · {target}{title} · /help for commands"
+            f"{self.app_name} · {ctx.app_id} · {target}{title} · /help for commands"
         )
 
     # --- sessions -------------------------------------------------------------
@@ -1192,11 +1196,11 @@ class Repl:
         return True
 
     async def pick_session(self) -> None:
-        """``/resume``: choose one of the user's sessions and go on in it."""
+        """``/resume``: choose one of the app's sessions and go on in it."""
         ctx = self.context
         sessions = await asyncio.to_thread(
             lambda: self.client.list_sessions(
-                ctx.agent_id, user_id=ctx.user_id, limit=PICKER_LIMIT
+                ctx.agent_id, app_id=ctx.app_id, limit=PICKER_LIMIT
             )
         )
         if not sessions:

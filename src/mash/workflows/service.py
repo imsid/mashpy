@@ -10,7 +10,8 @@ from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from pydantic import ValidationError
 
-from mash.runtime.requests import validate_user_id
+from mash.policies import validate_policy_id
+from mash.runtime.requests import validate_app_id, validate_policy_snapshot
 
 from .engine import WorkflowRunner
 from .registry import WorkflowRegistry
@@ -46,7 +47,8 @@ class WorkflowRun:
     error: str | None = None
     workflow_input: dict[str, Any] | None = None
     session_id: str | None = None
-    user_id: str | None = None
+    app_id: str | None = None
+    policy_id: str | None = None
     result: dict[str, Any] | None = None
     steps: list[dict[str, Any]] | None = None
 
@@ -77,13 +79,14 @@ class WorkflowInputValidationError(ValueError):
         super().__init__(f"workflow '{workflow_id}' input validation failed")
 
 
-class WorkflowUserRequiredError(ValueError):
-    """Raised when a run of a workflow that uses agents names no ``user_id``."""
+class WorkflowIdentityRequiredError(ValueError):
+    """Raised when a run of a workflow that uses agents names no app or policy."""
 
     def __init__(self, workflow_id: str) -> None:
         self.workflow_id = workflow_id
         super().__init__(
-            f"workflow '{workflow_id}' submits agent requests, so a run requires a user_id"
+            f"workflow '{workflow_id}' submits agent requests, so a run requires "
+            "an app_id and a policy_id"
         )
 
 
@@ -209,9 +212,17 @@ class WorkflowService:
         dedup_key: str | None = None,
         workflow_input: dict[str, Any] | None = None,
         session_id: str | None = None,
-        user_id: str | None = None,
+        app_id: str | None = None,
+        policy_id: str | None = None,
+        policy: dict[str, Any] | None = None,
     ) -> WorkflowRun:
-        """Start one run. ``user_id`` is required when the workflow uses agents."""
+        """Start one run for an app under a policy.
+
+        Both are required when the workflow uses agents. The run snapshots the
+        policy now, or takes ``policy`` as its snapshot (a run the companion
+        starts takes its request's), and keeps it on resume. Raises
+        ``PolicyNotFoundError`` for an unknown policy.
+        """
         resolved_workflow_id = str(workflow_id or "").strip()
         if not resolved_workflow_id:
             raise ValueError("workflow_id is required")
@@ -219,10 +230,12 @@ class WorkflowService:
         normalized_workflow_input = _normalize_workflow_input(workflow_input)
         normalized_session_id = _normalize_optional_text(session_id)
         workflow = self._require_workflow(resolved_workflow_id)
-        if user_id is not None:
-            validate_user_id(user_id)
-        elif workflow.uses_agents:
-            raise WorkflowUserRequiredError(resolved_workflow_id)
+        if app_id is not None:
+            validate_app_id(app_id)
+        if policy_id is not None:
+            validate_policy_id(policy_id)
+        if workflow.uses_agents and (app_id is None or policy_id is None):
+            raise WorkflowIdentityRequiredError(resolved_workflow_id)
         if workflow.input_model is not None:
             try:
                 workflow.input_model.model_validate(normalized_workflow_input)
@@ -234,6 +247,12 @@ class WorkflowService:
         store = self._workflow_store()
         if store is None:
             raise RuntimeError("the workflow store is not open; start the pool first")
+        if policy_id is None:
+            snapshot = None
+        elif policy is not None:
+            snapshot = validate_policy_snapshot(policy)
+        else:
+            snapshot = await self._pool.read_policy(policy_id)
 
         record = WorkflowRunRecord(
             run_id=make_run_id(self._runner_id, resolved_workflow_id),
@@ -242,7 +261,9 @@ class WorkflowService:
             workflow_input=normalized_workflow_input,
             dedup_key=normalized_dedup_key,
             session_id=normalized_session_id,
-            user_id=user_id,
+            app_id=app_id,
+            policy_id=policy_id,
+            policy=snapshot,
             created_at=time.time(),
         )
         try:
@@ -546,7 +567,8 @@ def _run_from_record(record: Any) -> WorkflowRun:
         error=record.error,
         workflow_input=dict(record.workflow_input),
         session_id=record.session_id,
-        user_id=record.user_id,
+        app_id=record.app_id,
+        policy_id=record.policy_id,
         result=record.result,
     )
 

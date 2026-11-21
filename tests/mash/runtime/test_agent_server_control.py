@@ -23,7 +23,7 @@ class _Store:
         if request_id == "missing":
             return None
         agent_id = "agent-b" if request_id.startswith("b-") else "agent-a"
-        return RequestIdentity(agent_id=agent_id, user_id="u-1")
+        return RequestIdentity(agent_id=agent_id, app_id="app-1", policy_id="p-1")
 
 
 class _Runtime:

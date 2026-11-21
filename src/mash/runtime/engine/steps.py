@@ -29,9 +29,10 @@ from ..events import RequestStatus, RuntimeEvent, RuntimeEventType
 from ..events.types import EndStatus
 from ..host.directory import append_context_block
 from ..requests import (
+    app_id_from_request_metadata,
     append_runtime_event,
     fetch_request_attempt,
-    user_id_from_request_metadata,
+    policy_from_request_metadata,
 )
 
 if TYPE_CHECKING:
@@ -255,14 +256,16 @@ async def _plan_step_payload(
     session_id: str,
     trace_id: str,
     host: dict[str, Any] | None = None,
-    user_id: str | None = None,
+    app_id: str | None = None,
+    policy: dict[str, Any] | None = None,
     parent_kind: str | None = None,
 ) -> dict[str, Any]:
     agent = runtime.build_turn_agent(
         session_id=session_id,
         trace_id=trace_id,
         host=host,
-        user_id=user_id,
+        app_id=app_id,
+        policy=policy,
         parent_kind=parent_kind,
     )
     plan = await agent.plan_step(context)
@@ -297,14 +300,16 @@ async def _run_tool_call_payload(
     session_id: str,
     trace_id: str,
     host: dict[str, Any] | None = None,
-    user_id: str | None = None,
+    app_id: str | None = None,
+    policy: dict[str, Any] | None = None,
     parent_kind: str | None = None,
 ) -> tuple[ContextToolResult, int]:
     agent = runtime.build_turn_agent(
         session_id=session_id,
         trace_id=trace_id,
         host=host,
-        user_id=user_id,
+        app_id=app_id,
+        policy=policy,
         parent_kind=parent_kind,
     )
     started_at = time.time()
@@ -393,7 +398,7 @@ async def _persist_turn_payload(
         workflow_run_id = response_metadata.get("workflow_run_id") or None
         task_id = response_metadata.get("task_id") or None
         await runtime.store.save_turn(
-            user_id=user_id_from_request_metadata(response_metadata),
+            app_id=app_id_from_request_metadata(response_metadata),
             trace_id=resolved_trace_id,
             session_id=session_id,
             agent_id=runtime.agent_id,
@@ -482,18 +487,19 @@ async def load_request_context(
     metadata = dict(request_metadata or {})
     host = metadata.get("host") or None
     request_context = metadata.get("context")
-    user_id = user_id_from_request_metadata(metadata)
+    app_id = app_id_from_request_metadata(metadata)
+    policy = policy_from_request_metadata(metadata)
     parent = metadata.get("parent")
     parent_kind = parent.get("kind") if isinstance(parent, dict) else None
     system_prompt = factory_helpers.resolve_host_system_prompt(
         runtime, host, request_context, parent_kind=parent_kind
     )
     cortex = runtime.get_cortex()
-    if cortex is not None and user_id:
+    if cortex is not None and app_id:
         # Read inside this checkpointed step, so a replay sees the profile the
         # request originally saw.
         system_prompt = append_context_block(
-            system_prompt, await cortex.profile_block(user_id)
+            system_prompt, await cortex.profile_block(app_id)
         )
     context_payload = await context_helpers.build_context_payload(
         runtime,
@@ -517,7 +523,8 @@ async def load_request_context(
         "context": dict(context_payload.get("context") or {}),
         "compaction": dict(context_payload.get("compaction") or {}),
         "host": host,
-        "user_id": user_id,
+        "app_id": app_id,
+        "policy": policy,
         "parent_kind": parent_kind,
         "loop_index": 0,
         "aggregate_usage": {"input": 0, "output": 0},
@@ -564,7 +571,8 @@ async def plan_request_step(
             session_id=session_id,
             trace_id=trace_id,
             host=workflow_state.get("host") or None,
-            user_id=workflow_state.get("user_id"),
+            app_id=workflow_state.get("app_id"),
+            policy=workflow_state.get("policy"),
             parent_kind=workflow_state.get("parent_kind"),
         )
     action_payload = {
@@ -632,7 +640,8 @@ async def _execute_and_record_tool_call(
     loop_index: int,
     tool_call: ToolCall,
     host: dict[str, Any] | None,
-    user_id: str | None = None,
+    app_id: str | None = None,
+    policy: dict[str, Any] | None = None,
     parent_kind: str | None = None,
 ) -> dict[str, Any]:
     """Run one tool call, emitting its started/completed events.
@@ -661,7 +670,8 @@ async def _execute_and_record_tool_call(
         session_id=session_id,
         trace_id=trace_id,
         host=host,
-        user_id=user_id,
+        app_id=app_id,
+        policy=policy,
         parent_kind=parent_kind,
     )
     result_payload = _step_tool_result_payload(
@@ -712,7 +722,8 @@ async def run_step_tool_call(
         loop_index=loop_index,
         tool_call=tool_call,
         host=workflow_state.get("host") or None,
-        user_id=workflow_state.get("user_id"),
+        app_id=workflow_state.get("app_id"),
+        policy=workflow_state.get("policy"),
         parent_kind=workflow_state.get("parent_kind"),
     )
     return {
@@ -778,7 +789,8 @@ async def run_step_tool_batch(
     """
     loop_index = int(workflow_state.get("loop_index") or 0)
     host = workflow_state.get("host") or None
-    user_id = workflow_state.get("user_id")
+    app_id = workflow_state.get("app_id")
+    policy = workflow_state.get("policy")
     parent_kind = workflow_state.get("parent_kind")
     tool_calls = [_tool_call_from_payload(p) for p in tool_call_payloads]
 
@@ -794,7 +806,8 @@ async def run_step_tool_batch(
                 loop_index=loop_index,
                 tool_call=tool_calls[index],
                 host=host,
-                user_id=user_id,
+                app_id=app_id,
+                policy=policy,
                 parent_kind=parent_kind,
             )
 
@@ -1103,7 +1116,7 @@ async def emit_interaction_ack(
 
 
 async def start_browser_handoff(runtime: "AgentRuntime", request_id: str) -> dict[str, Any]:
-    """Ask the host for a live-view link to the request user's browser.
+    """Ask the host for a live-view link to the request policy's browser.
 
     ``{url, expires_at, timeout_seconds}``, or ``{error}`` when there is no one
     to hand off to: a workflow request, or an agent without browser tools.

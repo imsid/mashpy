@@ -70,9 +70,9 @@ async def history_turns(
 
 
 async def list_sessions(
-    store: MemoryStore, *, agent_id: str, limit: int, user_id: str | None = None
+    store: MemoryStore, *, agent_id: str, limit: int, app_id: str | None = None
 ) -> list[dict[str, Any]]:
-    return await store.list_sessions(agent_id=agent_id, limit=limit, user_id=user_id)
+    return await store.list_sessions(agent_id=agent_id, limit=limit, app_id=app_id)
 
 
 async def session_signals(

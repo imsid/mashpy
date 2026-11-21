@@ -272,7 +272,8 @@ function RubricTab({ evalId, rubric, locked, onUpdated }) {
 function RunExperimentDrawer({ open, onClose, evalId, hostId, rowCount, rubric, onDone }) {
   const [job, setJob] = useState(null);
   const [error, setError] = useState(null);
-  const [userId, setUserId] = useState('');
+  const [appId, setAppId] = useState('');
+  const [policyId, setPolicyId] = useState('');
 
   // Live host state — exactly what the experiment will snapshot at run start.
   const snapshotState = useApi(
@@ -301,14 +302,15 @@ function RunExperimentDrawer({ open, onClose, evalId, hostId, rowCount, rubric, 
   async function handleRun() {
     setError(null);
     setJob(null);
-    if (!userId.trim()) {
-      setError('User ID is required.');
+    if (!appId.trim() || !policyId.trim()) {
+      setError('App ID and Policy ID are required.');
       return;
     }
     try {
       const run = await api.runWorkflow('run-experiment', {
         input: { eval_id: evalId, host_id: hostId },
-        user_id: userId.trim(),
+        app_id: appId.trim(),
+        policy_id: policyId.trim(),
       });
       setJob({ runId: run.run_id, status: run.status });
     } catch (err) {
@@ -358,8 +360,11 @@ function RunExperimentDrawer({ open, onClose, evalId, hostId, rowCount, rubric, 
             saves the results as a new experiment.
           </p>
 
-          <Field label="User ID" hint="The user the experiment's requests act for.">
-            <TextInput value={userId} onChange={(e) => setUserId(e.target.value)} />
+          <Field label="App ID" hint="The app the experiment's requests act for.">
+            <TextInput value={appId} onChange={(e) => setAppId(e.target.value)} />
+          </Field>
+          <Field label="Policy ID" hint="The policy the experiment's requests run under.">
+            <TextInput value={policyId} onChange={(e) => setPolicyId(e.target.value)} />
           </Field>
 
           <div>

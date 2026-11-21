@@ -42,8 +42,9 @@ from mash.api.routes.workflow import build_workflow_router
 from mash.agents.masher.spec import EVAL_AGENT_ID
 from mash.evals import EvalService, PostgresEvalStore
 from mash.otel.exporter import build_exporter
+from mash.policies import PolicyNotFoundError
 from mash.runtime import AgentClientError, Pool
-from mash.runtime.client import AgentUnavailableError, SessionUserConflictError
+from mash.runtime.client import AgentUnavailableError, SessionPolicyConflictError
 from mash.runtime.host.host import AgentDisabledError
 from mash.browser.manager import (
     DEFAULT_HANDOFF_SECONDS,
@@ -71,8 +72,8 @@ from mash.workflows import (
     DuplicateWorkflowRunError,
     WorkflowInputValidationError,
     WorkflowNotFoundError,
+    WorkflowIdentityRequiredError,
     WorkflowResumeNotSupportedError,
-    WorkflowUserRequiredError,
 )
 
 from .config import MashHostConfig
@@ -299,10 +300,10 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
 
     @app.exception_handler(AgentClientError)
     async def _client_error_handler(_: Request, exc: AgentClientError) -> JSONResponse:
-        if isinstance(exc, SessionUserConflictError):
+        if isinstance(exc, SessionPolicyConflictError):
             return JSONResponse(
                 status_code=409,
-                content=error_payload("SESSION_USER_MISMATCH", str(exc)),
+                content=error_payload("SESSION_POLICY_MISMATCH", str(exc)),
             )
         if isinstance(exc, AgentUnavailableError):
             return JSONResponse(
@@ -312,6 +313,13 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
         return JSONResponse(
             status_code=502,
             content=error_payload("RUNTIME_CLIENT_ERROR", str(exc)),
+        )
+
+    @app.exception_handler(PolicyNotFoundError)
+    async def _policy_not_found_handler(_: Request, exc: PolicyNotFoundError) -> JSONResponse:
+        return JSONResponse(
+            status_code=404,
+            content=error_payload("POLICY_NOT_FOUND", str(exc), {"policy_id": exc.policy_id}),
         )
 
     @app.exception_handler(AgentDisabledError)
@@ -356,14 +364,14 @@ def create_app(pool: Pool, *, config: MashHostConfig | None = None) -> FastAPI:
             ),
         )
 
-    @app.exception_handler(WorkflowUserRequiredError)
-    async def _workflow_user_required_handler(
-        _: Request, exc: WorkflowUserRequiredError
+    @app.exception_handler(WorkflowIdentityRequiredError)
+    async def _workflow_identity_required_handler(
+        _: Request, exc: WorkflowIdentityRequiredError
     ) -> JSONResponse:
         return JSONResponse(
             status_code=400,
             content=error_payload(
-                "USER_ID_REQUIRED", str(exc), {"workflow_id": exc.workflow_id}
+                "APP_AND_POLICY_REQUIRED", str(exc), {"workflow_id": exc.workflow_id}
             ),
         )
 

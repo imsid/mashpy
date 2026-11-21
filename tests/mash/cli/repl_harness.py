@@ -176,7 +176,7 @@ class FakeHost:
         self.browser_sites: list[dict[str, Any]] | None = None
         self.reruns: list[tuple[str, str, str]] = []
         self.summary = ""
-        # The user's sessions, newest first, and each session's turns.
+        # The app's sessions, newest first, and each session's turns.
         self.sessions: list[dict[str, Any]] = []
         self.history: dict[str, list[dict[str, Any]]] = {}
         # workflow id -> its runs; run id -> the run stream's events and gates.
@@ -196,19 +196,19 @@ class FakeHost:
 
     # --- submit -----------------------------------------------------------
 
-    def submit_request(self, agent_id, *, message, session_id, user_id, **_):
+    def submit_request(self, agent_id, *, message, session_id, app_id, policy_id, **_):
         request_id = self._next_id()
         self.submitted.append(
             {"agent_id": agent_id, "message": message, "session_id": session_id,
-             "user_id": user_id, "request_id": request_id}
+             "app_id": app_id, "policy_id": policy_id, "request_id": request_id}
         )
         return request_id
 
-    def submit_host_request(self, host_id, *, message, session_id, user_id, **_):
+    def submit_host_request(self, host_id, *, message, session_id, app_id, policy_id, **_):
         request_id = self._next_id()
         self.submitted.append(
             {"host_id": host_id, "message": message, "session_id": session_id,
-             "user_id": user_id, "request_id": request_id}
+             "app_id": app_id, "policy_id": policy_id, "request_id": request_id}
         )
         return {"request_id": request_id, "agent_id": "companion"}
 
@@ -291,36 +291,36 @@ class FakeHost:
             raise MashHostClientError("Not Found", status_code=404)
         return self.cortex
 
-    def get_cortex_user(self, user_id):
+    def get_cortex_app(self, app_id):
         cortex = self._cortex()
         if not cortex["profile"] and not cortex["entries"]:
             raise MashHostClientError(
-                "user not found", status_code=404, code="CORTEX_NOT_FOUND"
+                "app not found", status_code=404, code="CORTEX_NOT_FOUND"
             )
-        return {"user_id": user_id, "profile": cortex["profile"],
+        return {"app_id": app_id, "profile": cortex["profile"],
                 "entry_count": len(cortex["entries"])}
 
-    def list_cortex_entries(self, user_id, *, q=None, limit=50):
+    def list_cortex_entries(self, app_id, *, q=None, limit=50):
         return list(self._cortex()["entries"])
 
-    def create_cortex_entry(self, user_id, *, topic, content):
+    def create_cortex_entry(self, app_id, *, topic, content):
         entry = {"entry_id": f"e{len(self._cortex()['entries']) + 1}-0000-aaaa",
                  "topic": topic, "content": content, "origin": "app"}
         self._cortex()["entries"].append(entry)
         return entry
 
-    def delete_cortex_entry(self, user_id, entry_id):
+    def delete_cortex_entry(self, app_id, entry_id):
         cortex = self._cortex()
         cortex["entries"] = [e for e in cortex["entries"] if e["entry_id"] != entry_id]
 
-    def list_browser_sites(self, user_id):
+    def list_browser_sites(self, policy_id):
         if self.browser_sites is None:
             raise MashHostClientError(
                 "this host has no browsers", status_code=503, code="BROWSER_UNAVAILABLE"
             )
         return list(self.browser_sites)
 
-    def clear_browser_site(self, user_id, domain):
+    def clear_browser_site(self, policy_id, domain):
         removed = [s for s in self.browser_sites or [] if s["domain"] == domain]
         self.browser_sites = [s for s in self.browser_sites or [] if s["domain"] != domain]
         return {"domain": domain, "cookies": sum(s["cookies"] for s in removed)}
@@ -334,8 +334,8 @@ class FakeHost:
         self.calls.append(("compact_session", (agent_id, session_id)))
         return {"summary_text": self.summary, "trace_id": "t-compact"}
 
-    def list_sessions(self, agent_id, *, user_id=None, limit=None):
-        self.calls.append(("list_sessions", (agent_id, user_id, limit)))
+    def list_sessions(self, agent_id, *, app_id=None, limit=None):
+        self.calls.append(("list_sessions", (agent_id, app_id, limit)))
         return list(self.sessions)
 
     def get_history(self, agent_id, session_id, *, limit=None):
@@ -388,7 +388,7 @@ class ReplDriver:
                     "api_base_url": "http://host",
                     "agent_id": "companion" if host_id else "primary",
                     "session_id": "s-1",
-                    "user_id": "u-1",
+                    "app_id": "app-1", "policy_id": "p-1",
                     "host_id": host_id,
                     **(target or {}),
                 }

@@ -164,7 +164,8 @@ function TestRequestDrawer({ open, host, onClose }) {
   const navigate = useNavigate();
   const [message, setMessage] = useState('');
   const [sessionId, setSessionId] = useState(randomSession());
-  const [userId, setUserId] = useState('');
+  const [appId, setAppId] = useState('');
+  const [policyId, setPolicyId] = useState('');
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
@@ -177,7 +178,8 @@ function TestRequestDrawer({ open, host, onClose }) {
       const res = await api.submitHostRequest(host.host_id, {
         message: message.trim(),
         session_id: sessionId.trim(),
-        user_id: userId.trim(),
+        app_id: appId.trim(),
+        policy_id: policyId.trim(),
       });
       setResult(res);
     } catch (err) {
@@ -199,7 +201,9 @@ function TestRequestDrawer({ open, host, onClose }) {
           <Button
             variant="primary"
             onClick={send}
-            disabled={sending || !message.trim() || !sessionId.trim() || !userId.trim()}
+            disabled={
+              sending || !message.trim() || !sessionId.trim() || !appId.trim() || !policyId.trim()
+            }
           >
             {sending ? 'Sending…' : 'Send request'}
           </Button>
@@ -210,8 +214,11 @@ function TestRequestDrawer({ open, host, onClose }) {
         <Field label="Session ID">
           <TextInput value={sessionId} onChange={(e) => setSessionId(e.target.value)} />
         </Field>
-        <Field label="User ID" hint="The user the request acts for.">
-          <TextInput value={userId} onChange={(e) => setUserId(e.target.value)} />
+        <Field label="App ID" hint="The app the request acts for.">
+          <TextInput value={appId} onChange={(e) => setAppId(e.target.value)} />
+        </Field>
+        <Field label="Policy ID" hint="The policy the request runs under.">
+          <TextInput value={policyId} onChange={(e) => setPolicyId(e.target.value)} />
         </Field>
         <Field label="Message">
           <TextArea

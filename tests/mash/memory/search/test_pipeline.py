@@ -30,7 +30,7 @@ class FakeSearchStore:
         limit: int,
         session_id: str | None = None,
         agent_id: str | None = None,
-        user_id: str | None = None,
+        app_id: str | None = None,
     ) -> list[dict[str, object]]:
         self.calls.append(
             {
@@ -40,7 +40,7 @@ class FakeSearchStore:
                 "limit": limit,
                 "session_id": session_id,
                 "agent_id": agent_id,
-                "user_id": user_id,
+                "app_id": app_id,
             }
         )
         return self.keyword_hits
@@ -53,7 +53,7 @@ class FakeSearchStore:
         limit: int,
         session_id: str | None = None,
         agent_id: str | None = None,
-        user_id: str | None = None,
+        app_id: str | None = None,
     ) -> list[dict[str, object]]:
         self.calls.append(
             {
@@ -64,7 +64,7 @@ class FakeSearchStore:
                 "limit": limit,
                 "session_id": session_id,
                 "agent_id": agent_id,
-                "user_id": user_id,
+                "app_id": app_id,
             }
         )
         return self.semantic_hits
@@ -80,7 +80,7 @@ class FailingKeywordStore(FakeSearchStore):
         limit: int,
         session_id: str | None = None,
         agent_id: str | None = None,
-        user_id: str | None = None,
+        app_id: str | None = None,
     ) -> list[dict[str, object]]:
         raise RuntimeError("keyword retrieval failed")
 

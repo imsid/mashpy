@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from conftest import build_test_stores
 from mash.runtime import AgentRuntime
-from mash.testing.runtime_fixtures import build_spec
+from mash.testing.runtime_fixtures import TEST_IDENTITY, build_spec
 
 
 class RequestStartTests(unittest.IsolatedAsyncioTestCase):
@@ -38,21 +38,25 @@ class RequestStartTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(runtime.shutdown)
         return runtime
 
-    async def test_a_session_takes_requests_only_for_its_user(self) -> None:
-        from mash.runtime.errors import SessionUserMismatchError
+    async def test_a_session_takes_requests_only_under_its_policy(self) -> None:
+        from mash.runtime.errors import SessionPolicyMismatchError
 
         runtime = await self._runtime()
-        await runtime.submit_request(message="hi", session_id="s-1", user_id="u-1")
+        await runtime.submit_request(message="hi", session_id="s-1", **TEST_IDENTITY)
+        other = {**TEST_IDENTITY, "policy_id": "p-2"}
 
-        with self.assertRaises(SessionUserMismatchError):
-            await runtime.submit_request(message="hi", session_id="s-1", user_id="u-2")
-        await runtime.submit_request(message="again", session_id="s-1", user_id="u-1")
-        await runtime.submit_request(message="hi", session_id="s-2", user_id="u-2")
+        with self.assertRaises(SessionPolicyMismatchError):
+            await runtime.submit_request(message="hi", session_id="s-1", **other)
+        # Another app is fine: a session binds only its policy.
+        await runtime.submit_request(
+            message="again", session_id="s-1", **{**TEST_IDENTITY, "app_id": "app-2"}
+        )
+        await runtime.submit_request(message="hi", session_id="s-2", **other)
 
     async def test_submit_records_who_started_it_in_the_accepted_event_and_row(self) -> None:
         runtime = await self._runtime()
         accepted = await runtime.submit_request(
-            message="hi", session_id="s-1", user_id="u-1"
+            message="hi", session_id="s-1", **TEST_IDENTITY
         )
         events = await runtime.runtime_store.list_request_events(accepted["request_id"])
         self.assertNotIn("mode", events[0].payload)

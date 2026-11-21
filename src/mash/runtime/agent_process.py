@@ -5,12 +5,12 @@ same ``build_pool()`` the host runs, serves one agent from it behind an
 ``AgentServer`` on a localhost port, and reaches the host for everything else: the companion's RunSubAgents calls go to the host's H2A relay (``{host}/h2a``) with the
 agent's token, and the host checks them against the request's host snapshot.
 When the host has sandboxes, every agent served here gets ``run_code``,
-``sandbox_put`` and ``sandbox_get``, which act in the request user's sandbox
+``sandbox_put`` and ``sandbox_get``, which act in the request policy's sandbox
 through the host's ``/sandbox`` relay, unless its spec's ``enable_sandbox()``
 returns False. When the host has browsers, an agent whose spec lists sites
 (``browser_sites()``) also gets the browser tools, which act in the request
-user's browser through the host's ``/browser`` relay. When
-the pool enables Cortex, it also gets read access to the request user's Cortex.
+policy's browser through the host's ``/browser`` relay. When
+the pool enables Cortex, it also gets read access to the request app's Cortex.
 The pool itself is never started in an agent process; it only supplies the
 agent's spec and the metadata of the agents it may call.
 """

@@ -12,9 +12,9 @@ class RequestMetadataContextTests(unittest.TestCase):
         self.assertEqual(get_request_metadata(), {})
 
     def test_bound_metadata_is_readable_and_reset(self) -> None:
-        with bound_request_metadata({"tenant": "acme", "user_id": "u-1"}):
+        with bound_request_metadata({"tenant": "acme", "app_id": "app-1", "policy_id": "p-1"}):
             self.assertEqual(
-                get_request_metadata(), {"tenant": "acme", "user_id": "u-1"}
+                get_request_metadata(), {"tenant": "acme", "app_id": "app-1", "policy_id": "p-1"}
             )
         self.assertEqual(get_request_metadata(), {})
 

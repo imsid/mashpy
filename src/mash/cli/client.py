@@ -22,7 +22,7 @@ DEFAULT_REQUEST_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 DEFAULT_STREAM_TIMEOUT = httpx.Timeout(10.0, read=None)
 # Compacting a session is a model call.
 COMPACT_TIMEOUT = httpx.Timeout(180.0, connect=10.0)
-# A browser call may start the user's browser container first.
+# A browser call may start the policy's browser container first.
 BROWSER_TIMEOUT = httpx.Timeout(90.0, connect=10.0)
 
 TERMINAL_EVENTS = frozenset({"request.completed", "request.error", "request.cancelled"})
@@ -286,19 +286,34 @@ class MashHostClient:
         )
         return response.json()["data"]
 
+    def put_policy(self, policy_id: str, policy: dict[str, Any]) -> dict[str, Any]:
+        """Create the policy, or replace the whole of an existing one."""
+        response = self._request(
+            "PUT", f"/api/v1/policies/{quote(policy_id, safe='')}", json_body=policy
+        )
+        data = response.json()["data"]
+        return data if isinstance(data, dict) else {}
+
+    def get_policy(self, policy_id: str) -> dict[str, Any]:
+        response = self._request("GET", f"/api/v1/policies/{quote(policy_id, safe='')}")
+        data = response.json()["data"]
+        return data if isinstance(data, dict) else {}
+
     def submit_host_request(
         self,
         host_id: str,
         *,
         message: str,
         session_id: str,
-        user_id: str,
+        app_id: str,
+        policy_id: str,
         structured_output: Any = None,
     ) -> dict[str, Any]:
         json_body: dict[str, Any] = {
             "message": message,
             "session_id": session_id,
-            "user_id": user_id,
+            "app_id": app_id,
+            "policy_id": policy_id,
         }
         if structured_output is not None:
             json_body["structured_output"] = serialize_structured_output(structured_output)
@@ -316,13 +331,15 @@ class MashHostClient:
         *,
         message: str,
         session_id: str,
-        user_id: str,
+        app_id: str,
+        policy_id: str,
         structured_output: Any = None,
     ) -> str:
         json_body: dict[str, Any] = {
             "message": message,
             "session_id": session_id,
-            "user_id": user_id,
+            "app_id": app_id,
+            "policy_id": policy_id,
         }
         if structured_output is not None:
             json_body["structured_output"] = serialize_structured_output(structured_output)
@@ -390,58 +407,58 @@ class MashHostClient:
     # --- Cortex -------------------------------------------------------------
 
     @staticmethod
-    def _cortex_path(user_id: str, *parts: str) -> str:
-        path = f"/api/v1/cortex/users/{quote(user_id, safe='')}"
+    def _cortex_path(app_id: str, *parts: str) -> str:
+        path = f"/api/v1/cortex/apps/{quote(app_id, safe='')}"
         return path + "".join(f"/{quote(part, safe='')}" for part in parts)
 
-    def get_cortex_user(self, user_id: str) -> dict[str, Any]:
-        """The user's Cortex: ``profile``, ``version`` and ``entry_count``."""
-        data = self._request("GET", self._cortex_path(user_id)).json()["data"]
+    def get_cortex_app(self, app_id: str) -> dict[str, Any]:
+        """The app's Cortex: ``profile``, ``version`` and ``entry_count``."""
+        data = self._request("GET", self._cortex_path(app_id)).json()["data"]
         return data if isinstance(data, dict) else {}
 
     def list_cortex_entries(
-        self, user_id: str, *, q: str | None = None, limit: int = 50
+        self, app_id: str, *, q: str | None = None, limit: int = 50
     ) -> list[dict[str, Any]]:
         query: dict[str, Any] = {"limit": limit}
         if q:
             query["q"] = q
         response = self._request(
-            "GET", self._cortex_path(user_id, "entries"), query=query
+            "GET", self._cortex_path(app_id, "entries"), query=query
         )
         entries = response.json()["data"].get("entries")
         return entries if isinstance(entries, list) else []
 
     def create_cortex_entry(
-        self, user_id: str, *, topic: str, content: str
+        self, app_id: str, *, topic: str, content: str
     ) -> dict[str, Any]:
         response = self._request(
             "POST",
-            self._cortex_path(user_id, "entries"),
+            self._cortex_path(app_id, "entries"),
             json_body={"topic": topic, "content": content},
         )
         entry = response.json()["data"].get("entry")
         return entry if isinstance(entry, dict) else {}
 
-    def delete_cortex_entry(self, user_id: str, entry_id: str) -> None:
-        self._request("DELETE", self._cortex_path(user_id, "entries", entry_id))
+    def delete_cortex_entry(self, app_id: str, entry_id: str) -> None:
+        self._request("DELETE", self._cortex_path(app_id, "entries", entry_id))
 
     # --- browser ------------------------------------------------------------
 
-    def list_browser_sites(self, user_id: str) -> list[dict[str, Any]]:
-        """The sites the user's browser profile holds cookies for."""
+    def list_browser_sites(self, policy_id: str) -> list[dict[str, Any]]:
+        """The sites the policy's browser profile holds cookies for."""
         response = self._request(
             "GET",
-            f"/api/v1/browser/users/{quote(user_id, safe='')}/sites",
+            f"/api/v1/browser/policies/{quote(policy_id, safe='')}/sites",
             timeout=BROWSER_TIMEOUT,
         )
         sites = response.json()["data"].get("sites")
         return sites if isinstance(sites, list) else []
 
-    def clear_browser_site(self, user_id: str, domain: str) -> dict[str, Any]:
-        """Sign the user's browser out of ``domain``."""
+    def clear_browser_site(self, policy_id: str, domain: str) -> dict[str, Any]:
+        """Sign the policy's browser out of ``domain``."""
         response = self._request(
             "DELETE",
-            f"/api/v1/browser/users/{quote(user_id, safe='')}/sites/{quote(domain, safe='')}",
+            f"/api/v1/browser/policies/{quote(policy_id, safe='')}/sites/{quote(domain, safe='')}",
             timeout=BROWSER_TIMEOUT,
         )
         data = response.json()["data"]
@@ -546,13 +563,13 @@ class MashHostClient:
         self,
         agent_id: str,
         *,
-        user_id: str | None = None,
+        app_id: str | None = None,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        """The agent's sessions, most recently active first; one user's with ``user_id``."""
+        """The agent's sessions, most recently active first; the app's with ``app_id``."""
         query = {
             key: value
-            for key, value in (("user_id", user_id), ("limit", limit))
+            for key, value in (("app_id", app_id), ("limit", limit))
             if value is not None
         }
         response = self._request(
@@ -723,7 +740,8 @@ class MashHostClient:
         dedup_key: str | None = None,
         workflow_input: dict[str, Any] | None = None,
         session_id: str | None = None,
-        user_id: str | None = None,
+        app_id: str | None = None,
+        policy_id: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {}
         if dedup_key is not None:
@@ -732,8 +750,10 @@ class MashHostClient:
             body["input"] = workflow_input
         if session_id is not None:
             body["session_id"] = session_id
-        if user_id is not None:
-            body["user_id"] = user_id
+        if app_id is not None:
+            body["app_id"] = app_id
+        if policy_id is not None:
+            body["policy_id"] = policy_id
         response = self._request(
             "POST",
             f"/api/v1/workflow/{quote(workflow_id, safe='')}/run",

@@ -58,8 +58,8 @@ class RuntimeStore(Protocol):
         """The agent and user a request was accepted for, or None if unknown."""
         ...
 
-    async def get_other_session_user(self, session_id: str, user_id: str) -> str | None:
-        """A user other than ``user_id`` with a request on the session, or None."""
+    async def get_other_session_policy(self, session_id: str, policy_id: str) -> str | None:
+        """A policy other than ``policy_id`` with a request on the session, or None."""
         ...
 
     async def save_checkpoint(self, request_id: str, checkpoint: dict[str, Any]) -> None:
@@ -115,7 +115,7 @@ class RuntimeStore(Protocol):
     ) -> list[dict[str, Any]]:
         """A session's requests, newest first.
 
-        Each record has ``request_id``, ``agent_id``, ``user_id``,
+        Each record has ``request_id``, ``agent_id``, ``app_id``, ``policy_id``,
         ``session_id``, ``message``, ``status``, ``started_by``,
         ``parent_request_id`` and ``started_at``.
         """

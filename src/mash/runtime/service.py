@@ -145,19 +145,19 @@ class AgentRuntime:
         return self._host_access
 
     def enable_cortex(self, reader: Any) -> None:
-        """Give requests with a ``user_id`` the user's Cortex profile and ``search_cortex``."""
+        """Give requests with an ``app_id`` the app's Cortex profile and ``search_cortex``."""
         self._cortex = reader
 
     def get_cortex(self) -> Any:
         return self._cortex
 
     def enable_sandbox_tools(self, *, host_api_url: str, token: str) -> None:
-        """Give every turn agent the tools of the request user's sandbox, via the host."""
+        """Give every turn agent the tools of the request policy's sandbox, via the host."""
         self._sandbox_tools = (host_api_url, token)
         factory_helpers.register_sandbox_tools(self, self.agent)
 
     def enable_browser_tools(self, *, host_api_url: str, token: str) -> None:
-        """Give every turn agent the tools of the request user's browser, via the host."""
+        """Give every turn agent the tools of the request policy's browser, via the host."""
         self._browser_tools = (host_api_url, token)
         factory_helpers.register_browser_tools(self, self.agent)
 
@@ -208,7 +208,9 @@ class AgentRuntime:
         *,
         message: str,
         session_id: str,
-        user_id: str,
+        app_id: str,
+        policy_id: str,
+        policy: dict[str, Any],
         structured_output: Any = None,
         host_snapshot: dict[str, Any] | None = None,
         context: str | None = None,
@@ -222,7 +224,9 @@ class AgentRuntime:
             self,
             message=message,
             session_id=session_id,
-            user_id=user_id,
+            app_id=app_id,
+            policy_id=policy_id,
+            policy=policy,
             structured_output=structured_output,
             host_snapshot=host_snapshot,
             context=context,
@@ -325,14 +329,16 @@ class AgentRuntime:
         session_id: str,
         trace_id: str,
         host: dict[str, Any] | None = None,
-        user_id: str | None = None,
+        app_id: str | None = None,
+        policy: dict[str, Any] | None = None,
         parent_kind: str | None = None,
     ) -> Any:
         agent = factory_helpers.build_turn_agent(
             self,
             session_id=session_id,
             host=host,
-            user_id=user_id,
+            app_id=app_id,
+            policy=policy,
             parent_kind=parent_kind,
         )
         self.configure_turn_context(agent, session_id=session_id, trace_id=trace_id)

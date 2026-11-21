@@ -256,7 +256,7 @@ class LedgerReplayTests(unittest.IsolatedAsyncioTestCase):
 
                     async def _ask(message: str) -> str:
                         accepted = await pool.submit_host_request(
-                            "h", message=message, session_id="s-1", user_id="u-1"
+                            "h", message=message, session_id="s-1", app_id="app-1", policy_id="p-1"
                         )
                         async for event in client.stream_response(accepted["request_id"], timeout=10):
                             if event.get("event") in {"request.completed", "request.error"}:

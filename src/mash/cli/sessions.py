@@ -1,4 +1,4 @@
-"""Choosing a session to go on with: the user's sessions as menu rows."""
+"""Choosing a session to go on with: the app's sessions as menu rows."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 
 from .render import clip
 
-# How many of the user's sessions the picker offers, most recent first.
+# How many of the app's sessions the picker offers, most recent first.
 PICKER_LIMIT = 20
 PICKER_HINT = "↑↓ or a number to move · enter to resume · ctrl-c keeps the current session"
 

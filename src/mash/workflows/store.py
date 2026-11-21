@@ -49,7 +49,10 @@ class WorkflowRunRecord:
     error: str | None = None
     dedup_key: str | None = None
     session_id: str | None = None
-    user_id: str | None = None
+    app_id: str | None = None
+    policy_id: str | None = None
+    # The policy the run took at start, kept on resume.
+    policy: dict[str, Any] | None = None
     created_at: float = 0.0
     started_at: float | None = None
     finished_at: float | None = None
@@ -108,8 +111,9 @@ async def insert_run(conn: Any, run: WorkflowRunRecord) -> None:
             """
             INSERT INTO workflow_runs (
                 run_id, workflow_id, status, workflow_input, result, error,
-                dedup_key, session_id, user_id, created_at, started_at, finished_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                dedup_key, session_id, app_id, policy_id, policy,
+                created_at, started_at, finished_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT DO NOTHING
             RETURNING run_id
             """,
@@ -122,7 +126,9 @@ async def insert_run(conn: Any, run: WorkflowRunRecord) -> None:
                 run.error,
                 run.dedup_key,
                 run.session_id,
-                run.user_id,
+                run.app_id,
+                run.policy_id,
+                _json(run.policy),
                 run.created_at,
                 run.started_at,
                 run.finished_at,
@@ -284,7 +290,9 @@ def _run_from_row(row: dict[str, Any]) -> WorkflowRunRecord:
         error=row.get("error"),
         dedup_key=row.get("dedup_key"),
         session_id=row.get("session_id"),
-        user_id=row.get("user_id"),
+        app_id=row.get("app_id"),
+        policy_id=row.get("policy_id"),
+        policy=row.get("policy"),
         created_at=float(row.get("created_at") or 0.0),
         started_at=_opt_float(row.get("started_at")),
         finished_at=_opt_float(row.get("finished_at")),

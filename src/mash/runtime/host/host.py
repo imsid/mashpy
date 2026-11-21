@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Dict
 
 from mash.core.database import resolve_database_url
 from mash.memory.store import MemoryStore, PostgresStore
-from mash.policies import PolicyStore
+from mash.policies import PolicyNotFoundError, PolicyStore
 from mash.workflows import AgentStep, CodeStep, WorkflowRegistry, WorkflowService, WorkflowSpec
 from mash.workflows.runs import resolve_runner_id
 from mash.workflows.store import WorkflowStore
@@ -314,17 +314,24 @@ class Pool:
         *,
         message: str,
         session_id: str,
-        user_id: str,
+        app_id: str,
+        policy_id: str,
         structured_output: Any = None,
         context: str | None = None,
         metadata: dict[str, Any] | None = None,
         traceparent: str | None = None,
         tracestate: str | None = None,
     ) -> dict[str, Any]:
+        """Submit a request to the host's companion.
+
+        Raises ``ValueError`` for an unknown host and ``PolicyNotFoundError``
+        for an unknown policy.
+        """
         from mash.agents.companion import COMPANION_AGENT_ID
         from mash.agents.companion.workflows import format_workflow_list
 
         host = self.get_host(host_id)
+        policy = await self.read_policy(policy_id)
         snapshot = self.snapshot_for(host)
         if snapshot["workflows"]:
             # The companion's workflow directory, built from the registered
@@ -341,7 +348,9 @@ class Pool:
             metadata=metadata,
             context=context,
             host=snapshot,
-            user_id=user_id,
+            app_id=app_id,
+            policy_id=policy_id,
+            policy=policy,
             traceparent=traceparent,
             tracestate=tracestate,
         )
@@ -349,9 +358,23 @@ class Pool:
             "request_id": request_id,
             "agent_id": COMPANION_AGENT_ID,
             "session_id": session_id,
-            "user_id": user_id,
+            "app_id": app_id,
+            "policy_id": policy_id,
             "status": "accepted",
         }
+
+    async def read_policy(self, policy_id: str) -> dict[str, Any]:
+        """The policy's document, the snapshot a request or run takes.
+
+        Raises ``PolicyNotFoundError`` when there is no such policy.
+        """
+        store = self._policy_store
+        if store is None:
+            raise RuntimeError("the pool is not started")
+        record = await store.get(policy_id)
+        if record is None:
+            raise PolicyNotFoundError(policy_id)
+        return record.policy.model_dump()
 
     def register_workflow(self, workflow: WorkflowSpec) -> None:
         self._ensure_workflow_task_agents(workflow)

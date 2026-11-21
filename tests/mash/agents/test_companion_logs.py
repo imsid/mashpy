@@ -21,7 +21,7 @@ from mash.core.llm import LLMProvider
 from mash.core.llm.types import LLMContentBlock, LLMResponse, LLMTokenUsage
 from mash.logging import bound_session_id
 from mash.runtime import Host, HostBuilder
-from mash.testing.runtime_fixtures import build_spec, metadata
+from mash.testing.runtime_fixtures import TEST_IDENTITY, build_spec, metadata
 
 
 def _response(text: str = "", calls: list[ToolCall] | None = None) -> LLMResponse:
@@ -116,7 +116,7 @@ class CompanionLogToolTests(unittest.IsolatedAsyncioTestCase):
 
     async def _child(self, host_id: str, primary: str, message: str, session_id: str) -> dict:
         accepted = await self.pool.submit_host_request(
-            host_id, message=message, session_id=session_id, user_id="u-1"
+            host_id, message=message, session_id=session_id, app_id="app-1", policy_id="p-1"
         )
         async for event in self.pool.get_client(primary).stream_response(accepted["request_id"], timeout=10):
             if event.get("event") in {"request.completed", "request.error"}:
@@ -129,7 +129,7 @@ class CompanionLogToolTests(unittest.IsolatedAsyncioTestCase):
     async def _direct(self, agent_id: str, message: str, session_id: str) -> dict:
         """A request the user sent the agent directly: no parent."""
         client = self.pool.get_client(agent_id)
-        request_id = await client.post_request(message, session_id=session_id, user_id="u-1")
+        request_id = await client.post_request(message, session_id=session_id, **TEST_IDENTITY)
         async for event in client.stream_response(request_id, timeout=10):
             if event.get("event") in {"request.completed", "request.error"}:
                 break

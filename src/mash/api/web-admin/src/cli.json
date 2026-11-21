@@ -43,10 +43,21 @@
           },
           {
             "flags": [
-              "--user-id"
+              "--app-id"
             ],
-            "name": "user_id",
-            "help": "User that requests and workflow runs act for (falls back to saved config)",
+            "name": "app_id",
+            "help": "App that requests and workflow runs act for (falls back to saved config)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--policy-id"
+            ],
+            "name": "policy_id",
+            "help": "Policy that requests and workflow runs run under (falls back to saved config)",
             "positional": false,
             "required": false,
             "default": null,
@@ -167,10 +178,21 @@
           },
           {
             "flags": [
-              "--user-id"
+              "--app-id"
             ],
-            "name": "user_id",
-            "help": "User to act for (overrides the saved connection's)",
+            "name": "app_id",
+            "help": "App to act for (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--policy-id"
+            ],
+            "name": "policy_id",
+            "help": "Policy to run under (overrides the saved connection's)",
             "positional": false,
             "required": false,
             "default": null,
@@ -229,10 +251,21 @@
           },
           {
             "flags": [
-              "--user-id"
+              "--app-id"
             ],
-            "name": "user_id",
-            "help": "User to act for (overrides the saved connection's)",
+            "name": "app_id",
+            "help": "App to act for (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--policy-id"
+            ],
+            "name": "policy_id",
+            "help": "Policy to run under (overrides the saved connection's)",
             "positional": false,
             "required": false,
             "default": null,
@@ -291,10 +324,21 @@
           },
           {
             "flags": [
-              "--user-id"
+              "--app-id"
             ],
-            "name": "user_id",
-            "help": "User to act for (overrides the saved connection's)",
+            "name": "app_id",
+            "help": "App to act for (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--policy-id"
+            ],
+            "name": "policy_id",
+            "help": "Policy to run under (overrides the saved connection's)",
             "positional": false,
             "required": false,
             "default": null,
@@ -353,10 +397,21 @@
           },
           {
             "flags": [
-              "--user-id"
+              "--app-id"
             ],
-            "name": "user_id",
-            "help": "User to act for (overrides the saved connection's)",
+            "name": "app_id",
+            "help": "App to act for (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--policy-id"
+            ],
+            "name": "policy_id",
+            "help": "Policy to run under (overrides the saved connection's)",
             "positional": false,
             "required": false,
             "default": null,
@@ -415,10 +470,21 @@
           },
           {
             "flags": [
-              "--user-id"
+              "--app-id"
             ],
-            "name": "user_id",
-            "help": "User to act for (overrides the saved connection's)",
+            "name": "app_id",
+            "help": "App to act for (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--policy-id"
+            ],
+            "name": "policy_id",
+            "help": "Policy to run under (overrides the saved connection's)",
             "positional": false,
             "required": false,
             "default": null,
@@ -477,10 +543,21 @@
           },
           {
             "flags": [
-              "--user-id"
+              "--app-id"
             ],
-            "name": "user_id",
-            "help": "User to act for (overrides the saved connection's)",
+            "name": "app_id",
+            "help": "App to act for (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--policy-id"
+            ],
+            "name": "policy_id",
+            "help": "Policy to run under (overrides the saved connection's)",
             "positional": false,
             "required": false,
             "default": null,
@@ -539,10 +616,21 @@
           },
           {
             "flags": [
-              "--user-id"
+              "--app-id"
             ],
-            "name": "user_id",
-            "help": "User to act for (overrides the saved connection's)",
+            "name": "app_id",
+            "help": "App to act for (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--policy-id"
+            ],
+            "name": "policy_id",
+            "help": "Policy to run under (overrides the saved connection's)",
             "positional": false,
             "required": false,
             "default": null,
@@ -623,10 +711,21 @@
           },
           {
             "flags": [
-              "--user-id"
+              "--app-id"
             ],
-            "name": "user_id",
-            "help": "User to act for (overrides the saved connection's)",
+            "name": "app_id",
+            "help": "App to act for (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--policy-id"
+            ],
+            "name": "policy_id",
+            "help": "Policy to run under (overrides the saved connection's)",
             "positional": false,
             "required": false,
             "default": null,
@@ -729,10 +828,21 @@
           },
           {
             "flags": [
-              "--user-id"
+              "--app-id"
             ],
-            "name": "user_id",
-            "help": "User to act for (overrides the saved connection's)",
+            "name": "app_id",
+            "help": "App to act for (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--policy-id"
+            ],
+            "name": "policy_id",
+            "help": "Policy to run under (overrides the saved connection's)",
             "positional": false,
             "required": false,
             "default": null,
@@ -835,10 +945,21 @@
           },
           {
             "flags": [
-              "--user-id"
+              "--app-id"
             ],
-            "name": "user_id",
-            "help": "User to act for (overrides the saved connection's)",
+            "name": "app_id",
+            "help": "App to act for (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--policy-id"
+            ],
+            "name": "policy_id",
+            "help": "Policy to run under (overrides the saved connection's)",
             "positional": false,
             "required": false,
             "default": null,
@@ -1113,8 +1234,85 @@
         ]
       },
       {
+        "name": "policy",
+        "help": "Create, replace and read the deployment's policies",
+        "args": [
+          {
+            "flags": [
+              "--api-base-url"
+            ],
+            "name": "api_base_url",
+            "help": "Mash host base URL",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--api-key"
+            ],
+            "name": "api_key",
+            "help": "Bearer API key",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          }
+        ],
+        "subcommands": [
+          {
+            "name": "put",
+            "help": "Create a policy, or replace the whole of an existing one",
+            "args": [
+              {
+                "flags": [
+                  "policy_id"
+                ],
+                "name": "policy_id",
+                "help": "",
+                "positional": true,
+                "required": true,
+                "default": null,
+                "choices": null
+              },
+              {
+                "flags": [
+                  "--file"
+                ],
+                "name": "file",
+                "help": "The policy as a JSON object, or - to read stdin",
+                "positional": false,
+                "required": true,
+                "default": null,
+                "choices": null
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "name": "get",
+            "help": "Print a policy",
+            "args": [
+              {
+                "flags": [
+                  "policy_id"
+                ],
+                "name": "policy_id",
+                "help": "",
+                "positional": true,
+                "required": true,
+                "default": null,
+                "choices": null
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
         "name": "sandbox",
-        "help": "Serve and manage per-user sandboxes",
+        "help": "Serve and manage per-policy sandboxes",
         "args": [],
         "subcommands": [
           {
@@ -1177,13 +1375,13 @@
           },
           {
             "name": "shell",
-            "help": "Open a shell in a user's sandbox, starting it if stopped",
+            "help": "Open a shell in a policy's sandbox, starting it if stopped",
             "args": [
               {
                 "flags": [
-                  "user_id"
+                  "policy_id"
                 ],
-                "name": "user_id",
+                "name": "policy_id",
                 "help": "",
                 "positional": true,
                 "required": true,
@@ -1228,13 +1426,13 @@
           },
           {
             "name": "stop",
-            "help": "Stop a user's sandbox; its next use starts it again",
+            "help": "Stop a policy's sandbox; its next use starts it again",
             "args": [
               {
                 "flags": [
-                  "user_id"
+                  "policy_id"
                 ],
-                "name": "user_id",
+                "name": "policy_id",
                 "help": "",
                 "positional": true,
                 "required": true,
@@ -1259,7 +1457,7 @@
       },
       {
         "name": "browser",
-        "help": "Serve and manage per-user browsers",
+        "help": "Serve and manage per-policy browsers",
         "args": [],
         "subcommands": [
           {
@@ -1355,13 +1553,13 @@
           },
           {
             "name": "view",
-            "help": "Print a live-view link to a user's browser",
+            "help": "Print a live-view link to a policy's browser",
             "args": [
               {
                 "flags": [
-                  "user_id"
+                  "policy_id"
                 ],
-                "name": "user_id",
+                "name": "policy_id",
                 "help": "",
                 "positional": true,
                 "required": true,
@@ -1384,13 +1582,13 @@
           },
           {
             "name": "stop",
-            "help": "Stop a user's browser; its profile is kept",
+            "help": "Stop a policy's browser; its profile is kept",
             "args": [
               {
                 "flags": [
-                  "user_id"
+                  "policy_id"
                 ],
-                "name": "user_id",
+                "name": "policy_id",
                 "help": "",
                 "positional": true,
                 "required": true,
@@ -1424,7 +1622,7 @@
       },
       {
         "name": "browser",
-        "help": "Sites your browser is signed in to: /browser | forget <site>",
+        "help": "Sites the policy's browser is signed in to: /browser | forget <site>",
         "aliases": []
       },
       {
@@ -1472,7 +1670,7 @@
       },
       {
         "name": "memory",
-        "help": "What is remembered about you: /memory | add <text> | forget <id>",
+        "help": "What this app remembers: /memory | add <text> | forget <id>",
         "aliases": []
       },
       {

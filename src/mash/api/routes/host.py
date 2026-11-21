@@ -13,7 +13,8 @@ from .common import (
     APIError,
     DefineHostRequest,
     HostSubmitRequest,
-    require_user_id,
+    require_app_id,
+    require_policy_id,
     require_message,
     require_session_id,
     state_from_request,
@@ -114,7 +115,8 @@ def build_host_router() -> APIRouter:
                 structured_output=structured_output,
                 context=body.context,
                 metadata=body.metadata,
-                user_id=require_user_id(body.user_id),
+                app_id=require_app_id(body.app_id),
+                policy_id=require_policy_id(body.policy_id),
                 traceparent=request.headers.get("traceparent"),
                 tracestate=request.headers.get("tracestate"),
             )
@@ -127,7 +129,8 @@ def build_host_router() -> APIRouter:
                 "request_id": accepted.get("request_id"),
                 "agent_id": accepted.get("agent_id"),
                 "session_id": accepted.get("session_id"),
-                "user_id": accepted.get("user_id"),
+                "app_id": accepted.get("app_id"),
+                "policy_id": accepted.get("policy_id"),
             }
         )
 

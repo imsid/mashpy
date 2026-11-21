@@ -233,13 +233,13 @@ def test_memory_shows_the_profile_and_entries() -> None:
     assert "Lives in Oakland." in out
     assert "abc12345" in out and "Has solar panels." in out and "conversations" in out
     row = next(line for line in out.splitlines() if "def67890" in line)
-    assert "Prefers email." in row and row.rstrip().endswith("you")
+    assert "Prefers email." in row and row.rstrip().endswith("the app")
 
 
 def test_memory_with_nothing_remembered_says_so() -> None:
     host = FakeHost()
     host.cortex = {"profile": "", "entries": []}
-    assert "Nothing is remembered about you yet." in say("/memory", host=host)[0]
+    assert "Nothing is remembered in this app yet." in say("/memory", host=host)[0]
 
 
 def test_memory_add_pins_a_fact_and_forget_removes_it() -> None:
@@ -290,7 +290,7 @@ def test_browser_lists_sites_and_signs_out_of_one() -> None:
 def test_browser_with_no_sites_and_with_no_browsers() -> None:
     host = FakeHost()
     host.browser_sites = []
-    assert "Your browser is not signed in to any site." in say("/browser", host=host)[0]
+    assert "The policy's browser is not signed in to any site." in say("/browser", host=host)[0]
     assert "Command failed: this host has no browsers" in say("/browser")[0]
 
 

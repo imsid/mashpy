@@ -1,11 +1,11 @@
-"""The cortex-build workflow: build one user's Cortex from their turns.
+"""The cortex-build workflow: build one app's Cortex from its turns.
 
 ```text
 collect (code) -> curate (code, orchestrates cortex-agent) -> write (code)
 ```
 
-A run builds the Cortex of the user it acts for (``POST /workflow/cortex-build/run``
-with ``user_id``). ``collect`` reads the user's Cortex and their new non-workflow, non-subagent
+A run builds the Cortex of the app it acts for (``POST /workflow/cortex-build/run``
+with ``app_id``). ``collect`` reads the app's Cortex and its new non-workflow, non-subagent
 turns with the tools each turn ran. ``curate`` sends them to ``cortex-agent``,
 or skips the model when there are no new turns. ``write`` applies the result
 in one transaction, as a compare-and-set on the version ``collect`` read.
@@ -73,7 +73,7 @@ class BundleTurn(BaseModel):
 
 
 class CortexBundle(BaseModel):
-    user_id: str
+    app_id: str
     base_version: int
     # created_at of the last turn in the bundle: the watermark after this build
     through: float
@@ -97,7 +97,7 @@ class CuratorOutput(BaseModel):
 
 
 class CortexCuration(BaseModel):
-    user_id: str
+    app_id: str
     base_version: int
     through: float
     remaining: int
@@ -109,7 +109,7 @@ class CortexCuration(BaseModel):
 
 
 class CortexBuildResult(BaseModel):
-    user_id: str
+    app_id: str
     turns_covered: int
     entries_written: int
     entries_deleted: int
@@ -151,21 +151,21 @@ async def _tool_calls(runtime_store: Any, turn: dict[str, Any]) -> list[BundleTo
 
 def _build_collect(context: CortexRuntimeContext):
     async def collect(inp: CortexBuildInput, ctx: StepContext) -> CortexBundle:
-        user_id = ctx.user_id
-        if user_id is None:
-            raise RuntimeError("cortex-build builds the run's user; the run has none")
+        app_id = ctx.app_id
+        if app_id is None:
+            raise RuntimeError("cortex-build builds the run's app; the run has none")
         pool = context.require_pool()
-        snapshot = await context.require_store().load(user_id)
+        snapshot = await context.require_store().load(app_id)
         # cortex-agent keeps the default store, so this is the pool's shared
         # memory store, which holds every such agent's turns.
         memory_store = pool.get_memory_store(CORTEX_AGENT_ID)
         runtime_store = pool.get_runtime_store()
         if memory_store is None or runtime_store is None:
             raise RuntimeError("cortex-build requires the pool's shared stores")
-        turns = await memory_store.list_user_turns(
-            user_id, after=snapshot.built_through, limit=inp.limit
+        turns = await memory_store.list_app_turns(
+            app_id, after=snapshot.built_through, limit=inp.limit
         )
-        total = await memory_store.count_user_turns(user_id, after=snapshot.built_through)
+        total = await memory_store.count_app_turns(app_id, after=snapshot.built_through)
 
         bundle_turns: list[BundleTurn] = []
         used = 0
@@ -186,7 +186,7 @@ def _build_collect(context: CortexRuntimeContext):
             used += size
 
         return CortexBundle(
-            user_id=user_id,
+            app_id=app_id,
             base_version=snapshot.version,
             through=bundle_turns[-1].created_at if bundle_turns else snapshot.built_through,
             remaining=total - len(bundle_turns),
@@ -209,7 +209,7 @@ def _build_collect(context: CortexRuntimeContext):
 def _build_curate(context: CortexRuntimeContext):
     async def curate(inp: CortexBundle, ctx: StepContext) -> CortexCuration:
         passthrough = dict(
-            user_id=inp.user_id,
+            app_id=inp.app_id,
             base_version=inp.base_version,
             through=inp.through,
             remaining=inp.remaining,
@@ -240,7 +240,9 @@ def _build_curate(context: CortexRuntimeContext):
             workflow_run_id=ctx.run_id,
             task_id="curate",
             session_id=f"cortex:{ctx.run_id}",
-            user_id=inp.user_id,
+            app_id=inp.app_id,
+            policy_id=ctx.policy_id,
+            policy=ctx.policy,
             attempt=ctx.attempt,
         )
         payload = await collect_terminal_payload(pool, CORTEX_AGENT_ID, request_id)
@@ -262,7 +264,7 @@ def _build_curate(context: CortexRuntimeContext):
 def _build_write(context: CortexRuntimeContext):
     async def write(inp: CortexCuration, ctx: StepContext) -> CortexBuildResult:
         result = {
-            "user_id": inp.user_id,
+            "app_id": inp.app_id,
             "turns_covered": inp.turns_covered,
             "remaining": inp.remaining,
         }
@@ -270,7 +272,7 @@ def _build_write(context: CortexRuntimeContext):
             return CortexBuildResult(**result, entries_written=0, entries_deleted=0)
         max_chars = context.settings.profile_max_chars
         applied = await context.require_store().apply_build(
-            user_id=inp.user_id,
+            app_id=inp.app_id,
             run_id=ctx.run_id,
             base_version=inp.base_version,
             built_through=inp.through,

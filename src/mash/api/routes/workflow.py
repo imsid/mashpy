@@ -11,9 +11,10 @@ from mash.workflows import (
     DuplicateWorkflowRunError,
     WorkflowInputValidationError,
     WorkflowNotFoundError,
+    WorkflowIdentityRequiredError,
     WorkflowResumeNotSupportedError,
-    WorkflowUserRequiredError,
 )
+from mash.policies import PolicyNotFoundError
 
 from .common import (
     APIError,
@@ -22,7 +23,8 @@ from .common import (
     get_workflow_service,
     normalize_optional_text,
     parse_limit,
-    require_user_id,
+    require_app_id,
+    require_policy_id,
     state_from_request,
     success,
 )
@@ -72,20 +74,23 @@ def build_workflow_router() -> APIRouter:
         body: RunWorkflowRequest,
     ) -> dict[str, Any]:
         workflow_service = get_workflow_service(request)
-        user_id = require_user_id(body.user_id) if body.user_id is not None else None
+        app_id = require_app_id(body.app_id) if body.app_id is not None else None
+        policy_id = require_policy_id(body.policy_id) if body.policy_id is not None else None
         try:
             run = await workflow_service.run_workflow(
                 workflow_id.strip(),
                 dedup_key=normalize_optional_text(body.dedup_key),
                 workflow_input=body.input,
                 session_id=normalize_optional_text(body.session_id),
-                user_id=user_id,
+                app_id=app_id,
+                policy_id=policy_id,
             )
         except (
             WorkflowNotFoundError,
             WorkflowInputValidationError,
-            WorkflowUserRequiredError,
+            WorkflowIdentityRequiredError,
             DuplicateWorkflowRunError,
+            PolicyNotFoundError,
         ):
             raise
         except Exception as exc:
@@ -169,7 +174,8 @@ def build_workflow_router() -> APIRouter:
                 "error": run.error,
                 "workflow_input": run.workflow_input,
                 "session_id": run.session_id,
-                "user_id": run.user_id,
+                "app_id": run.app_id,
+                "policy_id": run.policy_id,
                 "result": run.result,
                 "steps": run.steps,
             }

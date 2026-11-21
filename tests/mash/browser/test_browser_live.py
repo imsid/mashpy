@@ -191,10 +191,10 @@ class LiveBrowserTests(unittest.IsolatedAsyncioTestCase):
 
         class _Browsers:
             @contextlib.asynccontextmanager
-            async def hold(inner, user_id):
+            async def hold(inner, policy_id):
                 yield type("E", (), {"base_url": self.base, "token": TOKEN})()
 
-        ctx = StepContext(run_id="r", step_id="s", workflow_input={}, user_id="u-1", browsers=_Browsers())
+        ctx = StepContext(run_id="r", step_id="s", workflow_input={}, policy_id="p-1", browsers=_Browsers())
         async with ctx.browser() as context:
             page = await context.new_page()
             await page.goto(f"{self.sites[0]}/index.html")

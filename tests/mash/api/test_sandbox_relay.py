@@ -26,7 +26,12 @@ from mash.runtime.events import RequestStatus, RuntimeEvent, RuntimeEventType
 from mash.runtime.host.tokens import derive_agent_token
 from mash.sandbox.manager import SandboxCapacityError, SandboxManager, Streamed
 from mash.sandbox.tokens import derive_link_token
-from mash.testing.runtime_fixtures import build_tool_calling_spec, metadata
+from mash.testing.runtime_fixtures import (
+    DEFAULT_POLICY,
+    TEST_IDENTITY,
+    build_tool_calling_spec,
+    metadata,
+)
 from mash.testing.sandboxes import LocalSandboxProvider
 from mash.tools.sandbox import SandboxVariable
 
@@ -39,10 +44,10 @@ class _RecordingSandboxes:
         self.calls: list[dict[str, Any]] = []
         self.error: Exception | None = None
 
-    async def exec(self, user_id: str, **kwargs: Any) -> dict[str, Any]:
+    async def exec(self, policy_id: str, **kwargs: Any) -> dict[str, Any]:
         if self.error is not None:
             raise self.error
-        self.calls.append({"user_id": user_id, **kwargs})
+        self.calls.append({"policy_id": policy_id, **kwargs})
         return {"output": "ok", "exit_code": 0, "timed_out": False}
 
 
@@ -61,10 +66,12 @@ class SandboxRelayTests(unittest.TestCase):
             pool=pool, host_secret=SECRET, public_url=PUBLIC
         )
         self.http = TestClient(app)
-        self._accept("req-1", agent_id="research", user_id="u-1")
+        self._accept("req-1", agent_id="research", policy=DEFAULT_POLICY)
 
-    def _accept(self, request_id: str, *, agent_id: str, user_id: str | None) -> None:
-        request_metadata = {"user_id": user_id} if user_id else {}
+    def _accept(self, request_id: str, *, agent_id: str, policy: dict | None) -> None:
+        request_metadata = (
+            {"app_id": "app-1", "policy_id": "p-1", "policy": policy} if policy is not None else {}
+        )
         asyncio.run(
             self.store.append_event(
                 RuntimeEvent(
@@ -92,12 +99,12 @@ class SandboxRelayTests(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json(), {"output": "ok", "exit_code": 0, "timed_out": False})
-        link = f"{PUBLIC}/s/{derive_link_token(SECRET, 'u-1')}"
+        link = f"{PUBLIC}/s/{derive_link_token(SECRET, 'p-1')}"
         self.assertEqual(
             self.sandboxes.calls,
             [
                 {
-                    "user_id": "u-1",
+                    "policy_id": "p-1",
                     "agent_id": "research",
                     "command": "ls",
                     "timeout": 5.0,
@@ -150,9 +157,16 @@ class SandboxRelayTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 403)
         self.assertEqual(self.sandboxes.calls, [])
 
-    def test_a_request_without_a_user_is_403(self) -> None:
-        self._accept("req-old", agent_id="research", user_id=None)
+    def test_a_request_without_a_policy_is_403(self) -> None:
+        self._accept("req-old", agent_id="research", policy=None)
         self.assertEqual(self._exec(request_id="req-old").status_code, 403)
+
+    def test_a_policy_without_a_sandbox_is_403(self) -> None:
+        self._accept("req-dry", agent_id="research", policy={**DEFAULT_POLICY, "sandbox": False})
+        resp = self._exec(request_id="req-dry")
+        self.assertEqual(resp.status_code, 403)
+        self.assertIn("no sandbox", resp.json()["error"]["message"])
+        self.assertEqual(self.sandboxes.calls, [])
 
     def test_bad_bodies_are_400(self) -> None:
         for overrides in (
@@ -205,11 +219,11 @@ class SandboxFilesAndLinksTests(unittest.IsolatedAsyncioTestCase):
                 event_type=RuntimeEventType.INVOKE_AGENT_START.value,
                 dedupe_key="request.accepted",
                 lifecycle=RequestStatus.RUNNING,
-                payload={"request_metadata": {"user_id": "u-1"}},
+                payload={"request_metadata": {**TEST_IDENTITY}},
             )
         )
         self.auth = {"Authorization": f"Bearer {derive_agent_token(SECRET, 'research')}"}
-        self.link = f"/s/{derive_link_token(SECRET, 'u-1')}"
+        self.link = f"/s/{derive_link_token(SECRET, 'p-1')}"
 
     async def asyncTearDown(self) -> None:
         await self.http.aclose()
@@ -223,7 +237,7 @@ class SandboxFilesAndLinksTests(unittest.IsolatedAsyncioTestCase):
             headers=self.auth,
         )
         self.assertEqual(put.status_code, 200, put.text)
-        folder = self.provider.workspaces("u-1") / "research"
+        folder = self.provider.workspaces("p-1") / "research"
         self.assertEqual((folder / "data" / "sales.csv").read_bytes(), b"region,total\nwest,3\n")
 
         got = await self.http.get(
@@ -250,9 +264,9 @@ class SandboxFilesAndLinksTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(writer.status_code, 403)
 
     async def test_a_file_link_serves_the_file_with_its_type_in_a_sandboxed_page(self) -> None:
-        folder = self.provider.workspaces("u-1") / "research"
+        folder = self.provider.workspaces("p-1") / "research"
         await self.manager.exec(
-            "u-1",
+            "p-1",
             agent_id="research",
             command="mkdir -p site && echo '<h1>Sales</h1>' > report.html && cp report.html site/index.html",
             timeout=10,
@@ -270,7 +284,7 @@ class SandboxFilesAndLinksTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_file_link_serves_names_that_need_encoding(self) -> None:
         await self.manager.exec(
-            "u-1", agent_id="research", command="printf hi > 'a?b #1.txt'", timeout=10
+            "p-1", agent_id="research", command="printf hi > 'a?b #1.txt'", timeout=10
         )
         page = await self.http.get(f"{self.link}/files/research/a%3Fb%20%231.txt")
         self.assertEqual(page.status_code, 200, page.text)
@@ -282,7 +296,7 @@ class SandboxFilesAndLinksTests(unittest.IsolatedAsyncioTestCase):
             json={"agent_id": "research", "command": "touch climbed", "timeout": 5},
         )
         self.assertEqual(climbed.status_code, 400)
-        self.assertFalse((self.provider.workspaces("u-1") / "research" / "climbed").exists())
+        self.assertFalse((self.provider.workspaces("p-1") / "research" / "climbed").exists())
 
     async def test_a_file_link_cannot_name_a_folder_outside_the_files(self) -> None:
         climbed = await self.http.get(f"{self.link}/files/..%2Fhealth")
@@ -296,7 +310,7 @@ class SandboxFilesAndLinksTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.provider.ensure_calls, [])
 
     async def test_a_port_link_passes_only_redirects_that_stay_on_the_host(self) -> None:
-        async def stream_proxy(user_id, **kwargs):
+        async def stream_proxy(policy_id, **kwargs):
             async def close() -> None:
                 return None
 
@@ -325,7 +339,7 @@ class SandboxFilesAndLinksTests(unittest.IsolatedAsyncioTestCase):
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
         await self.manager.exec(
-            "u-1",
+            "p-1",
             agent_id="research",
             command=(
                 "mkdir -p app && echo '<p>live</p>' > app/index.html && "
@@ -346,7 +360,7 @@ class SandboxFilesAndLinksTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(page.headers["content-security-policy"], LINK_CSP)
         finally:
             await self.manager.exec(
-                "u-1", agent_id="research", command=f"pkill -f 'http.server {port}' || true",
+                "p-1", agent_id="research", command=f"pkill -f 'http.server {port}' || true",
                 timeout=10,
             )
 
@@ -374,7 +388,7 @@ class LinkStreamingTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.01)
         port = self.server.servers[0].sockets[0].getsockname()[1]
         self.http = httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", timeout=30)
-        self.link = f"/s/{derive_link_token(SECRET, 'u-1')}"
+        self.link = f"/s/{derive_link_token(SECRET, 'p-1')}"
         self.upstream = SlowHTTPServer()
         await self.upstream.start()
 
@@ -394,14 +408,14 @@ class LinkStreamingTests(unittest.IsolatedAsyncioTestCase):
             chunks = response.aiter_bytes()
             self.assertEqual(await asyncio.wait_for(chunks.__anext__(), 5), b"first")
             # The reaper must not stop the sandbox mid-stream.
-            self.assertEqual(self.manager._in_flight["u-1"], 1)
+            self.assertEqual(self.manager._in_flight["p-1"], 1)
             self.upstream.release.set()
             self.assertEqual(b"".join([chunk async for chunk in chunks]), b"second")
         for _ in range(100):
-            if self.manager._in_flight["u-1"] == 0:
+            if self.manager._in_flight["p-1"] == 0:
                 break
             await asyncio.sleep(0.01)
-        self.assertEqual(self.manager._in_flight["u-1"], 0)
+        self.assertEqual(self.manager._in_flight["p-1"], 0)
 
     async def test_a_port_link_streams_the_request_body(self) -> None:
         async def body():
@@ -416,7 +430,7 @@ class LinkStreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.text, "11")
 
     async def test_a_file_link_streams_the_file(self) -> None:
-        folder = self.provider.workspaces("u-1") / "research"
+        folder = self.provider.workspaces("p-1") / "research"
         folder.mkdir(parents=True)
         (folder / "big.bin").write_bytes(b"x" * 3_000_000)
 
@@ -448,18 +462,18 @@ class SandboxToolsEndToEndTests(unittest.IsolatedAsyncioTestCase):
             await pool.start()
             try:
                 client = pool.get_client("research")
-                request_id = await client.post_request("go", session_id="s-1", user_id="u-1")
+                request_id = await client.post_request("go", session_id="s-1", **TEST_IDENTITY)
                 events = [event async for event in client.stream_response(request_id, timeout=20)]
-                folder = provider.workspaces("u-1") / "research"
+                folder = provider.workspaces("p-1") / "research"
                 files = {
                     str(path.relative_to(folder)): path.read_bytes()
                     for path in folder.rglob("*")
                     if path.is_file()
                 } if folder.exists() else {}
-                other_user = provider.workspaces("u-2").exists()
+                other_policy = provider.workspaces("p-2").exists()
             finally:
                 await pool.close()
-        self.assertFalse(other_user)
+        self.assertFalse(other_policy)
         self.assertEqual(events[-1]["event"], "request.completed")
         return events[-1]["data"]["response"]["text"], files, folder
 

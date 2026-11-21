@@ -12,11 +12,11 @@ log = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 
-class SessionUserMismatchError(RuntimeError):
-    """The session already belongs to another user.
+class SessionPolicyMismatchError(RuntimeError):
+    """The session already runs under another policy.
 
-    A session is the user's conversation: its turns replay into each request
-    on it. The API maps this to HTTP 409.
+    A session binds to the policy of its first request: its turns replay into
+    each request on it. The API maps this to HTTP 409.
     """
 
 

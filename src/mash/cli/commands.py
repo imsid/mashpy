@@ -21,7 +21,8 @@ class CLIContext:
     api_base_url: str
     agent_id: str
     session_id: str
-    user_id: str
+    app_id: str
+    policy_id: str
     client: MashHostClient
     renderer: RichRenderer
     session_ids: Dict[str, str] = field(default_factory=dict)

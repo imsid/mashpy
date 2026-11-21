@@ -42,13 +42,15 @@ async def post_inline_agent_request(
     workflow_run_id: str,
     task_id: str,
     session_id: str,
-    user_id: str,
+    app_id: str,
+    policy_id: str,
+    policy: dict[str, Any],
     host_snapshot: dict[str, Any] | None = None,
     attempt: int = 1,
 ) -> str:
     """Submit one agent request on behalf of a workflow step and return its id.
 
-    The request acts for the run's ``user_id``. Pair with
+    The request runs for the run's app under its policy snapshot. Pair with
     ``collect_terminal_payload`` to await the result.
     """
     normalized = (
@@ -59,7 +61,9 @@ async def post_inline_agent_request(
     return await pool.get_client(agent_id).post_request(
         message,
         session_id=session_id,
-        user_id=user_id,
+        app_id=app_id,
+        policy_id=policy_id,
+        policy=policy,
         structured_output=normalized,
         request_id=agent_step_request_id(workflow_run_id, task_id, attempt),
         host=host_snapshot,

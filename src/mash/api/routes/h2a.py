@@ -7,9 +7,9 @@ speak H2A as ``AgentServer`` does (no ``{data}`` envelope), so the agent uses a
 plain ``AgentClient`` pointed at ``{host}/h2a``. Each call authenticates with
 the caller's agent token; the host checks it against the request's ``parent``
 and the host snapshot stored with the parent request, not the caller's body:
-a child runs only on one of the host's agents and acts for the parent
-request's user, and a workflow runs only when the host lists it. So a caller
-can neither widen its host nor name another user.
+a child runs only on one of the host's agents under the parent request's app
+and policy, and a workflow runs only when the host lists it. So a caller can
+neither widen its host nor name another app or policy.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from mash.runtime.client import (
     AgentUnavailableError,
     InteractionClosedError,
     InvalidInteractionResponseError,
-    SessionUserConflictError,
+    SessionPolicyConflictError,
 )
 from mash.runtime.events import RuntimeEventType
 from mash.runtime.host.host import AgentDisabledError
@@ -157,10 +157,13 @@ def build_h2a_router() -> APIRouter:
             return h2a_error(
                 403, "FORBIDDEN", f"agent '{agent_id}' is not in the request's host"
             )
-        if "user_id" in body and body.get("user_id") != identity.user_id:
-            return h2a_error(
-                403, "FORBIDDEN", "user_id must match the parent request's user"
-            )
+        if identity.app_id is None or identity.policy_id is None or identity.policy is None:
+            return h2a_error(400, "INVALID_PARENT", "parent request has no app or policy")
+        for key in ("app_id", "policy_id", "policy"):
+            if key in body and body.get(key) != getattr(identity, key):
+                return h2a_error(
+                    403, "FORBIDDEN", f"{key} must match the parent request's"
+                )
 
         message = body.get("message")
         session_id = body.get("session_id")
@@ -203,12 +206,14 @@ def build_h2a_router() -> APIRouter:
                 context=body.get("context"),
                 host=host,
                 parent=parent,
-                user_id=identity.user_id,
+                app_id=identity.app_id,
+                policy_id=identity.policy_id,
+                policy=identity.policy,
             )
         except AgentUnavailableError as exc:
             return h2a_error(503, "AGENT_UNAVAILABLE", str(exc))
-        except SessionUserConflictError as exc:
-            return h2a_error(409, "SESSION_USER_MISMATCH", str(exc))
+        except SessionPolicyConflictError as exc:
+            return h2a_error(409, "SESSION_POLICY_MISMATCH", str(exc))
         except AgentClientError as exc:
             return h2a_error(502, "AGENT_ERROR", str(exc))
         return JSONResponse(
@@ -383,7 +388,9 @@ def build_h2a_router() -> APIRouter:
                 workflow_id,
                 dedup_key=dedup_key,
                 workflow_input=workflow_input,
-                user_id=identity.user_id,
+                app_id=identity.app_id,
+                policy_id=identity.policy_id,
+                policy=identity.policy,
             )
             status_code = 202
         except DuplicateWorkflowRunError as exc:
@@ -418,9 +425,9 @@ def build_h2a_router() -> APIRouter:
             return h2a_error(404, "RUN_NOT_FOUND", "Workflow run not found")
         if run.workflow_id != workflow_id:
             return h2a_error(404, "RUN_NOT_FOUND", "Workflow run not found")
-        if run.user_id != identity.user_id:
+        if (run.app_id, run.policy_id) != (identity.app_id, identity.policy_id):
             return h2a_error(
-                403, "FORBIDDEN", "the run does not act for the parent request's user"
+                403, "FORBIDDEN", "the run does not act for the parent request's app and policy"
             )
         return JSONResponse(_run_payload(run))
 

@@ -27,7 +27,7 @@ from mash.agents.cortex import workflows as cortex_workflows
 from mash.runtime import HostBuilder
 from mash.runtime.events import RuntimeEvent, RuntimeEventType
 from mash.runtime.structured_output import serialize_structured_output
-from mash.testing.runtime_fixtures import build_spec, metadata
+from mash.testing.runtime_fixtures import DEFAULT_POLICY, build_spec, metadata
 from mash.workflows import StepContext
 
 TEST_URL = "postgresql://test/runtime"
@@ -82,7 +82,7 @@ class _CortexBuildFixture(unittest.IsolatedAsyncioTestCase):
         self,
         trace_id: str,
         *,
-        user_id: str | None = "u-1",
+        app_id: str | None = "app-1",
         created_at: float,
         agent_id: str = "assistant",
         workflow_id: str | None = None,
@@ -99,7 +99,7 @@ class _CortexBuildFixture(unittest.IsolatedAsyncioTestCase):
             session_total_tokens=0,
             metadata=metadata,
             workflow_id=workflow_id,
-            user_id=user_id,
+            app_id=app_id,
         )
         self.memory_store._turns[-1]["created_at"] = created_at
 
@@ -117,7 +117,7 @@ class _CortexBuildFixture(unittest.IsolatedAsyncioTestCase):
         )
 
     async def _run(
-        self, run_id: str = "run-1", user_id: str = "u-1", **workflow_input: Any
+        self, run_id: str = "run-1", app_id: str = "app-1", **workflow_input: Any
     ) -> dict[str, Any]:
         prev: dict[str, Any] = {}
         self.outputs: dict[str, dict[str, Any]] = {}
@@ -127,7 +127,9 @@ class _CortexBuildFixture(unittest.IsolatedAsyncioTestCase):
                 run_id=run_id,
                 step_id=step.step_id,
                 workflow_input=workflow_input,
-                user_id=user_id,
+                app_id=app_id,
+                policy_id="p-1",
+                policy=DEFAULT_POLICY,
             )
             result = step.run(inp, ctx)
             if inspect.isawaitable(result):
@@ -137,12 +139,12 @@ class _CortexBuildFixture(unittest.IsolatedAsyncioTestCase):
         return prev
 
 class CortexBuildTests(_CortexBuildFixture):
-    async def test_collect_takes_the_users_own_turns_and_their_tools(self) -> None:
+    async def test_collect_takes_the_apps_own_turns_and_their_tools(self) -> None:
         await self._turn("t-1", created_at=1.0, message="I use metric")
         await self._turn("t-2", created_at=2.0, message="I work at Acme")
         await self._turn("t-wf", created_at=3.0, workflow_id="wf")
         await self._turn("t-sub", created_at=4.0, metadata={"subagent_id": "research"})
-        await self._turn("t-other", user_id="u-2", created_at=5.0)
+        await self._turn("t-other", app_id="app-2", created_at=5.0)
         convert = {"gen_ai.tool.name": "convert", "gen_ai.tool.call.id": "c1"}
         search = {"gen_ai.tool.name": "search_cortex", "gen_ai.tool.call.id": "c2"}
         await self._event(
@@ -184,30 +186,30 @@ class CortexBuildTests(_CortexBuildFixture):
 
         self.assertEqual(result["turns_covered"], 2)
         self.assertEqual(result["remaining"], 1)
-        self.assertEqual((await self.store.load("u-1")).built_through, 2.0)
+        self.assertEqual((await self.store.load("app-1")).built_through, 2.0)
 
     async def test_no_new_turns_skips_the_curator_and_writes_nothing(self) -> None:
         result = await self._run()
 
         self.assertEqual(self.curator.requests, [])
         self.assertEqual(result, {
-            "user_id": "u-1", "turns_covered": 0, "entries_written": 0,
+            "app_id": "app-1", "turns_covered": 0, "entries_written": 0,
             "entries_deleted": 0, "remaining": 0,
         })
-        self.assertEqual((await self.store.load("u-1")).version, 0)
+        self.assertEqual((await self.store.load("app-1")).version, 0)
 
     async def test_build_writes_profile_and_entries_and_keeps_pinned_entries(self) -> None:
         await self._turn("t-1", created_at=1.0)
         mem = self.store._mem
-        mem.profiles["u-1"] = "old"
-        mem.users["u-1"] = {"built_through": 0.0, "version": 3}
+        mem.profiles["app-1"] = "old"
+        mem.apps["app-1"] = {"built_through": 0.0, "version": 3}
         for entry_id, origin, content in (
             ("e-build", "build", "Uses imperial"),
             ("e-stale", "build", "Lives in Paris"),
             ("e-app", "app", "Plan: enterprise"),
         ):
             mem.entries[entry_id] = CortexEntry(
-                entry_id=entry_id, user_id="u-1", topic="t", content=content, origin=origin
+                entry_id=entry_id, app_id="app-1", topic="t", content=content, origin=origin
             )
         source = {"agent_id": "assistant", "session_id": "s-1", "trace_id": "t-1"}
         self.curator.output = {
@@ -223,7 +225,7 @@ class CortexBuildTests(_CortexBuildFixture):
         result = await self._run()
 
         self.assertEqual((result["entries_written"], result["entries_deleted"]), (2, 1))
-        snapshot = await self.store.load("u-1")
+        snapshot = await self.store.load("app-1")
         self.assertEqual(snapshot.version, 4)
         self.assertEqual(snapshot.built_through, 1.0)
         self.assertEqual(len(snapshot.profile), 50)
@@ -245,8 +247,8 @@ class CortexBuildTests(_CortexBuildFixture):
 
         async def curate_then_app_edit(inp, ctx):
             output = await original(inp, ctx)
-            self.store._mem.profiles["u-1"] = ""
-            self.store._mem.users["u-1"] = {"built_through": 0.0, "version": 1}
+            self.store._mem.profiles["app-1"] = ""
+            self.store._mem.apps["app-1"] = {"built_through": 0.0, "version": 1}
             return output
 
         object.__setattr__(self.workflow.steps[1], "run", curate_then_app_edit)
@@ -256,17 +258,17 @@ class CortexBuildTests(_CortexBuildFixture):
 
     async def test_retried_write_returns_its_stored_result(self) -> None:
         kwargs = dict(
-            user_id="u-1", run_id="run-1", base_version=0, built_through=1.0, profile="p",
+            app_id="app-1", run_id="run-1", base_version=0, built_through=1.0, profile="p",
             upserts=[EntryChange(topic="t", content="c")], deletes=[],
-            result={"user_id": "u-1", "turns_covered": 1, "remaining": 0},
+            result={"app_id": "app-1", "turns_covered": 1, "remaining": 0},
         )
 
         first = await self.store.apply_build(**kwargs)
         second = await self.store.apply_build(**kwargs)
 
         self.assertEqual(first, second)
-        self.assertEqual((await self.store.load("u-1")).version, 1)
-        self.assertEqual(len((await self.store.load("u-1")).entries), 1)
+        self.assertEqual((await self.store.load("app-1")).version, 1)
+        self.assertEqual(len((await self.store.load("app-1")).entries), 1)
 
 
 class CortexBuildEngineTests(_CortexBuildFixture):
@@ -315,7 +317,7 @@ class CortexBuildEngineTests(_CortexBuildFixture):
                 run_id=run_id,
                 workflow_id=CORTEX_BUILD_WORKFLOW_ID,
                 status="queued",
-                user_id="u-1",
+                app_id="app-1",
                 created_at=1.0,
             )
         )
@@ -325,7 +327,7 @@ class CortexBuildEngineTests(_CortexBuildFixture):
                 workflow=self.workflow,
                 run_id=run_id,
                 workflow_input={},
-                user_id="u-1",
+                app_id="app-1",
             )
         )
 
@@ -333,7 +335,7 @@ class CortexBuildEngineTests(_CortexBuildFixture):
         self.assertEqual(self.curator.requests[0]["workflow_run_id"], run_id)
         steps = await self.workflow_store.get_run_steps(run_id)
         self.assertEqual([s.step_id for s in steps], ["collect", "curate", "write"])
-        self.assertEqual((await self.store.load("u-1")).profile, "Uses metric.")
+        self.assertEqual((await self.store.load("app-1")).profile, "Uses metric.")
 
 
 class CortexBuildSpecTests(unittest.TestCase):
@@ -381,20 +383,20 @@ class PostgresCortexBuildTests(unittest.IsolatedAsyncioTestCase):
         self.url = _postgres_url()
         self.store = CortexStore(self.url)
         await self.store.open()
-        self.user_id = f"cortex-{uuid.uuid4().hex}"
+        self.app_id = f"cortex-{uuid.uuid4().hex}"
 
     async def asyncTearDown(self) -> None:
         await self.store.close()
         with psycopg.connect(self.url, autocommit=True) as conn:
-            conn.execute("DELETE FROM cortex_user WHERE user_id = %s", (self.user_id,))
-            conn.execute("DELETE FROM memory_turns WHERE user_id = %s", (self.user_id,))
+            conn.execute("DELETE FROM cortex_app WHERE app_id = %s", (self.app_id,))
+            conn.execute("DELETE FROM memory_turns WHERE app_id = %s", (self.app_id,))
 
     def _build(self, run_id: str, base_version: int, **overrides: Any) -> dict[str, Any]:
         build = dict(
-            user_id=self.user_id, run_id=run_id, base_version=base_version,
+            app_id=self.app_id, run_id=run_id, base_version=base_version,
             built_through=float(base_version + 1), profile=f"profile {run_id}",
             upserts=[], deletes=[],
-            result={"user_id": self.user_id, "turns_covered": 1, "remaining": 0},
+            result={"app_id": self.app_id, "turns_covered": 1, "remaining": 0},
         )
         return {**build, **overrides}
 
@@ -411,7 +413,7 @@ class PostgresCortexBuildTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(CortexConflictError):
             await self.store.apply_build(**self._build("run-2", 0))
 
-        snapshot = await self.store.load(self.user_id)
+        snapshot = await self.store.load(self.app_id)
         self.assertEqual((snapshot.version, snapshot.built_through), (1, 1.0))
         [entry] = snapshot.entries
         self.assertEqual((entry.content, entry.origin, entry.sources), ("Acme", "build", [source]))
@@ -429,7 +431,7 @@ class PostgresCortexBuildTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertEqual((result["entries_written"], result["entries_deleted"]), (0, 0))
-        [pinned] = (await self.store.load(self.user_id)).entries
+        [pinned] = (await self.store.load(self.app_id)).entries
         self.assertEqual(pinned.content, "Acme")
 
     async def test_list_user_turns_skips_workflow_subagent_and_other_users(self) -> None:
@@ -444,14 +446,14 @@ class PostgresCortexBuildTests(unittest.IsolatedAsyncioTestCase):
                 ("sub", {"metadata": {"subagent_id": "research"}}),
             ):
                 await memory_store.save_turn(
-                    trace_id=f"{self.user_id}-{trace}", session_id="s", agent_id="assistant",
+                    trace_id=f"{self.app_id}-{trace}", session_id="s", agent_id="assistant",
                     user_message="hi", agent_response="yo", signals={}, session_total_tokens=0,
-                    user_id=self.user_id, **kwargs,
+                    app_id=self.app_id, **kwargs,
                 )
-            turns = await memory_store.list_user_turns(self.user_id)
-            self.assertEqual([t["trace_id"] for t in turns], [f"{self.user_id}-own"])
-            self.assertEqual(await memory_store.count_user_turns(self.user_id), 1)
-            later = await memory_store.list_user_turns(self.user_id, after=turns[0]["created_at"])
+            turns = await memory_store.list_app_turns(self.app_id)
+            self.assertEqual([t["trace_id"] for t in turns], [f"{self.app_id}-own"])
+            self.assertEqual(await memory_store.count_app_turns(self.app_id), 1)
+            later = await memory_store.list_app_turns(self.app_id, after=turns[0]["created_at"])
             self.assertEqual(later, [])
         finally:
             await memory_store.close()

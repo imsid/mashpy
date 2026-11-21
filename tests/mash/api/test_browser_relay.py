@@ -32,6 +32,7 @@ from mash.runtime.events import RequestStatus, RuntimeEvent, RuntimeEventType
 from mash.runtime.host.tokens import derive_agent_token
 from mash.sandbox.manager import SandboxManager
 from mash.testing.browsers import FakePage, LocalBrowserProvider
+from mash.testing.runtime_fixtures import DEFAULT_POLICY
 from mash.testing.sandboxes import LocalSandboxProvider
 
 SECRET = "host-secret"
@@ -114,7 +115,7 @@ class BrowserRelayTests(unittest.TestCase):
         app.state.runtime_state = SimpleNamespace(pool=pool, host_secret=SECRET, public_url=PUBLIC)
         self.http = TestClient(app)
         self.http.__enter__()
-        self._accept("req-1", agent_id="billing", user_id="u-1")
+        self._accept("req-1", agent_id="billing")
 
     def tearDown(self) -> None:
         self.http.portal.call(self.provider.close)
@@ -123,7 +124,9 @@ class BrowserRelayTests(unittest.TestCase):
         self.vnc.sock.close()
         self._novnc.cleanup()
 
-    def _accept(self, request_id: str, *, agent_id: str, user_id: str) -> None:
+    def _accept(
+        self, request_id: str, *, agent_id: str, policy: dict = DEFAULT_POLICY
+    ) -> None:
         asyncio.run(
             self.store.append_event(
                 RuntimeEvent(
@@ -133,7 +136,9 @@ class BrowserRelayTests(unittest.TestCase):
                     event_type=RuntimeEventType.INVOKE_AGENT_START.value,
                     dedupe_key="request.accepted",
                     lifecycle=RequestStatus.RUNNING,
-                    payload={"request_metadata": {"user_id": user_id}},
+                    payload={
+                        "request_metadata": {"app_id": "app-1", "policy_id": "p-1", "policy": policy}
+                    },
                 )
             )
         )
@@ -153,9 +158,42 @@ class BrowserRelayTests(unittest.TestCase):
         self.navigate()
         off = self.post("/call", tool="browser_navigate", arguments={"url": "https://evil.io/"})
 
-        self.assertIn("u-1", self.provider.browsers)
+        self.assertIn("p-1", self.provider.browsers)
         self.assertTrue(off.json()["is_error"])
         self.assertIn("https://*.pge.com", off.json()["content"])
+
+    def test_the_policy_narrows_the_agents_sites(self) -> None:
+        self._accept(
+            "req-m", agent_id="billing", policy={**DEFAULT_POLICY, "browser_sites": ["https://m.pge.com"]}
+        )
+        www = self.post(
+            "/call", request_id="req-m", tool="browser_navigate", arguments={"url": "https://www.pge.com/"}
+        )
+        self.assertTrue(www.json()["is_error"])
+        self.assertIn("https://m.pge.com", www.json()["content"])
+        m = self.post(
+            "/call", request_id="req-m", tool="browser_navigate", arguments={"url": "https://m.pge.com/"}
+        )
+        self.assertFalse(m.json()["is_error"], m.json())
+
+    def test_a_policy_that_allows_none_of_the_agents_sites_is_refused(self) -> None:
+        for request_id, sites in (("req-none", []), ("req-evil", ["https://evil.io"])):
+            with self.subTest(sites=sites):
+                self._accept(
+                    request_id, agent_id="billing", policy={**DEFAULT_POLICY, "browser_sites": sites}
+                )
+                resp = self.post("/call", request_id=request_id, tool="browser_snapshot")
+                self.assertEqual(resp.status_code, 403)
+
+    def test_a_policy_without_a_sandbox_refuses_save_and_upload(self) -> None:
+        self._accept("req-dry", agent_id="billing", policy={**DEFAULT_POLICY, "sandbox": False})
+        saved = self.post("/save", request_id="req-dry", download_id="d-1", path="x.pdf")
+        self.assertTrue(saved.json()["is_error"])
+        self.assertIn("this request has none", saved.json()["content"])
+        uploaded = self.post(
+            "/upload", request_id="req-dry", target="Upload", element="file input", path="x.pdf"
+        )
+        self.assertTrue(uploaded.json()["is_error"])
 
     def test_tools_outside_the_relayed_set_are_refused(self) -> None:
         resp = self.post("/call", tool="browser_evaluate", arguments={"function": "() => 1"})
@@ -163,7 +201,7 @@ class BrowserRelayTests(unittest.TestCase):
 
     def test_an_agent_without_sites_or_another_agents_request_is_refused(self) -> None:
         self.assertEqual(self.post("/call", caller="writer", tool="browser_snapshot").status_code, 403)
-        self._accept("req-2", agent_id="writer", user_id="u-1")
+        self._accept("req-2", agent_id="writer")
         resp = self.http.post(
             "/browser/call",
             json={"request_id": "req-2", "tool": "browser_snapshot"},
@@ -179,7 +217,7 @@ class BrowserRelayTests(unittest.TestCase):
         saved = self.post("/save", download_id="dl-1", path="bills/2026-10.pdf")
 
         self.assertFalse(saved.json()["is_error"], saved.json())
-        written = self.sandbox_provider.workspaces("u-1") / "billing" / "bills" / "2026-10.pdf"
+        written = self.sandbox_provider.workspaces("p-1") / "billing" / "bills" / "2026-10.pdf"
         self.assertEqual(written.read_bytes(), b"%PDF-1.7 bill")
         self.assertTrue(self.post("/save", download_id="dl-1", path="../x").json()["is_error"])
         self.assertTrue(self.post("/save", download_id="nope", path="x").json()["is_error"])
@@ -190,16 +228,16 @@ class BrowserRelayTests(unittest.TestCase):
 
         self.assertEqual(saved.status_code, 400)
         self.assertEqual(saved.json()["error"]["code"], "INVALID_REQUEST")
-        written = self.sandbox_provider.workspaces("u-1") / "billing" / "sites.json"
+        written = self.sandbox_provider.workspaces("p-1") / "billing" / "sites.json"
         self.assertFalse(written.exists())
 
     def test_the_live_view_serves_only_its_own_files(self) -> None:
-        token = make_view_token(SECRET, "u-1", "", 2**40)
+        token = make_view_token(SECRET, "p-1", "", 2**40)
         climbed = self.http.get(f"/s/{token}/browser/..%2Fsites")
         self.assertEqual(climbed.status_code, 404)
 
     def test_upload_gives_a_sandbox_file_to_the_file_chooser(self) -> None:
-        folder = self.sandbox_provider.workspaces("u-1") / "billing"
+        folder = self.sandbox_provider.workspaces("p-1") / "billing"
         folder.mkdir(parents=True)
         (folder / "meter.csv").write_bytes(b"kwh\n9\n")
         self.navigate()
@@ -207,7 +245,7 @@ class BrowserRelayTests(unittest.TestCase):
         resp = self.post("/upload", path="meter.csv", target="attach", element="Attach")
 
         self.assertFalse(resp.json()["is_error"], resp.json())
-        [[path]] = self.provider.browsers["u-1"].uploaded
+        [[path]] = self.provider.browsers["p-1"].uploaded
         self.assertEqual(Path(path).read_bytes(), b"kwh\n9\n")
 
     def test_handoff_link_opens_the_live_view_until_the_handoff_ends(self) -> None:
@@ -300,7 +338,7 @@ class BrowserRelayTests(unittest.TestCase):
         self.assertTrue(closed)
 
     def test_an_operator_view_closes_when_its_token_expires(self) -> None:
-        token = make_view_token(SECRET, "u-1", "", int(time.time()) + 1)
+        token = make_view_token(SECRET, "p-1", "", int(time.time()) + 1)
 
         closed = self.http.portal.call(
             self._in_view,
@@ -311,26 +349,26 @@ class BrowserRelayTests(unittest.TestCase):
         self.assertTrue(closed)
 
     def test_a_request_token_without_an_open_handoff_is_refused(self) -> None:
-        token = make_view_token(SECRET, "u-1", "req-9", 2**40)
+        token = make_view_token(SECRET, "p-1", "req-9", 2**40)
         self.assertEqual(self.http.get(f"/s/{token}/browser/vnc.html").status_code, 404)
 
     def test_an_operator_token_works_until_it_expires(self) -> None:
-        token = make_view_token(SECRET, "u-1", "", 2**40)
+        token = make_view_token(SECRET, "p-1", "", 2**40)
         self.assertEqual(self.http.get(f"/s/{token}/browser/vnc.html").status_code, 200)
-        expired = make_view_token(SECRET, "u-1", "", 1)
+        expired = make_view_token(SECRET, "p-1", "", 1)
         self.assertEqual(self.http.get(f"/s/{expired}/browser/vnc.html").status_code, 404)
 
     def test_apps_list_and_clear_signed_in_sites_and_delete_the_profile(self) -> None:
         self.navigate()
-        self.provider.browsers["u-1"].cdp.cookies = {"pge.com": 4}
+        self.provider.browsers["p-1"].cdp.cookies = {"pge.com": 4}
 
-        listed = self.http.get("/api/v1/browser/users/u-1/sites").json()
+        listed = self.http.get("/api/v1/browser/policies/p-1/sites").json()
         self.assertEqual(listed["data"]["sites"], [{"domain": "pge.com", "cookies": 4}])
-        cleared = self.http.delete("/api/v1/browser/users/u-1/sites/pge.com").json()
+        cleared = self.http.delete("/api/v1/browser/policies/p-1/sites/pge.com").json()
         self.assertEqual(cleared["data"]["cookies"], 4)
-        deleted = self.http.delete("/api/v1/browser/users/u-1").json()
+        deleted = self.http.delete("/api/v1/browser/policies/p-1").json()
         self.assertTrue(deleted["data"]["deleted"])
-        self.assertEqual(self.provider.deleted, ["u-1"])
+        self.assertEqual(self.provider.deleted, ["p-1"])
 
 
 if __name__ == "__main__":

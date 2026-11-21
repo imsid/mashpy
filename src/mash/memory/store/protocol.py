@@ -68,7 +68,7 @@ class MemoryStore(Protocol):
         workflow_run_id: Optional[str] = None,
         task_id: Optional[str] = None,
         replayable: bool = True,
-        user_id: Optional[str] = None,
+        app_id: Optional[str] = None,
     ) -> str:
         """Save a conversation turn with signals.
 
@@ -117,23 +117,23 @@ class MemoryStore(Protocol):
         """
         ...
 
-    async def list_user_turns(
+    async def list_app_turns(
         self,
-        user_id: str,
+        app_id: str,
         *,
         after: float = 0.0,
         limit: int = 200,
     ) -> List[Dict[str, Any]]:
-        """The user's own turns after ``after``, oldest first, across agents.
+        """The app's turns after ``after``, oldest first, across agents and sessions.
 
         Leaves out workflow and subagent turns: these are the turns where the
-        user spoke to the pool. Each row has ``trace_id``, ``session_id``,
+        app spoke to the pool. Each row has ``trace_id``, ``session_id``,
         ``agent_id``, ``user_message``, ``agent_response`` and ``created_at``.
         """
         ...
 
-    async def count_user_turns(self, user_id: str, *, after: float = 0.0) -> int:
-        """How many turns ``list_user_turns`` would return without a limit."""
+    async def count_app_turns(self, app_id: str, *, after: float = 0.0) -> int:
+        """How many turns ``list_app_turns`` would return without a limit."""
         ...
 
     async def list_workflow_turns(
@@ -170,11 +170,11 @@ class MemoryStore(Protocol):
         agent_id: str,
         *,
         limit: int,
-        user_id: Optional[str] = None,
+        app_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """The application's ``limit`` most recently active sessions, newest first.
 
-        With ``user_id``, only that user's sessions. Each row carries
+        With ``app_id``, only sessions with that app's turns. Each row carries
         ``first_message``, the start of the session's first user message.
         """
         ...
@@ -207,11 +207,11 @@ class MemoryStore(Protocol):
         self,
         pairs: List[Dict[str, str]],
         agent_id: str,
-        user_id: Optional[str] = None,
+        app_id: Optional[str] = None,
     ) -> Optional[List[Dict[str, Any]]]:
         """Get turns by exact session/turn identifier pairs in one lookup.
 
-        With ``user_id``, only that user's turns are returned.
+        With ``app_id``, only that app's turns are returned.
         """
         ...
 
@@ -222,7 +222,7 @@ class MemoryStore(Protocol):
         limit: int,
         session_id: Optional[str] = None,
         agent_id: Optional[str] = None,
-        user_id: Optional[str] = None,
+        app_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Search turns by keyword in a single column."""
         ...
@@ -235,7 +235,7 @@ class MemoryStore(Protocol):
         limit: int,
         session_id: Optional[str] = None,
         agent_id: Optional[str] = None,
-        user_id: Optional[str] = None,
+        app_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Search turns semantically in a single column."""
         ...

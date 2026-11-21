@@ -20,7 +20,7 @@ from mash.runtime.engine import InteractionClosedError, InvalidInteractionRespon
 from mash.runtime.engine.engine import MAX_RECOVERIES
 from mash.runtime.engine.steps import derive_interaction_id, emit_interaction_ack
 from mash.runtime.events import RequestStatus, RuntimeEvent, RuntimeEventType
-from mash.testing.runtime_fixtures import ToolCallingAgentSpec
+from mash.testing.runtime_fixtures import TEST_IDENTITY, ToolCallingAgentSpec
 from mash.tools.ask_user import AskUserTool
 from mash.tools.base import ToolResult
 from mash.tools.registry import ToolRegistry
@@ -141,7 +141,7 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
         tool = _BlockingTool()
         spec = _Spec(tool, tool_name="work", arguments={})
         first = await self._runtime(spec)
-        accepted = await first.submit_request(message="go", session_id="s-1", user_id="u-1")
+        accepted = await first.submit_request(message="go", session_id="s-1", **TEST_IDENTITY)
         request_id = accepted["request_id"]
         await self._wait_for(request_id, RuntimeEventType.EXECUTE_TOOL_START.value)
 
@@ -163,7 +163,7 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_an_answer_wakes_the_request(self) -> None:
         runtime = await self._runtime(self._ask_spec())
-        accepted = await runtime.submit_request(message="ask", session_id="s-1", user_id="u-1")
+        accepted = await runtime.submit_request(message="ask", session_id="s-1", **TEST_IDENTITY)
         request_id = accepted["request_id"]
         [opened] = await self._wait_for(request_id, RuntimeEventType.INTERACTION_START.value)
         interaction_id = opened.payload["interaction_id"]
@@ -177,12 +177,38 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(KeyError):
             await runtime.answer_interaction(request_id, "itr_unknown", "x")
 
+    async def test_the_policy_caps_an_interactions_deadline(self) -> None:
+        runtime = await self._runtime(self._ask_spec())
+        for wait_max, expected in ((60, 60), (86400, 3600), (None, 3600)):
+            with self.subTest(wait_max=wait_max):
+                identity = {
+                    **TEST_IDENTITY,
+                    "policy": {**TEST_IDENTITY["policy"], "wait_max_seconds": wait_max},
+                }
+                accepted = await runtime.submit_request(
+                    message="ask", session_id=f"s-cap-{wait_max}", **identity
+                )
+                request_id = accepted["request_id"]
+                [opened] = await self._wait_for(
+                    request_id, RuntimeEventType.INTERACTION_START.value
+                )
+                self.assertEqual(opened.payload["timeout_seconds"], expected)
+                # The deadline the loop waits on, recorded in the checkpoint.
+                checkpoint = await self.runtime_store.get_checkpoint(request_id)
+                [deadline] = [
+                    step["deadline"]
+                    for name, step in checkpoint["memo"].items()
+                    if name.startswith("ask_user.0.open.")
+                ]
+                self.assertAlmostEqual(deadline - opened.created_at, expected, delta=5)
+                await runtime.cancel_request(request_id)
+
     async def test_a_child_asks_the_user_under_a_derived_id(self) -> None:
         runtime = await self._runtime(self._ask_spec())
         accepted = await runtime.submit_request(
             message="ask",
             session_id="s-1",
-            user_id="u-1",
+            **TEST_IDENTITY,
             parent={
                 "kind": "subagent",
                 "request_id": "parent-1",
@@ -207,7 +233,7 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
     async def _approval(self) -> tuple[_GatedTool, AgentRuntime, str, str]:
         tool = _GatedTool()
         runtime = await self._runtime(_Spec(tool, tool_name="deploy", arguments={}))
-        accepted = await runtime.submit_request(message="ship", session_id="s-1", user_id="u-1")
+        accepted = await runtime.submit_request(message="ship", session_id="s-1", **TEST_IDENTITY)
         request_id = accepted["request_id"]
         [opened] = await self._wait_for(request_id, RuntimeEventType.INTERACTION_START.value)
         self.assertEqual(opened.payload["type"], "approval")
@@ -249,7 +275,7 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
     async def test_an_answer_stored_before_a_crash_is_used_on_recovery(self) -> None:
         spec = self._ask_spec()
         first = await self._runtime(spec)
-        accepted = await first.submit_request(message="ask", session_id="s-1", user_id="u-1")
+        accepted = await first.submit_request(message="ask", session_id="s-1", **TEST_IDENTITY)
         request_id = accepted["request_id"]
         [opened] = await self._wait_for(request_id, RuntimeEventType.INTERACTION_START.value)
         await first.engine.close()
@@ -273,7 +299,7 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
     async def test_an_unanswered_interaction_times_out_with_the_default(self) -> None:
         with patch("mash.tools.ask_user.ASK_USER_DEFAULT_TIMEOUT_SECONDS", 0):
             runtime = await self._runtime(self._ask_spec())
-            accepted = await runtime.submit_request(message="ask", session_id="s-1", user_id="u-1")
+            accepted = await runtime.submit_request(message="ask", session_id="s-1", **TEST_IDENTITY)
             request_id = accepted["request_id"]
             end = await self._terminal(request_id)
 
@@ -283,7 +309,7 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_resume_after_cancel_opens_a_new_interaction(self) -> None:
         runtime = await self._runtime(self._ask_spec())
-        accepted = await runtime.submit_request(message="ask", session_id="s-1", user_id="u-1")
+        accepted = await runtime.submit_request(message="ask", session_id="s-1", **TEST_IDENTITY)
         request_id = accepted["request_id"]
         await self._wait_for(request_id, RuntimeEventType.INTERACTION_START.value)
 

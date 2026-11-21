@@ -118,7 +118,7 @@ class MCPBlockingTests(unittest.IsolatedAsyncioTestCase):
         return runtime
 
     def _turn_agent(self, runtime: AgentRuntime):
-        return runtime.build_turn_agent(session_id="s-1", trace_id="t-1", user_id="u-1")
+        return runtime.build_turn_agent(session_id="s-1", trace_id="t-1", app_id="app-1")
 
     async def test_slow_tool_call_lets_other_coroutines_run(self) -> None:
         with FakeMCPServer() as server:

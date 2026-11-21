@@ -75,7 +75,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         workflow_id: str | None = None,
         workflow_run_id: str | None = None,
         task_id: str | None = None,
-        user_id: str | None = None,
+        app_id: str | None = None,
     ) -> str:
         self._turn_counter += 1
         turn_id = f"turn-{self._turn_counter}"
@@ -92,7 +92,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
             workflow_run_id=workflow_run_id,
             task_id=task_id,
             replayable=workflow_id is None,
-            user_id=user_id,
+            app_id=app_id,
         )
         return turn_id
 
@@ -461,21 +461,21 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(latest["session_id"], "session-b")
         self.assertEqual(latest["session_total_tokens"], 7)
 
-    async def test_list_sessions_filters_by_user_and_carries_the_first_message(self) -> None:
+    async def test_list_sessions_filters_by_app_and_carries_the_first_message(self) -> None:
         await self._save_turn(
             session_id="s-a", user_message="first of a " + "x" * 300,
-            agent_response="one", user_id="u-1",
+            agent_response="one", app_id="app-1",
         )
         await self._save_turn(
-            session_id="s-a", user_message="second of a", agent_response="two", user_id="u-1"
+            session_id="s-a", user_message="second of a", agent_response="two", app_id="app-1"
         )
         await self._save_turn(
-            session_id="s-b", user_message="first of b", agent_response="one", user_id="u-2"
+            session_id="s-b", user_message="first of b", agent_response="one", app_id="app-2"
         )
 
         everyone = await self.store.list_sessions(agent_id=self.agent_id, limit=10)
-        mine = await self.store.list_sessions(agent_id=self.agent_id, limit=10, user_id="u-1")
-        nobody = await self.store.list_sessions(agent_id=self.agent_id, limit=10, user_id="u-9")
+        mine = await self.store.list_sessions(agent_id=self.agent_id, limit=10, app_id="app-1")
+        nobody = await self.store.list_sessions(agent_id=self.agent_id, limit=10, app_id="app-9")
 
         self.assertEqual([s["session_id"] for s in everyone], ["s-b", "s-a"])
         self.assertEqual(everyone[0]["first_message"], "first of b")
@@ -657,16 +657,16 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         assert matching_b is not None
         self.assertEqual([turn["trace_id"] for turn in matching_b], [turn_b])
 
-    async def test_search_and_lookup_scope_to_one_user(self) -> None:
+    async def test_search_and_lookup_scope_to_one_app(self) -> None:
         mine = await self._save_turn(
-            session_id="s-a", user_message="invoice totals", agent_response="ok", user_id="u-1"
+            session_id="s-a", user_message="invoice totals", agent_response="ok", app_id="app-1"
         )
         theirs = await self._save_turn(
-            session_id="s-b", user_message="invoice totals", agent_response="ok", user_id="u-2"
+            session_id="s-b", user_message="invoice totals", agent_response="ok", app_id="app-2"
         )
 
         hits = await self.store.keyword_search(
-            "user_message", "invoice", limit=10, agent_id=self.agent_id, user_id="u-1"
+            "user_message", "invoice", limit=10, agent_id=self.agent_id, app_id="app-1"
         )
         self.assertEqual([hit["trace_id"] for hit in hits], [mine])
 
@@ -676,7 +676,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
                 {"session_id": "s-b", "trace_id": theirs},
             ],
             agent_id=self.agent_id,
-            user_id="u-1",
+            app_id="app-1",
         )
         self.assertEqual([turn["trace_id"] for turn in turns or []], [mine])
 

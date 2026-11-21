@@ -125,9 +125,9 @@ class PostgresRuntimeStore(RuntimeStore):
         await self.open()
         return await loaders.get_request_identity(self._pool, request_id)
 
-    async def get_other_session_user(self, session_id: str, user_id: str) -> str | None:
+    async def get_other_session_policy(self, session_id: str, policy_id: str) -> str | None:
         await self.open()
-        return await loaders.get_other_session_user(self._pool, session_id, user_id)
+        return await loaders.get_other_session_policy(self._pool, session_id, policy_id)
 
     async def save_checkpoint(self, request_id: str, checkpoint: dict[str, Any]) -> None:
         await self.open()
