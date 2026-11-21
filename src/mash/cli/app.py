@@ -536,7 +536,6 @@ def build_parser(app: App = MASH) -> argparse.ArgumentParser:
         help="Comma-separated workflow ids",
     )
 
-    common = argparse.ArgumentParser(add_help=False)
     # Every command's connection and identity; `on_host` (repl, run) talks
     # to a host, the others may also name an agent to read.
     on_host = argparse.ArgumentParser(add_help=False)
