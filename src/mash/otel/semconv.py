@@ -50,7 +50,6 @@ SERVICE_NAME = "service.name"
 # Mash attributes for spans the conventions have no name for.
 MASH_REQUEST_ID = "mash.request_id"
 MASH_HOST_ID = "mash.host_id"
-MASH_REQUEST_MODE = "mash.request.mode"
 MASH_REQUEST_STATUS = "mash.request.status"
 MASH_LOOP_INDEX = "mash.loop_index"
 MASH_INTERACTION_TYPE = "mash.interaction.type"

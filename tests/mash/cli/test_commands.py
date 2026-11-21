@@ -137,9 +137,9 @@ class _FakeClient:
         }
 
     def submit_request(
-        self, agent_id: str, *, message: str, session_id: str, user_id: str, mode: str = "fg"
+        self, agent_id: str, *, message: str, session_id: str, user_id: str
     ):
-        del agent_id, message, session_id, mode
+        del agent_id, message, session_id
         self.submitted_user_ids.append(user_id)
         return "req-1"
 
@@ -312,7 +312,7 @@ class DefaultCommandTests(unittest.TestCase):
             names,
             {
                 "new", "resume", "compact", "usage", "copy",
-                "bg", "subagent", "retry", "trace",
+                "subagent", "retry", "trace",
                 "agents", "tools", "workflow", "memory", "browser",
                 "help", "keys", "feedback", "clear", "exit",
             },

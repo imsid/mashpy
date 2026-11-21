@@ -316,7 +316,6 @@ class Pool:
         structured_output: Any = None,
         context: str | None = None,
         metadata: dict[str, Any] | None = None,
-        mode: str = "fg",
         traceparent: str | None = None,
         tracestate: str | None = None,
     ) -> dict[str, Any]:
@@ -341,7 +340,6 @@ class Pool:
             context=context,
             host=snapshot,
             user_id=user_id,
-            mode=mode,
             traceparent=traceparent,
             tracestate=tracestate,
         )

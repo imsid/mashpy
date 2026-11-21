@@ -110,14 +110,13 @@ class RuntimeStore(Protocol):
         self,
         session_id: str,
         *,
-        mode: str | None = None,
         status: str | None = None,
         started_by: str | None = None,
     ) -> list[dict[str, Any]]:
         """A session's requests, newest first.
 
         Each record has ``request_id``, ``agent_id``, ``user_id``,
-        ``session_id``, ``message``, ``mode``, ``status``, ``started_by``,
+        ``session_id``, ``message``, ``status``, ``started_by``,
         ``parent_request_id`` and ``started_at``.
         """
         ...

@@ -52,7 +52,7 @@ def test_a_message_is_submitted_for_the_user_and_its_answer_printed() -> None:
     d = run(script, host)
     assert host.submitted == [
         {"agent_id": "primary", "message": "hello", "session_id": "s-1",
-         "user_id": "u-1", "mode": "fg", "request_id": "r-1"}
+         "user_id": "u-1", "request_id": "r-1"}
     ]
     assert "Hello there." in d.output
     assert d.repl.context.last_request_id == "r-1"
@@ -930,7 +930,7 @@ def test_the_session_cannot_change_while_a_request_runs() -> None:
         gate.open()
         await d.idle()
 
-    assert "A request is running in the foreground." in run(script, host).output
+    assert "A request is running. Wait for it, or press Ctrl-C to cancel it." in run(script, host).output
 
 
 # --- interactions -------------------------------------------------------------

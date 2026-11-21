@@ -81,7 +81,8 @@ def test_an_apps_commands_are_listed_under_their_own_group_or_more() -> None:
 
 def test_keys_lists_the_keys() -> None:
     out, _ = say("/keys")
-    assert "Ctrl-Z" in out and "Send the running request to the background" in out
+    assert "Ctrl-O" in out and "Show or hide model steps" in out
+    assert "Ctrl-Z" not in out
     assert "\\ then Enter" in out
 
 
@@ -393,7 +394,7 @@ def test_retry_and_compact_wait_for_the_running_request() -> None:
         await d.idle()
 
     out = run(script, host).output
-    assert out.count("A request is running in the foreground.") == 2
+    assert out.count("A request is running. Wait for it, or press Ctrl-C to cancel it.") == 2
     assert host.reruns == []
     assert not any(call[0] == "compact_session" for call in host.calls)
 
@@ -432,7 +433,9 @@ def test_the_argument_menu_offers_subcommands_ids_and_subagent_numbers() -> None
 
     async def script(d: ReplDriver) -> None:
         repl = d.repl
-        assert [word for word, _ in repl._argument_menu("bg", [])] == ["list", "switch", "kill"]
+        assert [word for word, _ in repl._argument_menu("workflow", [])] == [
+            "list", "run", "status", "resume",
+        ]
         assert [word for word, _ in repl._argument_menu("copy", [])] == ["code"]
         assert repl._argument_menu("nope", []) == []
         assert repl._argument_menu("subagent", []) == [("cancel", "Cancel one subagent")]
@@ -448,11 +451,6 @@ def test_the_argument_menu_offers_subcommands_ids_and_subagent_numbers() -> None
         ]
         # Only a running child can be cancelled.
         assert repl._argument_menu("subagent", ["cancel"]) == [("2", "review")]
-        repl.watchers.watch("primary", "a1b2c3d4-0000")
-        assert repl._argument_menu("bg", ["kill"]) == [
-            ("a1b2c3d4", "running in the background")
-        ]
-        assert repl._argument_menu("bg", ["list"]) == []
+        assert repl._argument_menu("bg", []) == []
 
-    host.script("a1b2c3d4-0000", Gate())
     run(script, host)

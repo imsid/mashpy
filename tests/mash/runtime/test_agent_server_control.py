@@ -62,9 +62,6 @@ class _Runtime:
     async def rerun_request(self, request_id: str) -> dict:
         return await self._record("rerun", request_id)
 
-    async def set_request_mode(self, request_id: str, mode: str) -> dict:
-        return await self._record("mode", request_id)
-
     async def stream_response_events(
         self, request_id: str, *, cursor: int = 0, **_: object
     ):
@@ -158,11 +155,10 @@ class AgentServerControlRouteTests(unittest.TestCase):
         # agent-a's prompt and tools.
         routes = [
             *ROUTES,
-            ("POST", "mode"),
             ("POST", "interaction"),
             ("GET", ""),
         ]
-        bodies = {"mode": {"mode": "bg"}, "interaction": {"interaction_id": "int-1", "response": "approve"}}
+        bodies = {"interaction": {"interaction_id": "int-1", "response": "approve"}}
         for method, op in routes:
             with self.subTest(op=op or "events"):
                 path = "/agent/agent-a/request/b-1" + (f"/{op}" if op else "")

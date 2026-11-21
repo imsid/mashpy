@@ -71,7 +71,6 @@ class _Client:
         request_id: Optional[str] = None,
         host: Optional[Dict[str, Any]] = None,
         parent: Optional[Dict[str, Any]] = None,
-        mode: Optional[str] = None,
     ) -> str:
         children = self._children
         if self.agent_id in children.fail_submit_for:
@@ -89,7 +88,6 @@ class _Client:
                 "request_id": request_id,
                 "host": host,
                 "parent": parent,
-                "mode": mode,
             }
         )
         if request_id not in children.started:
@@ -258,7 +256,6 @@ class RunSubAgentsToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call["message"], "find papers")
         # A child without a session_id starts a session named after itself.
         self.assertEqual(call["session_id"], child_id)
-        self.assertEqual(call["mode"], "bg")
         self.assertEqual(call["host"]["host_id"], "assistant")
         self.assertEqual(
             call["parent"],

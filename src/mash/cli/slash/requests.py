@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from ..background import parse_bg_args
 from ..commands import Command
 from .groups import GROUP_REQUESTS
 
@@ -140,20 +139,6 @@ def register(shell) -> None:
             Command(name=name, help=help, handler=handler, aliases=aliases, group=group)
         )
 
-    async def bg_command(ctx, args: list[str]) -> None:
-        parsed = parse_bg_args(args)
-        if isinstance(parsed, str):
-            ctx.renderer.error(parsed)
-            return
-        if parsed.action == "start":
-            await shell.start_background(ctx, parsed.message)
-        elif parsed.action == "list":
-            await shell.list_background(ctx)
-        elif parsed.action == "switch":
-            await shell.switch_to(ctx, parsed.request_id)
-        else:
-            await shell.kill(ctx, parsed.request_id)
-
     async def subagent_command(ctx, args: list[str]) -> None:
         if not args:
             shell.list_subagents()
@@ -210,12 +195,6 @@ def register(shell) -> None:
             ctx.renderer.info(f"Trace {trace_id}")
             _render_trace(ctx.renderer, data)
 
-    add(
-        "bg",
-        "Run a message in the background: /bg <message> | list | switch <id> | kill <id>",
-        bg_command,
-        GROUP_REQUESTS,
-    )
     add(
         "subagent",
         "The last request's subagents: list, show one (<n>) or cancel one (cancel <n>)",

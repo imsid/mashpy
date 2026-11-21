@@ -137,9 +137,8 @@ async def _project_lifecycle(
         """
         INSERT INTO runtime_request
             (request_id, status, terminal_seq, updated_at, agent_id, user_id,
-             session_id, mode, started_by, started_at, parent_request_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s,
-                COALESCE(%s, 'fg'), COALESCE(%s, 'user'), %s, %s)
+             session_id, started_by, started_at, parent_request_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, COALESCE(%s, 'user'), %s, %s)
         ON CONFLICT (request_id) DO UPDATE
             SET status = EXCLUDED.status,
                 terminal_seq = EXCLUDED.terminal_seq,
@@ -147,7 +146,6 @@ async def _project_lifecycle(
                 agent_id = COALESCE(runtime_request.agent_id, EXCLUDED.agent_id),
                 user_id = COALESCE(runtime_request.user_id, EXCLUDED.user_id),
                 session_id = COALESCE(runtime_request.session_id, EXCLUDED.session_id),
-                mode = COALESCE(runtime_request.mode, EXCLUDED.mode),
                 started_by = COALESCE(runtime_request.started_by, EXCLUDED.started_by),
                 started_at = COALESCE(runtime_request.started_at, EXCLUDED.started_at),
                 parent_request_id = COALESCE(
@@ -162,31 +160,9 @@ async def _project_lifecycle(
             event.agent_id,
             accepted_user_id(event),
             start.session_id if start else None,
-            start.mode if start else None,
             start.started_by if start else None,
             start.started_at if start else None,
             start.parent_request_id if start else None,
-        ),
-    )
-
-
-async def _project_mode(cursor: Any, event: RuntimeEvent) -> None:
-    """Record a mode switch in the append transaction of its event."""
-    if (
-        event.event_type != RuntimeEventType.REQUEST_MODE_CHANGED.value
-        or not event.request_id
-    ):
-        return
-    await cursor.execute(
-        """
-        UPDATE runtime_request
-        SET mode = %s, updated_at = %s
-        WHERE request_id = %s
-        """,
-        (
-            str((event.payload or {}).get("mode")),
-            float(event.created_at),
-            event.request_id,
         ),
     )
 
@@ -269,8 +245,7 @@ def _event_params(event: RuntimeEvent) -> dict[str, Any]:
 def _projects_state(event: RuntimeEvent) -> bool:
     return (
         event.lifecycle is not None
-        or event.event_type
-        in (RuntimeEventType.REQUEST_MODE_CHANGED.value, RuntimeEventType.CHAT_END.value)
+        or event.event_type == RuntimeEventType.CHAT_END.value
     )
 
 
@@ -356,8 +331,6 @@ async def append_event(pool: Any, event: RuntimeEvent) -> RuntimeEvent:
                 # non-terminal.
                 await _project_lifecycle(cursor, event, stored.get("request_seq"))
                 await _project_rollup(cursor, event, inserted=inserted)
-                if inserted:
-                    await _project_mode(cursor, event)
     return dict_to_event(stored)
 
 
@@ -919,7 +892,6 @@ def request_row_to_record(row: dict[str, Any]) -> dict[str, Any]:
         "user_id": str(row["user_id"]) if row.get("user_id") else None,
         "session_id": str(row["session_id"]) if row.get("session_id") else None,
         "message": str(row["message"]) if row.get("message") is not None else "",
-        "mode": str(row["mode"]),
         "status": str(row["status"]),
         "started_by": str(row["started_by"]),
         "parent_request_id": (
@@ -932,7 +904,7 @@ def request_row_to_record(row: dict[str, Any]) -> dict[str, Any]:
 
 
 _REQUEST_RECORD_SELECT = """
-    SELECT r.request_id, r.agent_id, r.user_id, r.session_id, r.mode, r.status,
+    SELECT r.request_id, r.agent_id, r.user_id, r.session_id, r.status,
            r.started_by, r.parent_request_id, r.started_at,
            (
                SELECT e.payload ->> 'message'
@@ -950,7 +922,6 @@ async def list_session_requests(
     pool: Any,
     session_id: str,
     *,
-    mode: str | None = None,
     status: str | None = None,
     started_by: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -958,7 +929,6 @@ async def list_session_requests(
     clauses = ["r.session_id = %s"]
     params: list[Any] = [session_id]
     for column, value in (
-        ("mode", mode),
         ("status", status),
         ("started_by", started_by),
     ):

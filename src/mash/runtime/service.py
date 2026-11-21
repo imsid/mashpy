@@ -215,7 +215,6 @@ class AgentRuntime:
         metadata: dict[str, Any] | None = None,
         request_id: str | None = None,
         parent: dict[str, Any] | None = None,
-        mode: str = "fg",
         traceparent: str | None = None,
         tracestate: str | None = None,
     ) -> dict[str, Any]:
@@ -230,13 +229,9 @@ class AgentRuntime:
             metadata=metadata,
             request_id=request_id,
             parent=parent,
-            mode=mode,
             traceparent=traceparent,
             tracestate=tracestate,
         )
-
-    async def set_request_mode(self, request_id: str, mode: str) -> dict[str, Any]:
-        return await request_helpers.set_request_mode(self, request_id, mode)
 
     def describe(self) -> dict[str, Any]:
         """The agent's tools and skills: its shared tools, then the

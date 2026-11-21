@@ -1152,7 +1152,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         return pool, request_id, result
 
-    async def test_children_are_bg_requests_started_by_the_caller(self) -> None:
+    async def test_children_are_requests_started_by_the_caller(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
                 pool, request_id, result = await self._run_delegation("research")
@@ -1161,10 +1161,9 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     store = pool.get_runtime_store()
                     [child] = await store.list_child_requests(request_id)
                     self.assertEqual(
-                        {k: child[k] for k in ("agent_id", "mode", "started_by", "status", "user_id")},
+                        {k: child[k] for k in ("agent_id", "started_by", "status", "user_id")},
                         {
                             "agent_id": "research",
-                            "mode": "bg",
                             "started_by": "companion",
                             "status": "completed",
                             "user_id": "u-1",
@@ -1175,7 +1174,7 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         r for r in await store.list_session_requests("s-1")
                         if r["request_id"] == request_id
                     ]
-                    self.assertEqual((parent["mode"], parent["started_by"]), ("fg", "user"))
+                    self.assertEqual(parent["started_by"], "user")
                 finally:
                     await pool.close()
 

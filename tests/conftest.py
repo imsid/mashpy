@@ -80,7 +80,6 @@ class _RequestState:
     agent_id: str | None = None
     user_id: str | None = None
     session_id: str | None = None
-    mode: str = "fg"
     started_by: str = "user"
     started_at: float | None = None
     parent_request_id: str | None = None
@@ -146,7 +145,6 @@ class _TestRuntimeStore:
             if request_events is not None:
                 request_events.append(stored)
             self._project_lifecycle(event, stored.request_seq)
-            self._project_mode(event)
         self._wake_waiters(event.request_id)
         return stored
 
@@ -165,7 +163,6 @@ class _TestRuntimeStore:
             state = _RequestState(status=status, terminal_seq=None)
             if start is not None:
                 state.session_id = start.session_id
-                state.mode = start.mode
                 state.started_by = start.started_by
                 state.started_at = start.started_at
                 state.parent_request_id = start.parent_request_id
@@ -184,19 +181,6 @@ class _TestRuntimeStore:
             )
         self._request_state[event.request_id] = state
 
-    def _project_mode(self, event: RuntimeEvent) -> None:
-        """Mirror of the loader's mode update. Call under the lock."""
-        if (
-            event.event_type != RuntimeEventType.REQUEST_MODE_CHANGED.value
-            or not event.request_id
-        ):
-            return
-        state = self._request_state.get(event.request_id)
-        if state is None:
-            return
-        state.mode = str((event.payload or {}).get("mode"))
-        state.updated_at = float(event.created_at)
-
     def _request_record(self, request_id: str, state: _RequestState) -> dict[str, Any]:
         accepted = next(
             (
@@ -214,7 +198,6 @@ class _TestRuntimeStore:
             "message": str((accepted.payload or {}).get("message") or "")
             if accepted is not None
             else "",
-            "mode": state.mode,
             "status": state.status.value,
             "started_by": state.started_by,
             "parent_request_id": state.parent_request_id,
@@ -225,7 +208,6 @@ class _TestRuntimeStore:
         self,
         session_id: str,
         *,
-        mode: str | None = None,
         status: str | None = None,
         started_by: str | None = None,
     ) -> list[dict[str, Any]]:
@@ -234,7 +216,6 @@ class _TestRuntimeStore:
                 self._request_record(request_id, state)
                 for request_id, state in self._request_state.items()
                 if state.session_id == session_id
-                and (mode is None or state.mode == mode)
                 and (status is None or state.status.value == status)
                 and (started_by is None or state.started_by == started_by)
             ]

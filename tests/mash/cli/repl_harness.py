@@ -162,7 +162,6 @@ class FakeHost:
         self.request_ids: list[str] = []
         self.submitted: list[dict[str, Any]] = []
         self.cancelled: list[tuple[str, str]] = []
-        self.modes: list[tuple[str, str, str]] = []
         self.answers: list[dict[str, Any]] = []
         self.stream_calls: list[tuple[str, str, int]] = []
         self.records: list[dict[str, Any]] = []
@@ -197,19 +196,19 @@ class FakeHost:
 
     # --- submit -----------------------------------------------------------
 
-    def submit_request(self, agent_id, *, message, session_id, user_id, mode=None, **_):
+    def submit_request(self, agent_id, *, message, session_id, user_id, **_):
         request_id = self._next_id()
         self.submitted.append(
             {"agent_id": agent_id, "message": message, "session_id": session_id,
-             "user_id": user_id, "mode": mode, "request_id": request_id}
+             "user_id": user_id, "request_id": request_id}
         )
         return request_id
 
-    def submit_host_request(self, host_id, *, message, session_id, user_id, mode=None, **_):
+    def submit_host_request(self, host_id, *, message, session_id, user_id, **_):
         request_id = self._next_id()
         self.submitted.append(
             {"host_id": host_id, "message": message, "session_id": session_id,
-             "user_id": user_id, "mode": mode, "request_id": request_id}
+             "user_id": user_id, "request_id": request_id}
         )
         return {"request_id": request_id, "agent_id": "companion"}
 
@@ -257,10 +256,6 @@ class FakeHost:
         self.cancelled.append((agent_id, request_id))
         return {"status": "cancelled"}
 
-    def set_request_mode(self, agent_id, request_id, mode):
-        self.modes.append((agent_id, request_id, mode))
-        return {"request_id": request_id, "mode": mode}
-
     def post_interaction(self, agent_id, request_id, *, interaction_id, response):
         self.answers.append(
             {"agent_id": agent_id, "request_id": request_id,
@@ -268,12 +263,11 @@ class FakeHost:
         )
         return {}
 
-    def list_session_requests(self, agent_id, session_id, *, mode=None, status=None, started_by=None):
+    def list_session_requests(self, agent_id, session_id, *, status=None, started_by=None):
         return [
             record
             for record in self.records
-            if (mode is None or record.get("mode") == mode)
-            and (status is None or record.get("status") == status)
+            if (status is None or record.get("status") == status)
             and (started_by is None or record.get("started_by") == started_by)
         ]
 
@@ -334,7 +328,7 @@ class FakeHost:
     def rerun_request(self, agent_id, request_id):
         new_id = self._next_id()
         self.reruns.append((agent_id, request_id, new_id))
-        return {"request_id": new_id, "agent_id": agent_id, "mode": "fg"}
+        return {"request_id": new_id, "agent_id": agent_id}
 
     def compact_session(self, agent_id, session_id):
         self.calls.append(("compact_session", (agent_id, session_id)))

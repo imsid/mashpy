@@ -19,7 +19,6 @@ KEYS = (
     ("/", "Open the command menu"),
     ("Ctrl-C", "Clear the input, then cancel the request, then (twice) leave"),
     ("Esc", "Cancel the running request"),
-    ("Ctrl-Z", "Send the running request to the background"),
     ("Ctrl-O", "Show or hide model steps and subagent tool calls"),
     ("Ctrl-L", "Clear the screen"),
     ("Ctrl-D", "Leave"),

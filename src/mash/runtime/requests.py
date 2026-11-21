@@ -18,12 +18,11 @@ from ..logging.trace_context import (
 )
 from .errors import (
     RequestStaleError,
-    RequestTerminalError,
     SessionUserMismatchError,
     classify_error,
 )
 from ..otel import semconv
-from .events import RequestMode, RequestStatus, RuntimeEvent, RuntimeEventType
+from .events import RequestStatus, RuntimeEvent, RuntimeEventType
 from .events.types import STARTED_BY_USER, EndStatus, end_status
 from .structured_output import serialize_structured_output
 
@@ -55,12 +54,6 @@ def validate_user_id(user_id: Any) -> str:
             "user_id must be 1-255 characters of letters, digits, '.', '_', ':', '@' or '-'"
         )
     return user_id
-
-
-def validate_mode(mode: Any) -> str:
-    if mode not in {m.value for m in RequestMode}:
-        raise ValueError("mode must be 'fg' or 'bg'")
-    return str(mode)
 
 
 def _require_str(parent: dict[str, Any], key: str) -> str:
@@ -161,7 +154,6 @@ async def submit_request(
     metadata: dict[str, Any] | None = None,
     request_id: str | None = None,
     parent: dict[str, Any] | None = None,
-    mode: str = RequestMode.FG.value,
     traceparent: str | None = None,
     tracestate: str | None = None,
 ) -> dict[str, Any]:
@@ -173,7 +165,6 @@ async def submit_request(
     if request_id is not None:
         validate_request_id(request_id)
     validate_user_id(user_id)
-    validate_mode(mode)
     normalized_structured_output = serialize_structured_output(structured_output)
     # ``user_id`` is caller context like ``metadata``: stored with the
     # request, never shown to the model.
@@ -194,7 +185,6 @@ async def submit_request(
         session_id=session_id,
         request_metadata=request_metadata,
         request_id=request_id,
-        mode=mode,
         traceparent=traceparent,
         tracestate=tracestate,
     )
@@ -207,7 +197,6 @@ async def _submit_request(
     session_id: str,
     request_metadata: Optional[dict[str, Any]],
     request_id: str | None = None,
-    mode: str = RequestMode.FG.value,
     traceparent: str | None = None,
     tracestate: str | None = None,
 ) -> dict[str, Any]:
@@ -248,7 +237,6 @@ async def _submit_request(
             session_id=target_session_id,
             request_metadata=request_metadata,
             request_id=request_id,
-            mode=mode,
             traceparent=traceparent,
             tracestate=tracestate,
         )
@@ -327,7 +315,6 @@ async def _submit_request_inner(
     session_id: str,
     request_metadata: Optional[dict[str, Any]],
     request_id: str | None = None,
-    mode: str = RequestMode.FG.value,
     traceparent: str | None = None,
     tracestate: str | None = None,
 ) -> dict[str, Any]:
@@ -346,7 +333,6 @@ async def _submit_request_inner(
         semconv.GEN_AI_AGENT_NAME: self.agent_id,
         semconv.GEN_AI_CONVERSATION_ID: target_session_id,
         semconv.MASH_REQUEST_ID: request_id,
-        semconv.MASH_REQUEST_MODE: mode,
     }
     if host_id:
         attributes[semconv.MASH_HOST_ID] = host_id
@@ -354,7 +340,6 @@ async def _submit_request_inner(
         "message": message,
         "initial_session_id": target_session_id,
         "request_metadata": dict(request_metadata or {}),
-        "mode": mode,
         "started_by": started_by,
         "parent_request_id": parent_request_id,
         "attributes": attributes,
@@ -413,50 +398,6 @@ async def _submit_request_inner(
         )
         raise
     return to_public_event(accepted_event)["data"]
-
-
-async def set_request_mode(
-    self: "AgentRuntime",
-    request_id: str,
-    mode: str,
-) -> dict[str, Any]:
-    """Switch a running request between ``fg`` and ``bg``.
-
-    Raises ``KeyError`` for an unknown request and ``RequestTerminalError``
-    once the request has finished.
-    """
-    self.require_open()
-    validate_mode(mode)
-    events = await self.runtime_store.list_request_events(request_id)
-    accepted = next(
-        (
-            e
-            for e in events
-            if e.event_type == RuntimeEventType.INVOKE_AGENT_START.value
-        ),
-        None,
-    )
-    if accepted is None or accepted.agent_id != self.agent_id:
-        raise KeyError(request_id)
-    status = await self.runtime_store.get_request_lifecycle(request_id)
-    if status is not None and status.terminal:
-        raise RequestTerminalError(
-            f"request '{request_id}' is {status.value}; its mode cannot change"
-        )
-    # No dedupe key: a request can switch any number of times, and seq
-    # orders the switches.
-    await append_runtime_event(
-        self,
-        RuntimeEvent(
-            request_id=request_id,
-            agent_id=self.agent_id,
-            trace_id=next((e.trace_id for e in events if e.trace_id), None),
-            session_id=accepted.session_id,
-            event_type=RuntimeEventType.REQUEST_MODE_CHANGED.value,
-            payload={"mode": mode, "attributes": {semconv.MASH_REQUEST_MODE: mode}},
-        ),
-    )
-    return {"request_id": request_id, "agent_id": self.agent_id, "mode": mode}
 
 
 def _stream_event(event: RuntimeEvent) -> dict[str, Any]:

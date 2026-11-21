@@ -52,7 +52,6 @@ class SupportsChildClient(Protocol):
         request_id: Optional[str] = None,
         host: Optional[Dict[str, Any]] = None,
         parent: Optional[Dict[str, Any]] = None,
-        mode: Optional[str] = None,
     ) -> str:
         """Submit one request; a known ``request_id`` returns the existing one."""
 
@@ -339,7 +338,6 @@ class RunSubAgentsTool:
                     request_id=child_id,
                     host=self._host,
                     parent=parent,
-                    mode="bg",
                 )
             except Exception as exc:
                 entry.update({"status": "failed", **classify_error(exc)})

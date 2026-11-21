@@ -384,8 +384,6 @@ def _project_into(
             root.status = STATUS_UNSET
             root.status_message = None
             builder.log(kind, at, root, trace_hex, attributes)
-        elif kind == RuntimeEventType.REQUEST_MODE_CHANGED.value:
-            builder.log(kind, at, root, trace_hex, attributes)
     return root
 
 

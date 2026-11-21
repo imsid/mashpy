@@ -188,13 +188,12 @@ class PostgresRuntimeStore(RuntimeStore):
         self,
         session_id: str,
         *,
-        mode: str | None = None,
         status: str | None = None,
         started_by: str | None = None,
     ) -> list[dict[str, Any]]:
         await self.open()
         return await loaders.list_session_requests(
-            self._pool, session_id, mode=mode, status=status, started_by=started_by
+            self._pool, session_id, status=status, started_by=started_by
         )
 
     async def list_child_requests(

@@ -159,17 +159,15 @@ class RequestSubmissionTests(unittest.IsolatedAsyncioTestCase):
             },
             host_snapshot={"host_id": "assistant", "primary": "concierge", "subagents": ["research"]},
             user_id="u-1",
-            mode="bg",
         )
 
         [accepted] = await self._accepted_events("req_1-sub-0-0")
-        self.assertEqual(accepted.payload["mode"], "bg")
         self.assertEqual(accepted.payload["started_by"], "concierge")
         self.assertEqual(accepted.payload["parent_request_id"], "req_1")
         [record] = await runtime.runtime_store.list_child_requests("req_1")
         self.assertEqual(
-            (record["request_id"], record["mode"], record["started_by"]),
-            ("req_1-sub-0-0", "bg", "concierge"),
+            (record["request_id"], record["started_by"]),
+            ("req_1-sub-0-0", "concierge"),
         )
         request_metadata = accepted.payload["request_metadata"]
         self.assertEqual(request_metadata["subagent_id"], "research")

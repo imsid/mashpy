@@ -31,7 +31,6 @@ class RuntimeEventType(str, Enum):
     INTERACTION_START = "mash.interaction.start"
     INTERACTION_END = "mash.interaction.end"
     REQUEST_RESUMED = "mash.request.resumed"
-    REQUEST_MODE_CHANGED = "mash.request.mode_changed"
 
 
 class EndStatus(str, Enum):
@@ -73,18 +72,6 @@ class RequestStatus(str, Enum):
     @property
     def terminal(self) -> bool:
         return self is not RequestStatus.RUNNING
-
-
-class RequestMode(str, Enum):
-    """Whether the conversation waits on a request.
-
-    ``fg``: a client reads its stream and the user's next message comes after
-    it. ``bg``: the user keeps talking and the client reports it when it ends
-    or needs input. The mode says nothing about how the request runs.
-    """
-
-    FG = "fg"
-    BG = "bg"
 
 
 # ``started_by`` of a request the user started; an agent-started request
@@ -163,7 +150,6 @@ class AcceptedRequest:
     """What an accepted event records about how its request was started."""
 
     session_id: Optional[str]
-    mode: str
     started_by: str
     started_at: float
     parent_request_id: Optional[str]
@@ -174,12 +160,10 @@ def accepted_request(event: RuntimeEvent) -> Optional[AcceptedRequest]:
     if event.event_type != RuntimeEventType.INVOKE_AGENT_START.value:
         return None
     payload = event.payload or {}
-    mode = payload.get("mode")
     started_by = payload.get("started_by")
     parent_request_id = payload.get("parent_request_id")
     return AcceptedRequest(
         session_id=event.session_id,
-        mode=mode if mode in {m.value for m in RequestMode} else RequestMode.FG.value,
         started_by=(
             started_by
             if isinstance(started_by, str) and started_by

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hmac
 import json
 from dataclasses import dataclass
-from typing import Any, Literal, Optional
+from typing import Any, Optional
 
 from fastapi import Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -55,20 +55,12 @@ class AppRuntimeState:
     otel_exporter: Any = None
 
 
-RequestModeValue = Literal["fg", "bg"]
-
-
 class SubmitRequest(BaseModel):
     message: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     user_id: str
     structured_output: Optional[dict[str, Any]] = None
     metadata: Optional[dict[str, Any]] = None
-    mode: RequestModeValue = "fg"
-
-
-class SetRequestModeRequest(BaseModel):
-    mode: RequestModeValue
 
 
 class DefineHostRequest(BaseModel):
@@ -87,7 +79,6 @@ class HostSubmitRequest(BaseModel):
     structured_output: Optional[dict[str, Any]] = None
     context: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
-    mode: RequestModeValue = "fg"
 
 
 class CompactSessionRequest(BaseModel):

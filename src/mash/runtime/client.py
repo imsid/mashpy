@@ -20,10 +20,6 @@ class AgentUnavailableError(AgentClientError):
     """The agent's server could not be reached (for example, its process is restarting)."""
 
 
-class RequestModeConflictError(AgentClientError):
-    """The request has finished, so its mode cannot change (HTTP 409)."""
-
-
 class SessionUserConflictError(AgentClientError):
     """The session belongs to another user, so the request was refused (HTTP 409)."""
 
@@ -55,19 +51,10 @@ class AgentClientLike(Protocol):
         host: Optional[Dict[str, Any]] = None,
         parent: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,
-        mode: Optional[str] = None,
         traceparent: Optional[str] = None,
         tracestate: Optional[str] = None,
         timeout: float = 30.0,
     ) -> str: ...
-
-    async def set_request_mode(
-        self,
-        request_id: str,
-        mode: str,
-        *,
-        timeout: float = 30.0,
-    ) -> dict[str, Any]: ...
 
     async def describe(self, *, timeout: float = 10.0) -> dict[str, Any]: ...
 
@@ -213,9 +200,6 @@ class AgentClient:
     def _request_rerun_url(self, request_id: str) -> str:
         return f"{self._request_url()}/{request_id}/rerun"
 
-    def _request_mode_url(self, request_id: str) -> str:
-        return f"{self._request_url()}/{request_id}/mode"
-
     def _health_url(self) -> str:
         return f"{self.base_url}/health"
 
@@ -346,7 +330,6 @@ class AgentClient:
         host: Optional[Dict[str, Any]] = None,
         parent: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,
-        mode: Optional[str] = None,
         traceparent: Optional[str] = None,
         tracestate: Optional[str] = None,
         timeout: float = 30.0,
@@ -372,8 +355,6 @@ class AgentClient:
             payload["parent"] = dict(parent)
         if user_id is not None:
             payload["user_id"] = user_id
-        if mode is not None:
-            payload["mode"] = mode
         if traceparent is not None:
             payload["traceparent"] = traceparent
             if tracestate is not None:
@@ -605,34 +586,6 @@ class AgentClient:
             )
         return response.json()
 
-    async def set_request_mode(
-        self,
-        request_id: str,
-        mode: str,
-        *,
-        timeout: float = 30.0,
-    ) -> dict[str, Any]:
-        """Switch a running request to ``fg`` or ``bg``."""
-        try:
-            async with self._session() as client:
-                response = await client.post(
-                    self._request_mode_url(request_id),
-                    json={"mode": mode},
-                    timeout=timeout,
-                )
-        except httpx.HTTPError as exc:
-            raise self._http_error("POST request mode failed", exc) from exc
-        if response.status_code == 404:
-            raise AgentClientError(f"request '{request_id}' not found")
-        if response.status_code == 409:
-            raise RequestModeConflictError(self._extract_message(response))
-        if response.status_code != 200:
-            raise AgentClientError(
-                f"POST request mode failed (status={response.status_code}): "
-                f"{self._extract_message(response)}"
-            )
-        return response.json()
-
     async def close(self) -> None:
         for client in (self._client, self._stream_client):
             if client is not None:
@@ -735,7 +688,6 @@ __all__ = [
     "AgentClientError",
     "AgentClientLike",
     "AgentUnavailableError",
-    "RequestModeConflictError",
     "SessionUserConflictError",
     "WorkflowInputError",
     "WorkflowRelayClient",

@@ -64,7 +64,6 @@ def _accept(client: TestClient, request_id: str, agent_id: str, parent: str | No
         agent_id,
         RuntimeEventType.INVOKE_AGENT_START.value,
         message=request_id,
-        mode="bg" if parent else "fg",
         started_by="primary" if parent else "user",
         parent_request_id=parent,
     )

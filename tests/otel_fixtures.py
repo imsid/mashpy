@@ -61,7 +61,6 @@ class RequestEvents:
     def accepted(self, at: float = 100.0, message: str = "hello") -> "RequestEvents":
         payload: dict[str, Any] = {
             "message": message,
-            "mode": "fg",
             "parent_request_id": self.parent_request_id,
             "attributes": {
                 "gen_ai.operation.name": "invoke_agent",
@@ -69,7 +68,6 @@ class RequestEvents:
                 "gen_ai.agent.name": self.agent_id,
                 "gen_ai.conversation.id": self.session_id,
                 "mash.request_id": self.request_id,
-                "mash.request.mode": "fg",
             },
         }
         if self.traceparent:
@@ -215,13 +213,6 @@ class RequestEvents:
             RuntimeEventType.REQUEST_RESUMED.value,
             at,
             {"attributes": {"mash.request_id": self.request_id}},
-        )
-
-    def mode_changed(self, at: float, mode: str = "bg") -> "RequestEvents":
-        return self._add(
-            RuntimeEventType.REQUEST_MODE_CHANGED.value,
-            at,
-            {"mode": mode, "attributes": {"mash.request.mode": mode}},
         )
 
 

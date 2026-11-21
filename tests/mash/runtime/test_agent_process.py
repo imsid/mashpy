@@ -399,12 +399,6 @@ class H2ARelayAuthTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 403)
         self.assertEqual(self.client_for_research.calls, [])
 
-    def test_mode_is_forwarded(self) -> None:
-        resp = self._submit(mode="bg")
-
-        self.assertEqual(resp.status_code, 202)
-        self.assertEqual(self.client_for_research.calls[0]["mode"], "bg")
-
     def _seed_child_session(
         self, session_id: str, *, agent_id: str = "research", primary_session_id: str = "s-1"
     ) -> None:

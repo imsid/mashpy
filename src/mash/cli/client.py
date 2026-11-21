@@ -294,15 +294,12 @@ class MashHostClient:
         session_id: str,
         user_id: str,
         structured_output: Any = None,
-        mode: str | None = None,
     ) -> dict[str, Any]:
         json_body: dict[str, Any] = {
             "message": message,
             "session_id": session_id,
             "user_id": user_id,
         }
-        if mode is not None:
-            json_body["mode"] = mode
         if structured_output is not None:
             json_body["structured_output"] = serialize_structured_output(structured_output)
         response = self._request(
@@ -321,15 +318,12 @@ class MashHostClient:
         session_id: str,
         user_id: str,
         structured_output: Any = None,
-        mode: str | None = None,
     ) -> str:
         json_body: dict[str, Any] = {
             "message": message,
             "session_id": session_id,
             "user_id": user_id,
         }
-        if mode is not None:
-            json_body["mode"] = mode
         if structured_output is not None:
             json_body["structured_output"] = serialize_structured_output(structured_output)
         response = self._request(
@@ -353,17 +347,6 @@ class MashHostClient:
             json_body={"interaction_id": interaction_id, "response": response},
         )
         return resp.json().get("data", {})
-
-    def set_request_mode(
-        self, agent_id: str, request_id: str, mode: str
-    ) -> dict[str, Any]:
-        response = self._request(
-            "POST",
-            f"/api/v1/agent/{quote(agent_id, safe='')}/request/{quote(request_id, safe='')}/mode",
-            json_body={"mode": mode},
-        )
-        data = response.json()["data"]
-        return data if isinstance(data, dict) else {}
 
     def cancel_request(self, agent_id: str, request_id: str) -> dict[str, Any]:
         response = self._request(
@@ -469,14 +452,12 @@ class MashHostClient:
         agent_id: str,
         session_id: str,
         *,
-        mode: str | None = None,
         status: str | None = None,
         started_by: str | None = None,
     ) -> list[dict[str, Any]]:
         query = {
             key: value
             for key, value in (
-                ("mode", mode),
                 ("status", status),
                 ("started_by", started_by),
             )

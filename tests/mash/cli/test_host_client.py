@@ -295,27 +295,17 @@ class MashHostClientRouteTests(unittest.TestCase):
             str(session.calls[-1]["url"]),
         )
 
-    def test_submit_sends_mode_only_when_given(self) -> None:
+    def test_submit_sends_the_message_session_and_user(self) -> None:
         client, session = self._client()
         client.submit_request("primary", message="hi", session_id="s-1", user_id="u-1")
-        client.submit_request("primary", message="hi", session_id="s-1", user_id="u-1", mode="bg")
-        self.assertNotIn("mode", session.calls[0]["json"])
-        self.assertEqual(session.calls[1]["json"]["mode"], "bg")
+        self.assertEqual(
+            session.calls[0]["json"], {"message": "hi", "session_id": "s-1", "user_id": "u-1"}
+        )
 
         client, session = self._client({"data": {"request_id": "r", "agent_id": "primary"}})
-        client.submit_host_request(
-            "assistant", message="hi", session_id="s-1", user_id="u-1", mode="bg"
-        )
+        client.submit_host_request("assistant", message="hi", session_id="s-1", user_id="u-1")
         self.assertIn("/api/v1/hosts/assistant/request", session.calls[0]["url"])
-        self.assertEqual(session.calls[0]["json"]["mode"], "bg")
-
-    def test_set_request_mode_posts_to_the_mode_route(self) -> None:
-        client, session = self._client({"data": {"request_id": "r-1", "mode": "bg"}})
-        self.assertEqual(client.set_request_mode("primary", "r-1", "bg")["mode"], "bg")
-        call = session.calls[0]
-        self.assertEqual(call["method"], "POST")
-        self.assertTrue(call["url"].endswith("/api/v1/agent/primary/request/r-1/mode"))
-        self.assertEqual(call["json"], {"mode": "bg"})
+        self.assertNotIn("mode", session.calls[0]["json"])
 
     def test_cancel_request_posts_to_the_cancel_route(self) -> None:
         client, session = self._client({"data": {"status": "cancelled"}})
@@ -327,13 +317,13 @@ class MashHostClientRouteTests(unittest.TestCase):
     def test_list_session_requests_passes_its_filters(self) -> None:
         client, session = self._client({"data": {"requests": [{"request_id": "r-1"}, "junk"]}})
         records = client.list_session_requests(
-            "primary", "s-1", mode="bg", status="running", started_by="user"
+            "primary", "s-1", status="running", started_by="user"
         )
         self.assertEqual(records, [{"request_id": "r-1"}])
         self.assertEqual(
             session.calls[0]["url"],
             "http://localhost:8000/api/v1/agent/primary/sessions/s-1/requests"
-            "?mode=bg&status=running&started_by=user",
+            "?status=running&started_by=user",
         )
 
     def test_submit_feedback_posts_session_context(self) -> None:
@@ -426,7 +416,7 @@ class MashHostClientRouteTests(unittest.TestCase):
 
     def test_rerun_and_compact_post_to_their_routes(self) -> None:
         client, session = self._client(
-            {"data": {"request_id": "r-2", "agent_id": "primary", "mode": "fg"}},
+            {"data": {"request_id": "r-2", "agent_id": "primary"}},
             {"data": {"summary_text": "so far", "trace_id": "t-1"}},
         )
         self.assertEqual(client.rerun_request("primary", "r/1")["request_id"], "r-2")

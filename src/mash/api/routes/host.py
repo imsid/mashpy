@@ -115,7 +115,6 @@ def build_host_router() -> APIRouter:
                 context=body.context,
                 metadata=body.metadata,
                 user_id=require_user_id(body.user_id),
-                mode=body.mode,
                 traceparent=request.headers.get("traceparent"),
                 tracestate=request.headers.get("tracestate"),
             )

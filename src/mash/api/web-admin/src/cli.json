@@ -1423,11 +1423,6 @@
         "aliases": []
       },
       {
-        "name": "bg",
-        "help": "Run a message in the background: /bg <message> | list | switch <id> | kill <id>",
-        "aliases": []
-      },
-      {
         "name": "browser",
         "help": "Sites your browser is signed in to: /browser | forget <site>",
         "aliases": []

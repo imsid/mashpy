@@ -204,7 +204,6 @@ def build_h2a_router() -> APIRouter:
                 host=host,
                 parent=parent,
                 user_id=identity.user_id,
-                mode=body.get("mode"),
             )
         except AgentUnavailableError as exc:
             return h2a_error(503, "AGENT_UNAVAILABLE", str(exc))
