@@ -114,7 +114,6 @@ function SessionEntry({
   onSelectTrace,
   activeTraceId,
   statusFilter,
-  refreshToken,
   wide,
 }) {
   const tracesState = useApi(
@@ -126,7 +125,7 @@ function SessionEntry({
             limit: 100,
           })
         : Promise.resolve(null),
-    [expanded, session.session_id, statusFilter, refreshToken],
+    [expanded, session.session_id, statusFilter],
   );
 
   const traces = useMemo(() => {
@@ -262,7 +261,6 @@ function SessionsTab({ agentId, workflowId, initialSession, initialTrace }) {
   const [traceQuery, setTraceQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [jumpError, setJumpError] = useState('');
-  const [refreshToken, setRefreshToken] = useState(0);
   const openedTrace = useRef('');
 
   // Deep links (from Feedback / Overview) carry a session to focus on.
@@ -387,7 +385,6 @@ function SessionsTab({ agentId, workflowId, initialSession, initialTrace }) {
                   onSelectTrace={setSelected}
                   activeTraceId={selected?.trace_id}
                   statusFilter={statusFilter}
-                  refreshToken={refreshToken}
                 />
               ));
               if (!wide) return <div className="space-y-2">{entries}</div>;
@@ -423,12 +420,6 @@ function SessionsTab({ agentId, workflowId, initialSession, initialTrace }) {
         trace={selected}
         agentId={selected?.__agentId || agentId}
         onClose={() => setSelected(null)}
-        onChanged={() => {
-          // A cancel/resume/rerun changes trace status, and a rerun adds a
-          // whole new trace, so the expanded session's list is refetched.
-          setRefreshToken((n) => n + 1);
-          state.reload();
-        }}
       />
     </>
   );
@@ -456,7 +447,7 @@ function CliTab({ agentId, agents }) {
   const columns = [
     { key: 'time', header: 'Time', render: (r) => formatTime(r.created_at) },
     ...(allAgents
-      ? [{ key: 'agent', header: 'Agent', render: (r) => <Chip>{r.__agentId || r.app_id}</Chip> }]
+      ? [{ key: 'agent', header: 'Agent', render: (r) => <Chip>{r.__agentId || r.agent_id}</Chip> }]
       : []),
     {
       key: 'event',

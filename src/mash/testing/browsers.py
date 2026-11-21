@@ -6,8 +6,8 @@ session has its own current tab, action results name a snapshot file under
 ``output/`` while ``browser_snapshot`` returns the tree inline, and downloads
 arrive through CDP. Pages are a dict of URL to ``FakePage``.
 
-``LocalBrowserProvider`` runs each user's ``BrowserDaemon`` in this process on
-its own ``127.0.0.1`` port, driving a ``FakeBrowser`` per user.
+``LocalBrowserProvider`` runs each policy's ``BrowserDaemon`` in this process on
+its own ``127.0.0.1`` port, driving a ``FakeBrowser`` per policy.
 """
 
 from __future__ import annotations
@@ -228,7 +228,7 @@ class _Server(uvicorn.Server):
 
 
 class LocalBrowserProvider:
-    """Each user's browser daemon on a localhost port in this process."""
+    """Each policy's browser daemon on a localhost port in this process."""
 
     def __init__(
         self,
@@ -247,18 +247,18 @@ class LocalBrowserProvider:
         self._running: dict[str, tuple[_Server, asyncio.Task[None], BrowserEndpoint]] = {}
         self.deleted: list[str] = []
 
-    def browser(self, user_id: str) -> FakeBrowser:
-        if user_id not in self.browsers:
-            home = self.root / sandbox_key(user_id)
-            self.browsers[user_id] = FakeBrowser(home, self._pages)
-        return self.browsers[user_id]
+    def browser(self, policy_id: str) -> FakeBrowser:
+        if policy_id not in self.browsers:
+            home = self.root / sandbox_key(policy_id)
+            self.browsers[policy_id] = FakeBrowser(home, self._pages)
+        return self.browsers[policy_id]
 
-    async def ensure(self, user_id: str) -> BrowserEndpoint:
-        running = self._running.get(user_id)
+    async def ensure(self, policy_id: str) -> BrowserEndpoint:
+        running = self._running.get(policy_id)
         if running is not None:
             return running[2]
-        fake = self.browser(user_id)
-        token = derive_browser_token(self._host_secret, user_id)
+        fake = self.browser(policy_id)
+        token = derive_browser_token(self._host_secret, policy_id)
         daemon = BrowserDaemon(
             token=token, connect=fake.connect, cdp=fake.cdp, home=fake.home,
             download_wait_seconds=0.0, novnc_dir=self._novnc_dir, vnc_port=self._vnc_port,
@@ -271,32 +271,32 @@ class LocalBrowserProvider:
                 raise RuntimeError("local browser server exited during startup")
             await asyncio.sleep(0.01)
         port = int(server.servers[0].sockets[0].getsockname()[1])
-        endpoint = BrowserEndpoint(user_id=user_id, base_url=f"http://127.0.0.1:{port}", token=token)
-        self._running[user_id] = (server, task, endpoint)
+        endpoint = BrowserEndpoint(policy_id=policy_id, base_url=f"http://127.0.0.1:{port}", token=token)
+        self._running[policy_id] = (server, task, endpoint)
         return endpoint
 
-    async def stop(self, user_id: str) -> None:
-        running = self._running.pop(user_id, None)
+    async def stop(self, policy_id: str) -> None:
+        running = self._running.pop(policy_id, None)
         if running is None:
             return
         server, task, _ = running
         server.should_exit = True
         await task
 
-    async def delete(self, user_id: str) -> None:
-        await self.stop(user_id)
-        self.browsers.pop(user_id, None)
-        self.deleted.append(user_id)
+    async def delete(self, policy_id: str) -> None:
+        await self.stop(policy_id)
+        self.browsers.pop(policy_id, None)
+        self.deleted.append(policy_id)
 
     async def list(self) -> list[SandboxInfo]:
         return [
-            SandboxInfo(user_id=u, name=f"local-browser-{sandbox_key(u)}", running=True, status="running")
+            SandboxInfo(policy_id=u, name=f"local-browser-{sandbox_key(u)}", running=True, status="running")
             for u in self._running
         ]
 
     async def close(self) -> None:
-        for user_id in list(self._running):
-            await self.stop(user_id)
+        for policy_id in list(self._running):
+            await self.stop(policy_id)
         shutil.rmtree(self.root, ignore_errors=True)
 
 

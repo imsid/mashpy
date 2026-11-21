@@ -73,11 +73,11 @@ with context loaded from memory and tools and skills available to it, accepting
 input from the CLI, the API, or a scheduled workflow, and producing a response
 and optional structured output when it completes. The whole thing is resumable
 and replayable across restarts, and traced. A request reaches an agent
-directly, as a workflow's agent step, or from the companion, which routes a
-host request to one or more agents in the background and relays their
+as a workflow's agent step, or from the companion, which runs every event
+posted to a host, routes it to one or more agents and relays their
 approvals and questions to the user. The code the model writes leaves the request for
-the sandbox of the user it acts for, and the browser tools drive that user's
-browser. Remote tools call the MCP servers the agent connects to. The diagram
+the sandbox of the policy it runs under, and the browser tools drive that
+policy's browser. Remote tools call the MCP servers the agent connects to. The diagram
 below maps that shape, and the rest of this section walks through its parts.
 
 ```
@@ -91,11 +91,11 @@ below maps that shape, and the rest of this section walks through its parts.
 │            ▼                         ▼                         ▼            │
 │      ┌───────────┐            ┌─────────────┐            ┌───────────┐      │
 │      │   agent   │            │  companion  │            │ workflow  │      │
-│      │           │            │  (router)   │            │           │      │
+│      │           │            │  (events)   │            │           │      │
 │      └───────────┘            └─────────────┘            └───────────┘      │
 │            │                         ▲                         │            │
 │            │   approvals, questions  │ RunSubAgents: one or    │            │
-│            │   and answers go back   │ more bg subagents       │            │
+│            │   and answers go back   │ more subagents          │            │
 │            │           ┌─────────────┼─────────────┐           │            │
 │            │           ▼             ▼             ▼           │            │
 │            │      ┌─────────┐   ┌─────────┐   ┌─────────┐      │            │
@@ -126,7 +126,7 @@ below maps that shape, and the rest of this section walks through its parts.
             │ run_code                 │ browser                  │ MCP tools
             ▼                          ▼                          ▼
 ┌───────────────────────┐  ┌───────────────────────┐  ┌───────────────────────┐
-│ Sandbox: one per user │  │ Browser: one per user │  │ MCP servers: your own │
+│ Sandbox: per policy   │  │ Browser: per policy   │  │ MCP servers: your own │
 │ workspaces/<agent_id> │  │ Chromium, own profile │  │ remote tools          │
 │ files persist         │  │ listed sites only     │  │ web search            │
 │ no secrets · no db    │  │ sign-in via live view │  │ listed at startup     │
@@ -176,8 +176,8 @@ agent via `compaction_token_threshold` and `compaction_turn_limit` in
 
 Mash ships with runtime tools that are available to every agent out of the box:
 
-- **run_code**, **sandbox_put**, **sandbox_get**: run Python, JavaScript or shell code in the sandbox of the user the request acts for when the host has sandboxes; the two file tools copy files in and out of folders the spec declares, and exist only when it declares some
-- **browser_navigate**, **browser_snapshot**, **browser_click** and the rest of Playwright MCP's page tools, plus **browser_save**, **browser_upload** and **browser_handoff**: drive the browser of the user the request acts for, on the sites the spec lists with `browser_sites()`, and exist only for a spec that lists some
+- **run_code**, **sandbox_put**, **sandbox_get**: run Python, JavaScript or shell code in the sandbox of the request's policy when the host has sandboxes and the policy allows it; the two file tools copy files in and out of folders the spec declares, and exist only when it declares some
+- **browser_navigate**, **browser_snapshot**, **browser_click** and the rest of Playwright MCP's page tools, plus **browser_save**, **browser_upload** and **browser_handoff**: drive the browser of the request's policy, on the sites the spec lists with `browser_sites()` and the policy allows, and exist only for a spec that lists some
 - **AskUserTool**: pause execution to ask the user a question
 - **RunSubAgents**: the companion's routing tool; run one or more requests at the same time on the host's agents, each in a session of its own, and return their results in order
 - **search_conversations**: search stored conversation turns and return ranked previews
@@ -219,19 +219,21 @@ main tables:
 
 ### Sandboxes
 
-Every request acts for a user: submit bodies carry a required `user_id`, which
-the application asserts and the host trusts. Each user gets a sandbox, a
-container the host starts through the Docker socket the first time an agent
-runs code for that user. It is the user's computer: Mash's sandbox image with
-Python, Node, SQLite and git. When the host has sandboxes, every agent gets
+Every request runs under a policy: each event names a `policy_id`, which
+the application asserts and the host trusts. A policy is a named resource
+many sessions share, created with `PUT /api/v1/policies/{policy_id}`. Each
+policy gets a sandbox, a container the host starts through the Docker socket
+the first time an agent runs code under it. It is the policy's computer:
+Mash's sandbox image with Python, Node, SQLite and git. When the host has sandboxes, every agent gets
 `run_code`, and an agent whose spec declares file roots also gets
 `sandbox_put` and `sandbox_get`. They post to the host's `/sandbox`
-relay with the agent's token and the request id, and the host picks the user
-from the request, so an agent cannot choose whose sandbox it runs in.
+relay with the agent's token and the request id, and the host picks the policy
+from the request, so an agent cannot choose whose sandbox it runs in. A
+policy with `"sandbox": false` gets none of these tools.
 
 ```text
-agent process ──► host /sandbox/exec ──► mash-sandbox-<key> (one per user)
-  run_code          request → user          /home/agent/workspaces/<agent_id>
+agent process ──► host /sandbox/exec ──► mash-sandbox-<key> (one per policy)
+  run_code          request → policy        /home/agent/workspaces/<agent_id>
 ```
 
 Inside, a small daemon runs each piece of code as an unprivileged uid of the
@@ -241,7 +243,7 @@ SQLite databases and `pip install --user` packages persist on the sandbox's
 volume across requests and restarts. The model hands the user what its code
 made through links the host serves: a file opens at `$MASH_FILES_URL/<path>`
 and a server the code started at `$MASH_PORTS_URL/<port>/`. The sandbox holds
-only that user's files; credentials, MCP connections and the database stay in
+only that policy's files; credentials, MCP connections and the database stay in
 the agent processes on the host. A sandbox stops after
 `MASH_SANDBOX_IDLE_SECONDS` (default 900) without use, at most
 `MASH_SANDBOX_MAX_RUNNING` (default 20) run at once, and `mash sandbox ls`,
@@ -250,24 +252,26 @@ host still runs, and its agents get no sandbox tools.
 
 ### Browsers
 
-Each user also gets a browser: a Chromium in a container of its own,
-`mash-browser-<key>`, next to the user's sandbox and on a separate Docker
+Each policy also gets a browser: a Chromium in a container of its own,
+`mash-browser-<key>`, next to the policy's sandbox and on a separate Docker
 network. Its profile, on the container's volume, keeps the sites the user
-signed in to, and every agent acting for that user shares it. The host starts
+signed in to, and every agent and session under that policy shares it. The host starts
 browsers only when some agent's spec lists sites with `browser_sites()`, and
-only those agents get the browser tools.
+only those agents get the browser tools. A policy's `browser_sites`
+narrows each agent's list, and `[]` takes the tools away.
 
 ```text
-agent process ──► host /browser/call ──► mash-browser-<key> (one per user)
-  browser_click     request → user,        daemon ─► Playwright MCP ─► Chromium
+agent process ──► host /browser/call ──► mash-browser-<key> (one per policy)
+  browser_click     request → policy,      daemon ─► Playwright MCP ─► Chromium
                     sites from the spec    one MCP session and tab per request
+                    and the policy
 
 user ───────────► /s/<view token>/browser/ ──► noVNC live view of the same Chromium
 ```
 
 The tools post to the host's `/browser` relay with the agent's token and the
-request id, like the sandbox tools, and the host adds the user and the spec's
-sites. Inside the container, a daemon runs Chromium headed on a virtual
+request id, like the sandbox tools, and the host adds the policy and the
+sites both the spec and the policy allow. Inside the container, a daemon runs Chromium headed on a virtual
 display, with Playwright MCP 0.0.83 attached to it over CDP. The daemon is
 Playwright MCP's client: each request gets its own MCP session and its own
 tab. It checks every URL against the sites before a call runs, and when a
@@ -279,16 +283,19 @@ context.
 
 Downloads land in the browser container, and `browser_save` copies one into
 the agent's sandbox folder, where `run_code` reads it. `browser_upload` goes
-the other way, from the folder to a file input. The browser holds the user's
+the other way, from the folder to a file input. The browser holds the
 signed-in sessions, so the sandbox has no route to it: the sandboxes are not
 on the browsers' network and hold no browser token.
 
 A sign-in uses `browser_handoff`. The engine opens a durable interaction of
-type `browser` whose payload carries `url`, a live-view link, and
-`expires_at`. The link is a view token valid for
-`MASH_BROWSER_HANDOFF_SECONDS` (default 900), and it opens noVNC in the
+type `browser`, which carries no link. When the user is ready, the app calls
+`POST /api/v1/sessions/{session_id}/events/{event_id}/interactions/{interaction_id}/handoff`,
+which mints a live-view link: a view token valid for
+`MASH_BROWSER_HANDOFF_SECONDS` (default 900) that opens noVNC in the
 user's own browser, showing the request's tab. The user signs in, answers `done`, and the request resumes with the
-session in the profile. The token is revoked when the interaction ends. In a
+session in the profile. Every link minted for the interaction stops working
+when it closes, and the interaction waits as long as the policy's
+`wait_max_seconds`. In a
 workflow run, `browser_handoff` fails at once, since no one is there to sign
 in; workflow code can drive the same browser with Playwright through
 `ctx.browser()`.
@@ -296,8 +303,8 @@ in; workflow code can drive the same browser with Playwright through
 A browser stops after `MASH_BROWSER_IDLE_SECONDS` (default 900) without use,
 at most `MASH_BROWSER_MAX_RUNNING` (default 10) run at once, and
 `mash browser ls`, `view` and `stop` manage them from the Docker host. Apps
-list and clear a user's signed-in sites under
-`/api/v1/browser/users/{user_id}`.
+list and clear a policy's signed-in sites under
+`/api/v1/browser/policies/{policy_id}`.
 
 ### Human-in-the-Loop Interactions (HITL)
 
@@ -528,12 +535,14 @@ product surfaces, and operating the system in a controlled environment. See
 [`src/pilot/`](https://github.com/imsid/mashpy/tree/main/src/pilot/) for an
 implementation.
 
-The standard session: serve the pool, save the connection, compose a host,
-and converse through it.
+The standard session: serve the pool, create a policy, save the connection,
+compose a host, and converse through it.
 
 ```bash
 mash host serve --host-app <MASH_HOST> --port 8001
-mash connect --api-base-url <MASH_HOST_URL> --api-key secret --user-id u-1
+echo '{"sandbox": true}' | mash policy put dev --file -
+mash connect --api-base-url <MASH_HOST_URL> --api-key secret \
+  --app-id guide-app --policy-id dev
 mash compose --host guide --agents pilot,cli-copilot,api-copilot
 mash repl
 ```
@@ -549,11 +558,12 @@ can assemble its agent team at runtime without redeploying:
 curl -X PUT <MASH_HOST_URL>/api/v1/hosts/guide \
   -d '{"agents": ["pilot", "cli-copilot", "api-copilot"]}'
 
-curl -X POST <MASH_HOST_URL>/api/v1/hosts/guide/request \
-  -d '{"message": "...", "session_id": "s-1", "user_id": "u-1"}'
+curl -X POST <MASH_HOST_URL>/api/v1/sessions/s-1/events \
+  -d '{"event_id": "e-1", "host_id": "guide", "app_id": "guide-app",
+       "policy_id": "dev", "message": "..."}'
 ```
 
-Each request snapshots the composition it was submitted with, so redefining a
+Each request snapshots the composition when its event starts, so redefining a
 host never disturbs work in flight. Telemetry events carry the `host_id`, so
 traces filter by composition. The
 [dynamic hosts guide](building-dynamic-hosts-apis.md) covers the full
@@ -561,7 +571,7 @@ API flow.
 
 ### REPL
 The REPL is the interactive interface to a running host. It is pinned to the
-composition (or bare agent) you connected with; to change teams, exit and run
+host you connected with; to change teams, exit and run
 `mash compose` again.
 
 ```bash
@@ -582,7 +592,8 @@ Top-level commands exposed by `mash`:
 
 ```bash
 host serve  # Run the host API server
-connect     # Persist a deployment connection and target
+connect     # Persist a deployment connection, app and policy
+policy      # Create, read and delete policies
 status      # Show deployment status
 browse      # Browse the pool: agents, workflows so you can
             # see what is available to wire into a host before composing one.
@@ -592,6 +603,7 @@ hosts       # List defined host compositions
 sessions    # List sessions for the target agent
 history     # Show session history
 repl        # Start the interactive shell
+run         # Post one message, print its answer and exit
 ```
 
 `mash browse` is the one-shot tour of a deployment: it lists the agent pool, the
@@ -602,12 +614,12 @@ see what is available to wire into a host before composing one.
 Default slash commands inside the REPL:
 
 ```bash
-/status     # Show deployment, current host, agent, and session
-/agent      # List pooled agents
-/host       # List defined host compositions (with attached workflows)
-/sessions   # List remote sessions
-/session    # Show current session info
-/history    # View conversation history
+/new        # Start a new session
+/resume     # Pick an earlier session and go on in it
+/agents     # The host's agents
+/tools      # Their tools and skills
+/subagent   # The last request's children, or one child's steps
+/retry      # Send the last message again as a new event
 /trace [N]  # Show trace analysis for recent traces
 /workflow   # List, run, and inspect workflows (bare /workflow lists)
 /feedback   # Record a note or bug report about this session

@@ -68,13 +68,13 @@ class AnthropicProvider(BaseLLMProvider):
 
     def __init__(
         self,
-        app_id: str,
+        agent_id: str,
         model: str = DEFAULT_ANTHROPIC_MODEL,
         api_key: Optional[str] = None,
         event_logger: Optional[Any] = None,
     ) -> None:
         super().__init__(
-            app_id=app_id,
+            agent_id=agent_id,
             model=model,
             event_logger=event_logger,
         )

@@ -23,7 +23,7 @@ observable in one running system.
 
 A Pilot deployment is Postgres and a Mash host, run with Docker Compose from a
 checkout of the repo. The host runs each agent as a process inside its
-container. Through the Docker socket it starts a sandbox per user, where the
+container. Through the Docker socket it starts a sandbox per policy, where the
 agents' code runs, and mounts the checkout read-only into each one at
 `/home/agent/mashpy`. Put `GEMINI_API_KEY`, `OPENROUTER_API_KEY`,
 `MASH_HOST_SECRET` and `MASH_API_KEY` (each `openssl rand -hex 32`) in `.env`,
@@ -34,7 +34,8 @@ git clone https://github.com/imsid/mashpy.git && cd mashpy
 docker compose -f docker-compose.pilot.yml up -d --build
 
 curl -fsSL https://raw.githubusercontent.com/imsid/mashpy/main/install.sh | sh
-mash connect --api-base-url http://127.0.0.1:8000 --user-id me
+echo '{}' | mash policy put me --file - --api-base-url http://127.0.0.1:8000
+mash connect --api-base-url http://127.0.0.1:8000 --app-id pilot --policy-id me
 pilot browse
 ```
 
@@ -44,11 +45,12 @@ saves it with the connection, and `pilot` uses it from there.
 masher's eval agents, each listed through the `AgentMetadata` it registered
 with. The same metadata becomes the agent directory the companion routes by in
 a host, as [the composition post](composing-agents.md) covered.
-Every request acts for the user `mash connect` saved, and the code the agents
-run for that user runs in their own sandbox. `mash sandbox ls` lists the sandboxes.
+Every message is an event under the app and the policy `mash connect` saved,
+and the code the agents run for it runs in that policy's sandbox.
+`mash sandbox ls` lists the sandboxes.
 When you ask the guide about the published docs or the GitHub repository, it
 searches them in a Chromium the host starts for you on first
-use; `mash browser view <user_id>` prints a link to watch it.
+use; `mash browser view me` prints a link to watch it.
 
 ## Compose a team
 
@@ -129,14 +131,14 @@ also serves the admin dashboard, with the trace drawer and span tree, at
 | `pilot browse` | catalog listings and the hosts composed on the deployment |
 | `pilot compose <id> [--agents a,b] [--workflows w]` | define-or-replace a composition |
 | `pilot hosts` | your saved compositions, with live status |
-| `pilot repl --host <id>` | enter a host's REPL, scoped to its team (`--agent <id>` for one bare agent) |
+| `pilot repl --host <id>` | enter a host's REPL, scoped to its team |
 
 | REPL command | What it does |
 |---|---|
-| `/agent`, `/host` | list agents and compositions |
-| `/history [N]`, `/trace [N]` | recent turns; latency analysis |
+| `/agents`, `/tools` | the host's agents, and their tools and skills |
+| `/subagent [n]`, `/trace [N]` | the last request's children; latency analysis |
 | `/workflow list\|run\|status` | inspect or run the workflows attached to this host |
-| `/status`, `/session`, `/sessions` | connection and session info |
+| `/new`, `/resume` | a new session, or an earlier one |
 | `/help`, `/clear`, `/exit` | shell basics |
 | `/feedback <message>` | record a note or bug report for the session |
 

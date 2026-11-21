@@ -41,14 +41,14 @@ class MemorySearchService:
         self,
         query: str,
         *,
-        app_id: str,
+        agent_id: str,
         limit: int = 10,
         session_id: str | None = None,
-        user_id: str | None = None,
+        app_id: str | None = None,
     ) -> list[SearchResult]:
         """Return ranked results with trace_id, session_id, score, and preview.
 
-        ``user_id`` limits results to that user's turns.
+        ``app_id`` limits results to that app's turns.
         """
         normalized_limit = max(0, int(limit))
         if normalized_limit <= 0:
@@ -60,8 +60,8 @@ class MemorySearchService:
             parsed_query,
             limit=normalized_limit,
             session_id=session_id,
+            agent_id=agent_id,
             app_id=app_id,
-            user_id=user_id,
         )
         fused_hits = await self._reranker.rerank(
             keyword_hits=retrieved.keyword_hits,

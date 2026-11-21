@@ -130,7 +130,7 @@ class MashHostClientTests(unittest.TestCase):
     def test_non_stream_requests_keep_default_timeout(self) -> None:
         client, session = _client()
 
-        client.submit_request("primary", message="hello", session_id="s-1", user_id="u-1")
+        client.get_event("s-1", "e-1")
 
         self.assertEqual(session.calls[-1]["timeout"], _timeout(DEFAULT_REQUEST_TIMEOUT))
 
@@ -154,17 +154,17 @@ class MashHostClientTests(unittest.TestCase):
     def test_an_error_carries_the_apis_code_when_there_is_one(self) -> None:
         client, _ = _client(
             httpx.Response(
-                404, json={"error": {"code": "CORTEX_NOT_FOUND", "message": "user not found"}}
+                404, json={"error": {"code": "CORTEX_NOT_FOUND", "message": "app not found"}}
             ),
             httpx.Response(404, json={"detail": "Not Found"}),
             httpx.Response(502, text="bad gateway"),
         )
         with self.assertRaises(MashHostClientError) as raised:
-            client.get_cortex_user("u-1")
+            client.get_cortex_app("app-1")
         self.assertEqual(raised.exception.code, "CORTEX_NOT_FOUND")
         for _ in range(2):
             with self.assertRaises(MashHostClientError) as raised:
-                client.get_cortex_user("u-1")
+                client.get_cortex_app("app-1")
             self.assertIsNone(raised.exception.code)
 
     def test_a_host_that_cannot_be_reached_raises_a_client_error(self) -> None:
@@ -295,45 +295,69 @@ class MashHostClientRouteTests(unittest.TestCase):
             str(session.calls[-1]["url"]),
         )
 
-    def test_submit_sends_mode_only_when_given(self) -> None:
-        client, session = self._client()
-        client.submit_request("primary", message="hi", session_id="s-1", user_id="u-1")
-        client.submit_request("primary", message="hi", session_id="s-1", user_id="u-1", mode="bg")
-        self.assertNotIn("mode", session.calls[0]["json"])
-        self.assertEqual(session.calls[1]["json"]["mode"], "bg")
-
-        client, session = self._client({"data": {"request_id": "r", "agent_id": "primary"}})
-        client.submit_host_request(
-            "assistant", message="hi", session_id="s-1", user_id="u-1", mode="bg"
+    def test_a_message_is_posted_as_an_event_in_its_session(self) -> None:
+        client, session = self._client({"data": {"event_id": "e-1", "request_id": "r"}})
+        accepted = client.post_event(
+            "s 1", event_id="e-1", host_id="assistant", app_id="app-1", policy_id="p-1", message="hi"
         )
-        self.assertIn("/api/v1/hosts/assistant/request", session.calls[0]["url"])
-        self.assertEqual(session.calls[0]["json"]["mode"], "bg")
-
-    def test_set_request_mode_posts_to_the_mode_route(self) -> None:
-        client, session = self._client({"data": {"request_id": "r-1", "mode": "bg"}})
-        self.assertEqual(client.set_request_mode("primary", "r-1", "bg")["mode"], "bg")
-        call = session.calls[0]
+        self.assertEqual(accepted["request_id"], "r")
+        [call] = session.calls
         self.assertEqual(call["method"], "POST")
-        self.assertTrue(call["url"].endswith("/api/v1/agent/primary/request/r-1/mode"))
-        self.assertEqual(call["json"], {"mode": "bg"})
-
-    def test_cancel_request_posts_to_the_cancel_route(self) -> None:
-        client, session = self._client({"data": {"status": "cancelled"}})
-        client.cancel_request("research", "r-2")
-        self.assertTrue(
-            session.calls[0]["url"].endswith("/api/v1/agent/research/request/r-2/cancel")
+        self.assertTrue(call["url"].endswith("/api/v1/sessions/s%201/events"))
+        self.assertEqual(
+            call["json"],
+            {"event_id": "e-1", "host_id": "assistant", "app_id": "app-1",
+             "policy_id": "p-1", "message": "hi"},
         )
+
+    def test_answers_cancels_and_handoff_links_go_to_the_event(self) -> None:
+        client, session = self._client(
+            {"data": {"status": "running"}},
+            {"data": {"status": "cancelled"}},
+            {"data": {"url": "http://h/s/t/browser/", "expires_at": 1}},
+        )
+        client.answer_event("s-1", "e/1", interaction_id="i-1", response="done")
+        client.cancel_event("s-1", "e/1")
+        self.assertEqual(client.handoff_link("s-1", "e/1", "i-1")["expires_at"], 1)
+        answer, cancel, handoff = session.calls
+        self.assertTrue(answer["url"].endswith("/api/v1/sessions/s-1/events"))
+        self.assertEqual(
+            answer["json"], {"event_id": "e/1", "interaction_id": "i-1", "response": "done"}
+        )
+        self.assertTrue(cancel["url"].endswith("/api/v1/sessions/s-1/events/e%2F1/cancel"))
+        self.assertTrue(
+            handoff["url"].endswith("/api/v1/sessions/s-1/events/e%2F1/interactions/i-1/handoff")
+        )
+
+    def test_policies_are_put_and_read_by_id(self) -> None:
+        client, session = self._client(
+            {"data": {"policy_id": "acme ws", "sandbox": False}},
+            {"data": {"policy_id": "acme ws", "sandbox": False}},
+        )
+        self.assertFalse(client.put_policy("acme ws", {"sandbox": False})["sandbox"])
+        self.assertEqual(client.get_policy("acme ws")["policy_id"], "acme ws")
+        put, get = session.calls
+        self.assertEqual((put["method"], put["json"]), ("PUT", {"sandbox": False}))
+        self.assertTrue(str(put["url"]).endswith("/api/v1/policies/acme%20ws"))
+        self.assertEqual(get["method"], "GET")
+
+    def test_a_policy_is_deleted_by_id(self) -> None:
+        client, session = self._client({"data": {"deleted": "acme ws"}})
+        self.assertEqual(client.delete_policy("acme ws"), {"deleted": "acme ws"})
+        [call] = session.calls
+        self.assertEqual(call["method"], "DELETE")
+        self.assertTrue(str(call["url"]).endswith("/api/v1/policies/acme%20ws"))
 
     def test_list_session_requests_passes_its_filters(self) -> None:
         client, session = self._client({"data": {"requests": [{"request_id": "r-1"}, "junk"]}})
         records = client.list_session_requests(
-            "primary", "s-1", mode="bg", status="running", started_by="user"
+            "primary", "s-1", status="running", started_by="user"
         )
         self.assertEqual(records, [{"request_id": "r-1"}])
         self.assertEqual(
             session.calls[0]["url"],
             "http://localhost:8000/api/v1/agent/primary/sessions/s-1/requests"
-            "?mode=bg&status=running&started_by=user",
+            "?status=running&started_by=user",
         )
 
     def test_submit_feedback_posts_session_context(self) -> None:
@@ -424,16 +448,12 @@ class MashHostClientRouteTests(unittest.TestCase):
             str(session.calls[-1]["url"]),
         )
 
-    def test_rerun_and_compact_post_to_their_routes(self) -> None:
+    def test_compact_posts_to_its_route(self) -> None:
         client, session = self._client(
-            {"data": {"request_id": "r-2", "agent_id": "primary", "mode": "fg"}},
             {"data": {"summary_text": "so far", "trace_id": "t-1"}},
         )
-        self.assertEqual(client.rerun_request("primary", "r/1")["request_id"], "r-2")
         self.assertEqual(client.compact_session("primary", "s 1")["summary_text"], "so far")
-        rerun, compact = session.calls
-        self.assertEqual(rerun["method"], "POST")
-        self.assertIn("/api/v1/agent/primary/request/r%2F1/rerun", rerun["url"])
+        [compact] = session.calls
         self.assertEqual(compact["method"], "POST")
         self.assertIn("/api/v1/agent/primary/sessions/s%201/compact", compact["url"])
         self.assertEqual(compact["json"], {"reason": "manual"})
@@ -448,47 +468,47 @@ class MashHostClientRouteTests(unittest.TestCase):
         self.assertTrue(str(session.calls[0]["url"]).endswith("/api/v1/tools"))
         self.assertTrue(str(session.calls[1]["url"]).endswith("/api/v1/skills"))
 
-    def test_cortex_calls_use_the_users_routes(self) -> None:
+    def test_cortex_calls_use_the_apps_routes(self) -> None:
         client, session = self._client(
-            {"data": {"user_id": "u@1", "profile": "p", "entry_count": 1}},
+            {"data": {"app_id": "slack@acme", "profile": "p", "entry_count": 1}},
             {"data": {"entries": [{"entry_id": "e-1"}], "next": None}},
             {"data": {"entry": {"entry_id": "e-2"}, "version": 3}},
             {"data": {"deleted": "e-2", "version": 4}},
         )
-        self.assertEqual(client.get_cortex_user("u@1")["profile"], "p")
-        self.assertEqual(client.list_cortex_entries("u@1", q="tea", limit=5), [{"entry_id": "e-1"}])
+        self.assertEqual(client.get_cortex_app("slack@acme")["profile"], "p")
+        self.assertEqual(client.list_cortex_entries("slack@acme", q="tea", limit=5), [{"entry_id": "e-1"}])
         self.assertEqual(
-            client.create_cortex_entry("u@1", topic="note", content="likes tea")["entry_id"], "e-2"
+            client.create_cortex_entry("slack@acme", topic="note", content="likes tea")["entry_id"], "e-2"
         )
-        client.delete_cortex_entry("u@1", "e-2")
-        user, entries, create, delete = session.calls
-        self.assertTrue(str(user["url"]).endswith("/api/v1/cortex/users/u%401"))
-        self.assertIn("/api/v1/cortex/users/u%401/entries", str(entries["url"]))
+        client.delete_cortex_entry("slack@acme", "e-2")
+        cortex, entries, create, delete = session.calls
+        self.assertTrue(str(cortex["url"]).endswith("/api/v1/cortex/apps/slack%40acme"))
+        self.assertIn("/api/v1/cortex/apps/slack%40acme/entries", str(entries["url"]))
         self.assertIn("q=tea", str(entries["url"]))
         self.assertIn("limit=5", str(entries["url"]))
         self.assertEqual(create["method"], "POST")
         self.assertEqual(create["json"], {"topic": "note", "content": "likes tea"})
         self.assertEqual(delete["method"], "DELETE")
-        self.assertTrue(str(delete["url"]).endswith("/api/v1/cortex/users/u%401/entries/e-2"))
+        self.assertTrue(str(delete["url"]).endswith("/api/v1/cortex/apps/slack%40acme/entries/e-2"))
 
-    def test_browser_calls_use_the_users_routes(self) -> None:
+    def test_browser_calls_use_the_policys_routes(self) -> None:
         client, session = self._client(
-            {"data": {"user_id": "u-1", "sites": [{"domain": "pge.com", "cookies": 2}]}},
-            {"data": {"user_id": "u-1", "domain": "pge.com", "cookies": 2}},
+            {"data": {"policy_id": "p-1", "sites": [{"domain": "pge.com", "cookies": 2}]}},
+            {"data": {"policy_id": "p-1", "domain": "pge.com", "cookies": 2}},
         )
-        self.assertEqual(client.list_browser_sites("u-1")[0]["domain"], "pge.com")
-        self.assertEqual(client.clear_browser_site("u-1", "pge.com")["cookies"], 2)
+        self.assertEqual(client.list_browser_sites("p-1")[0]["domain"], "pge.com")
+        self.assertEqual(client.clear_browser_site("p-1", "pge.com")["cookies"], 2)
         sites, clear = session.calls
-        self.assertTrue(str(sites["url"]).endswith("/api/v1/browser/users/u-1/sites"))
+        self.assertTrue(str(sites["url"]).endswith("/api/v1/browser/policies/p-1/sites"))
         self.assertEqual(clear["method"], "DELETE")
-        self.assertTrue(str(clear["url"]).endswith("/api/v1/browser/users/u-1/sites/pge.com"))
+        self.assertTrue(str(clear["url"]).endswith("/api/v1/browser/policies/p-1/sites/pge.com"))
 
-    def test_list_sessions_sends_the_user_and_limit_when_given(self) -> None:
+    def test_list_sessions_sends_the_app_and_limit_when_given(self) -> None:
         client, session = self._client({"data": {"sessions": []}}, {"data": {"sessions": []}})
         client.list_sessions("primary")
-        client.list_sessions("primary", user_id="u-1", limit=20)
+        client.list_sessions("primary", app_id="app-1", limit=20)
         self.assertNotIn("?", str(session.calls[0]["url"]))
-        self.assertIn("user_id=u-1", str(session.calls[1]["url"]))
+        self.assertIn("app_id=app-1", str(session.calls[1]["url"]))
         self.assertIn("limit=20", str(session.calls[1]["url"]))
 
     def test_list_workflow_runs_reads_the_runs_route(self) -> None:

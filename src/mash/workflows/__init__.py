@@ -19,7 +19,7 @@ if TYPE_CHECKING:
         WorkflowRun,
         WorkflowService,
         WorkflowStreamEvent,
-        WorkflowUserRequiredError,
+        WorkflowIdentityRequiredError,
     )
     from .spec import (
         AgentStep,
@@ -44,7 +44,7 @@ __all__ = [
     "WorkflowService",
     "WorkflowStreamEvent",
     "WorkflowSpec",
-    "WorkflowUserRequiredError",
+    "WorkflowIdentityRequiredError",
     "validate_step_pipeline",
 ]
 
@@ -63,7 +63,7 @@ _EXPORTS: dict[str, str] = {
     "WorkflowRun": ".service",
     "WorkflowService": ".service",
     "WorkflowStreamEvent": ".service",
-    "WorkflowUserRequiredError": ".service",
+    "WorkflowIdentityRequiredError": ".service",
 }
 
 

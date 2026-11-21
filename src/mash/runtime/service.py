@@ -44,7 +44,7 @@ class AgentRuntime:
         memory_store: MemoryStore,
     ) -> None:
         self.definition = definition
-        self.app_id = definition.get_agent_id()
+        self.agent_id = definition.get_agent_id()
         self.runtime_database_url = _resolve_runtime_database_url(runtime_database_url)
         if not isinstance(session_id, str):
             raise TypeError("session_id must be a string")
@@ -78,7 +78,7 @@ class AgentRuntime:
         # Built once: the spec's tools, skills and LLM serve every request.
         self.agent = factory_helpers.build_base_agent(self)
         self.agent.set_event_logger(self.event_logger, self.session_id)
-        self.agent.llm.set_event_logger(self.event_logger, self.app_id)
+        self.agent.llm.set_event_logger(self.event_logger, self.agent_id)
         self.system_prompt: SystemPrompt = self.agent.config.system_prompt
         self.tools = self.agent.tools
         self.skills = self.agent.skills
@@ -133,7 +133,7 @@ class AgentRuntime:
             servers.append(self._web_search_server)
         if not servers:
             return
-        self.mcp_manager = MCPManager(event_logger=self.event_logger, app_id=self.app_id)
+        self.mcp_manager = MCPManager(event_logger=self.event_logger, agent_id=self.agent_id)
         await self.mcp_manager.connect_all(servers)
         factory_helpers.register_mcp_tools(self, self.agent)
 
@@ -145,19 +145,19 @@ class AgentRuntime:
         return self._host_access
 
     def enable_cortex(self, reader: Any) -> None:
-        """Give requests with a ``user_id`` the user's Cortex profile and ``search_cortex``."""
+        """Give requests with an ``app_id`` the app's Cortex profile and ``search_cortex``."""
         self._cortex = reader
 
     def get_cortex(self) -> Any:
         return self._cortex
 
     def enable_sandbox_tools(self, *, host_api_url: str, token: str) -> None:
-        """Give every turn agent the tools of the request user's sandbox, via the host."""
+        """Give every turn agent the tools of the request policy's sandbox, via the host."""
         self._sandbox_tools = (host_api_url, token)
         factory_helpers.register_sandbox_tools(self, self.agent)
 
     def enable_browser_tools(self, *, host_api_url: str, token: str) -> None:
-        """Give every turn agent the tools of the request user's browser, via the host."""
+        """Give every turn agent the tools of the request policy's browser, via the host."""
         self._browser_tools = (host_api_url, token)
         factory_helpers.register_browser_tools(self, self.agent)
 
@@ -208,14 +208,15 @@ class AgentRuntime:
         *,
         message: str,
         session_id: str,
-        user_id: str,
+        app_id: str,
+        policy_id: str,
+        policy: dict[str, Any],
         structured_output: Any = None,
         host_snapshot: dict[str, Any] | None = None,
         context: str | None = None,
         metadata: dict[str, Any] | None = None,
         request_id: str | None = None,
         parent: dict[str, Any] | None = None,
-        mode: str = "fg",
         traceparent: str | None = None,
         tracestate: str | None = None,
     ) -> dict[str, Any]:
@@ -223,20 +224,18 @@ class AgentRuntime:
             self,
             message=message,
             session_id=session_id,
-            user_id=user_id,
+            app_id=app_id,
+            policy_id=policy_id,
+            policy=policy,
             structured_output=structured_output,
             host_snapshot=host_snapshot,
             context=context,
             metadata=metadata,
             request_id=request_id,
             parent=parent,
-            mode=mode,
             traceparent=traceparent,
             tracestate=tracestate,
         )
-
-    async def set_request_mode(self, request_id: str, mode: str) -> dict[str, Any]:
-        return await request_helpers.set_request_mode(self, request_id, mode)
 
     def describe(self) -> dict[str, Any]:
         """The agent's tools and skills: its shared tools, then the
@@ -245,7 +244,7 @@ class AgentRuntime:
         if self.definition.enable_runtime_tools():
             listed.extend(
                 RuntimeToolBuilder(
-                    store=self.memory_store, app_id=self.app_id, session_id=self.session_id
+                    store=self.memory_store, agent_id=self.agent_id, session_id=self.session_id
                 ).build_tools()
             )
         tools = []
@@ -270,7 +269,7 @@ class AgentRuntime:
             }
             for skill in self.skills.list_skills()
         ]
-        return {"agent_id": self.app_id, "tools": tools, "skills": skills}
+        return {"agent_id": self.agent_id, "tools": tools, "skills": skills}
 
     async def get_accepted_request(self, request_id: str) -> dict[str, Any] | None:
         self.require_open()
@@ -293,12 +292,6 @@ class AgentRuntime:
     async def get_request_status(self, request_id: str) -> dict[str, Any]:
         self.require_open()
         return await self.engine.get_request_status(request_id=request_id)
-
-    async def resume_request(self, request_id: str) -> dict[str, Any]:
-        return await request_helpers.resume_request(self, request_id)
-
-    async def rerun_request(self, request_id: str) -> dict[str, Any]:
-        return await request_helpers.rerun_request(self, request_id)
 
     async def cancel_request(self, request_id: str) -> dict[str, Any]:
         self.require_open()
@@ -330,14 +323,16 @@ class AgentRuntime:
         session_id: str,
         trace_id: str,
         host: dict[str, Any] | None = None,
-        user_id: str | None = None,
+        app_id: str | None = None,
+        policy: dict[str, Any] | None = None,
         parent_kind: str | None = None,
     ) -> Any:
         agent = factory_helpers.build_turn_agent(
             self,
             session_id=session_id,
             host=host,
-            user_id=user_id,
+            app_id=app_id,
+            policy=policy,
             parent_kind=parent_kind,
         )
         self.configure_turn_context(agent, session_id=session_id, trace_id=trace_id)

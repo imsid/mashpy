@@ -75,28 +75,35 @@ unrelated to this shape — workflow run endpoints are pool-level.
 Step execution is at-least-once: a step the host died in runs again when the
 run continues. Pure transforms rerun safely. A step with external effects must
 dedupe on a stable key. `StepContext` carries `run_id`, `step_id`,
-`workflow_input`, `attempt` and `user_id`. `attempt` is 1 on the first run of a
+`workflow_input`, `attempt`, `app_id`, `policy_id` and `policy` (the run's
+policy snapshot). `attempt` is 1 on the first run of a
 step, stays the same when the host died in the step, and goes up by one when a
 failed step is resumed, so a key that includes it retries the effect on resume
 and reattaches after a crash. The framework never invents a key or classifies
 steps.
 
-## The run's user
+## The run's app and policy
 
-A run acts for one user: `run_workflow(workflow_id, user_id=...)`, or
-`user_id` next to `input` on `POST /workflow/{id}/run`. It is required when the
-workflow submits agent requests, that is when it has an `AgentStep` or a
-`CodeStep` that declares `agent_ids` (`WorkflowSpec.uses_agents`); otherwise
-it is optional. The run stores it in `workflow_runs.user_id`, every agent step
-submits for it, and a code step that submits its own agent requests passes
-`ctx.user_id` to `post_inline_agent_request`. Those requests' code runs in that
-user's sandbox. A resumed run keeps its user.
+A run acts for one app under one policy:
+`run_workflow(workflow_id, app_id=..., policy_id=...)`, or `app_id` and
+`policy_id` next to `input` on `POST /workflow/{id}/run`. Both are required
+when the workflow submits agent requests, that is when it has an `AgentStep`
+or a `CodeStep` that declares `agent_ids` (`WorkflowSpec.uses_agents`)
+(`WorkflowIdentityRequiredError`, `400 APP_AND_POLICY_REQUIRED` over the API);
+otherwise they are optional. The policy must exist. The run stores both in
+`workflow_runs` with a snapshot of the policy taken at start, every agent step
+submits under them, and a code step that submits its own agent requests passes
+`ctx.app_id`, `ctx.policy_id` and `ctx.policy` to `post_inline_agent_request`.
+Those requests' code runs in that policy's sandbox. A resumed run keeps its
+app and its policy snapshot. A run has no session and does not wait in any
+session's queue.
 
-On a host with browsers, a code step drives the run user's browser with
+On a host with browsers, a code step drives the run policy's browser with
 `ctx.browser()`, an async context manager that yields a Playwright
-`BrowserContext` over CDP (`pip install 'mashpy[browser]'`). It is the user's
-profile, signed in wherever the user is, with no site list: workflow code is
-the app's own. Pages the block opens close when it ends. A known flow can run
+`BrowserContext` over CDP (`pip install 'mashpy[browser]'`). It is the
+policy's profile, signed in wherever someone signed in under the policy, with
+no site list: workflow code is the app's own. A policy whose `browser_sites`
+is `[]` refuses it. Pages the block opens close when it ends. A known flow can run
 here and fall back to an `AgentStep` with browser tools when the page has
 changed. An agent step that needs a sign-in fails at once, since nobody is
 watching the run; an interactive request does the sign-in, and the next run
@@ -149,11 +156,12 @@ cancelled at the deadline.
 ## Storage
 
 Three tables (in the shared schema baseline `001_baseline.sql`, with
-`workflow_runs.user_id` from `007_workflow_run_user.sql`), owned by the
-workflow layer:
+`workflow_runs.app_id`, `policy_id` and `policy` from
+`022_app_and_policy.sql`), owned by the workflow layer:
 
 - `workflow_runs` — one row per run (status, `workflow_input`, `dedup_key`,
-  `user_id`, `result`, timing, and `recoveries` from `011_durable_state.sql`).
+  `app_id`, `policy_id`, `policy`, `result`, timing, and `recoveries` from
+  `011_durable_state.sql`).
 - `workflow_steps` — one row per step (status, input/output snapshots, attempt,
   `agent_request_id`).
 - `workflow_step_events` — append-only lifecycle audit keyed by

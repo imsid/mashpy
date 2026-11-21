@@ -14,6 +14,7 @@ import uuid
 
 from mash.runtime.client import AgentClient
 from mash.runtime.host.processes import STATUS_RUNNING, AgentProcessProvider, _Child
+from mash.testing.runtime_fixtures import TEST_IDENTITY
 
 try:
     import psycopg
@@ -103,7 +104,7 @@ class AgentProcessProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_pending_request_finishes_after_the_child_is_killed(self) -> None:
         endpoint = await self.provider.ensure(self.agent_id)
         client = AgentClient(endpoint.base_url, self.agent_id, token=endpoint.token)
-        request_id = await client.post_request("hello", session_id="s-1", user_id="u-1")
+        request_id = await client.post_request("hello", session_id="s-1", **TEST_IDENTITY)
         await asyncio.sleep(1.0)  # the model call is in flight
 
         await self._kill_and_wait_for_restart()
@@ -147,7 +148,7 @@ class RecoveryOwnershipTests(unittest.IsolatedAsyncioTestCase):
         endpoint = await provider.ensure(owner)
         await provider.ensure(sibling)
         client = AgentClient(endpoint.base_url, owner, token=endpoint.token)
-        request_id = await client.post_request("hello", session_id="s-1", user_id="u-1")
+        request_id = await client.post_request("hello", session_id="s-1", **TEST_IDENTITY)
         await asyncio.sleep(1.0)  # the model call is in flight
         await provider.stop(owner)
 
@@ -209,7 +210,7 @@ class EnableDisableTests(unittest.IsolatedAsyncioTestCase):
         await pool.start()
         try:
             request_id = await pool.get_client(agent_id).post_request(
-                "hello", session_id="s-1", user_id="u-1"
+                "hello", session_id="s-1", **TEST_IDENTITY
             )
             await asyncio.sleep(1.0)  # the model call is in flight
 

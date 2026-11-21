@@ -199,14 +199,14 @@ async def provider_stage() -> None:
     """The host's provider and manager: start, browse, persist, sign out, delete."""
     provider = DockerBrowserProvider(host_secret="smoke-secret", image=IMAGE, namespace=NAMESPACE, in_container=False)
     manager = BrowserManager(provider, host_secret="smoke-secret")
-    user = "smoke@user"
-    name = browser_name(user, NAMESPACE)
+    policy = "smoke-policy"
+    name = browser_name(policy, NAMESPACE)
     example = ["https://example.com"]
     try:
-        endpoint = await manager.endpoint(user)
-        check("provider starts the user's browser", True)
+        endpoint = await manager.endpoint(policy)
+        check("provider starts the policy's browser", True)
         result = await manager.call(
-            user, request_id="p-1", tool="browser_navigate",
+            policy, request_id="p-1", tool="browser_navigate",
             arguments={"url": "https://example.com/"}, sites=example,
         )
         check("browses the internet", "Example Domain" in result["content"], result["content"][:300])
@@ -220,12 +220,12 @@ async def provider_stage() -> None:
                 [{"name": "signed_in", "value": "yes", "domain": "example.com", "path": "/", "expires": time.time() + 86400}]
             )
             await browser.close()
-        await manager.stop(user)
+        await manager.stop(policy)
         check("stop stops the container", json.loads(sh("docker", "inspect", name))[0]["State"]["Running"] is False)
-        sites = await manager.sites(user)
+        sites = await manager.sites(policy)
         check("profile survives a restart", any(s["domain"] == "example.com" for s in sites), json.dumps(sites))
-        cleared = await manager.clear_site(user, "example.com")
-        sites = await manager.sites(user)
+        cleared = await manager.clear_site(policy, "example.com")
+        sites = await manager.sites(policy)
         check(
             "clearing a site signs out of it",
             cleared["cookies"] >= 1 and not any(s["domain"] == "example.com" for s in sites),
@@ -233,7 +233,7 @@ async def provider_stage() -> None:
         networks = json.loads(sh("docker", "inspect", name))[0]["NetworkSettings"]["Networks"]
         check("on the browsers network only", list(networks) == [f"{NAMESPACE}-browsers"], str(list(networks)))
     finally:
-        await manager.delete_profile(user)
+        await manager.delete_profile(policy)
         await provider.close()
     check("profile deleted", sh("docker", "volume", "ls", "-q", "--filter", f"name={name}").strip() == "")
 
@@ -252,14 +252,14 @@ async def view_stage() -> None:
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=18080, log_level="warning"))
     server.capture_signals = contextlib.nullcontext  # type: ignore[method-assign]
     serving = asyncio.create_task(server.serve())
-    user = "view@user"
+    policy = "view-policy"
     try:
         await browsers.call(
-            user, request_id="r-1", tool="browser_navigate",
+            policy, request_id="r-1", tool="browser_navigate",
             arguments={"url": "https://example.com/"}, sites=["https://example.com"],
         )
-        handoff = browsers.start_handoff(user, "r-1")
-        await browsers.front(user, "r-1")
+        handoff = browsers.mint_link(policy, "r-1", "itr-1")
+        await browsers.front(policy, "r-1")
         url = view_url("http://127.0.0.1:18080", handoff.token)
         async with async_playwright() as pw:
             viewer = await pw.chromium.launch(channel=VIEWER_CHANNEL)
@@ -280,7 +280,7 @@ async def view_stage() -> None:
     finally:
         server.should_exit = True
         await serving
-        await browsers.delete_profile(user)
+        await browsers.delete_profile(policy)
         await provider.close()
 
 

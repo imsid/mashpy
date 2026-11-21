@@ -63,8 +63,8 @@ class KeywordRetriever:
         *,
         limit: int,
         session_id: str | None = None,
+        agent_id: str | None = None,
         app_id: str | None = None,
-        user_id: str | None = None,
     ) -> list[RetrievalHit]:
         """Retrieve keyword hits from the configured store backend."""
         normalized_limit = _coerce_limit(limit)
@@ -76,8 +76,8 @@ class KeywordRetriever:
             query_term=parsed.keyword_query,
             limit=normalized_limit,
             session_id=session_id,
+            agent_id=agent_id,
             app_id=app_id,
-            user_id=user_id,
         )
         return [
             _to_hit(raw_hit, method="keyword", column=parsed.column, rank=index)
@@ -97,8 +97,8 @@ class SemanticRetriever:
         *,
         limit: int,
         session_id: str | None = None,
+        agent_id: str | None = None,
         app_id: str | None = None,
-        user_id: str | None = None,
     ) -> list[RetrievalHit]:
         """Retrieve semantic hits from the configured store backend."""
         normalized_limit = _coerce_limit(limit)
@@ -111,8 +111,8 @@ class SemanticRetriever:
             query_embedding=parsed.semantic_embedding,
             limit=normalized_limit,
             session_id=session_id,
+            agent_id=agent_id,
             app_id=app_id,
-            user_id=user_id,
         )
         return [
             _to_hit(raw_hit, method="semantic", column=parsed.column, rank=index)
@@ -149,8 +149,8 @@ class HybridRetrievalOrchestrator:
         *,
         limit: int,
         session_id: str | None = None,
+        agent_id: str | None = None,
         app_id: str | None = None,
-        user_id: str | None = None,
     ) -> HybridRetrievalOutputs:
         """Run enabled retrieval methods and return their independent outputs."""
         self._validate_enabled()
@@ -161,8 +161,8 @@ class HybridRetrievalOrchestrator:
                 parsed,
                 limit=limit,
                 session_id=session_id,
+                agent_id=agent_id,
                 app_id=app_id,
-                user_id=user_id,
             )
 
         if self._config.enable_semantic:
@@ -170,8 +170,8 @@ class HybridRetrievalOrchestrator:
                 parsed,
                 limit=limit,
                 session_id=session_id,
+                agent_id=agent_id,
                 app_id=app_id,
-                user_id=user_id,
             )
 
         outputs = HybridRetrievalOutputs(

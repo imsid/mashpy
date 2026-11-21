@@ -1,7 +1,7 @@
 """The request loop: one agent request, continued from its checkpoint.
 
-The loop runs the same steps in the same order whether a request is new,
-recovered after a crash, or resumed. Its state is one dict, the checkpoint,
+The loop runs the same steps in the same order whether a request is new or
+recovered after a crash. Its state is one dict, the checkpoint,
 saved to ``runtime_request.checkpoint`` after every step:
 
 - ``trace_id``: the request's trace, read from its accepted event
@@ -196,9 +196,11 @@ class RequestRun:
         )
 
     async def _await_answer(
-        self, interaction_id: str, *, deadline: float, interaction_type: str
+        self, interaction_id: str, *, deadline: float | None, interaction_type: str
     ) -> tuple[Any, bool]:
         """Wait for the interaction's ``interaction.end``; append a timeout at the deadline.
+
+        Without a deadline it waits until an answer or a cancel.
 
         Returns ``(response, timed_out)``, or ``(_CANCELLED, False)`` when the
         interaction was cancelled.
@@ -208,7 +210,7 @@ class RequestRun:
         try:
             while True:
                 end = await self._interaction_end(interaction_id)
-                if end is None and time.time() >= deadline:
+                if end is None and deadline is not None and time.time() >= deadline:
                     end = await emit_interaction_ack(
                         self.runtime,
                         self.request_id,
@@ -224,10 +226,9 @@ class RequestRun:
                         return _CANCELLED, False
                     return payload.get("response"), bool(payload.get("timed_out"))
                 waiter.clear()
+                timeout = None if deadline is None else max(0.0, deadline - time.time())
                 try:
-                    await asyncio.wait_for(
-                        waiter.wait(), timeout=max(0.0, deadline - time.time())
-                    )
+                    await asyncio.wait_for(waiter.wait(), timeout=timeout)
                 except asyncio.TimeoutError:
                     pass
         finally:
@@ -240,7 +241,7 @@ class RequestRun:
         interaction_type: str,
         prompt: str,
         options: list[str] | None,
-        timeout_seconds: int,
+        timeout_seconds: int | None,
         step_prefix: str,
         extra: dict[str, Any] | None = None,
     ) -> tuple[str, Any, bool]:
@@ -268,7 +269,7 @@ class RequestRun:
             async with self._slot_released():
                 response, timed_out = await self._await_answer(
                     interaction_id,
-                    deadline=float(opened["deadline"]),
+                    deadline=None if opened["deadline"] is None else float(opened["deadline"]),
                     interaction_type=interaction_type,
                 )
             if response is _CANCELLED:
@@ -284,9 +285,18 @@ class RequestRun:
         interaction_type: str,
         prompt: str,
         options: list[str] | None,
-        timeout_seconds: int,
+        timeout_seconds: int | None,
         extra: dict[str, Any] | None,
     ) -> dict[str, Any]:
+        # The policy caps every interaction's deadline; an interaction with no
+        # timeout of its own (a browser handoff) takes the cap, and with no
+        # cap waits until answered or cancelled. Read here, inside the
+        # checkpointed step, so a recovered request keeps it.
+        wait_max = (self.request_metadata.get("policy") or {}).get("wait_max_seconds")
+        if wait_max is not None:
+            timeout_seconds = (
+                int(wait_max) if timeout_seconds is None else min(int(timeout_seconds), int(wait_max))
+            )
         await emit_interaction_create(
             self.runtime,
             self.request_id,
@@ -301,7 +311,7 @@ class RequestRun:
         )
         return {
             "interaction_id": interaction_id,
-            "deadline": time.time() + timeout_seconds,
+            "deadline": None if timeout_seconds is None else time.time() + timeout_seconds,
         }
 
     async def _await_close(self, interaction_id: str) -> dict[str, Any]:
@@ -375,11 +385,12 @@ class RequestRun:
         loop_index: int,
         call_index: int,
     ) -> dict[str, Any]:
-        """Turn browser_handoff into a live-view link and an interaction.
+        """Turn browser_handoff into a ``browser`` interaction.
 
-        The link is memoized, so a recovered request hands the user the same
-        one. Ending the handoff revokes the link and returns the page as the
-        user left it.
+        The interaction carries no link: one is made each time someone asks
+        for it on the event, and lasts a few minutes, while the interaction
+        may wait as long as the policy allows. Ending the handoff revokes
+        every link and returns the page as the user left it.
         """
         arguments = dict(tool_call.get("arguments") or {})
         reason = str(arguments.get("reason") or "The page needs you.").strip()
@@ -394,15 +405,20 @@ class RequestRun:
         if "error" in started:
             content, is_error = str(started["error"]), True
         else:
-            interaction_id, response, timed_out = await self._run_interaction(
-                loop_index=loop_index,
-                interaction_type="browser",
-                prompt=reason,
-                options=None,
-                timeout_seconds=int(started.get("timeout_seconds") or 900),
-                step_prefix=f"browser.handoff.{call_index}",
-                extra={"url": started["url"], "expires_at": started["expires_at"]},
-            )
+            try:
+                interaction_id, response, timed_out = await self._run_interaction(
+                    loop_index=loop_index,
+                    interaction_type="browser",
+                    prompt=reason,
+                    options=None,
+                    timeout_seconds=None,
+                    step_prefix=f"browser.handoff.{call_index}",
+                )
+            except RequestCancelled:
+                # Cancelled while it waited: the links go now, not at expiry.
+                with contextlib.suppress(Exception):
+                    await end_browser_handoff(self.runtime, self.request_id)
+                raise
             page = await self._step(
                 f"browser.handoff.end.{loop_index}.{call_index}",
                 end_browser_handoff,
@@ -418,7 +434,7 @@ class RequestRun:
                 is_error = bool(page.get("is_error"))
                 images = list(page.get("images") or [])
             elif timed_out:
-                content = "The user did not finish in the browser before the link expired."
+                content = "The user did not finish in the browser before the wait ran out."
                 is_error = True
             else:
                 content, is_error = "The user cancelled the handoff.", True
@@ -692,9 +708,6 @@ class ChildInteractionRelay:
                 for key in ("agent_id", "request_id", "session_id", "trace_id", "interaction_id")
             }
         }
-        for key in ("url", "expires_at"):
-            if key in interaction:
-                extra[key] = interaction[key]
         interaction_type = str(interaction.get("type") or "info")
         schema = interaction.get("schema")
         await emit_interaction_create(

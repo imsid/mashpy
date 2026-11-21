@@ -164,7 +164,8 @@ function TestRequestDrawer({ open, host, onClose }) {
   const navigate = useNavigate();
   const [message, setMessage] = useState('');
   const [sessionId, setSessionId] = useState(randomSession());
-  const [userId, setUserId] = useState('');
+  const [appId, setAppId] = useState('');
+  const [policyId, setPolicyId] = useState('');
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
@@ -174,10 +175,12 @@ function TestRequestDrawer({ open, host, onClose }) {
     setError(null);
     setResult(null);
     try {
-      const res = await api.submitHostRequest(host.host_id, {
+      const res = await api.postEvent(sessionId.trim(), {
+        event_id: crypto.randomUUID(),
+        host_id: host.host_id,
         message: message.trim(),
-        session_id: sessionId.trim(),
-        user_id: userId.trim(),
+        app_id: appId.trim(),
+        policy_id: policyId.trim(),
       });
       setResult(res);
     } catch (err) {
@@ -192,16 +195,18 @@ function TestRequestDrawer({ open, host, onClose }) {
       open={open}
       onClose={onClose}
       title={host ? `Test ${host.host_id}` : 'Test host'}
-      subtitle="Submit a request to this host. The companion routes it."
+      subtitle="Post an event to this host. The companion routes it."
       footer={
         <div className="flex items-center justify-between">
           <span className="text-xs text-rose-600">{error?.message || ''}</span>
           <Button
             variant="primary"
             onClick={send}
-            disabled={sending || !message.trim() || !sessionId.trim() || !userId.trim()}
+            disabled={
+              sending || !message.trim() || !sessionId.trim() || !appId.trim() || !policyId.trim()
+            }
           >
-            {sending ? 'Sending…' : 'Send request'}
+            {sending ? 'Sending…' : 'Post event'}
           </Button>
         </div>
       }
@@ -210,8 +215,11 @@ function TestRequestDrawer({ open, host, onClose }) {
         <Field label="Session ID">
           <TextInput value={sessionId} onChange={(e) => setSessionId(e.target.value)} />
         </Field>
-        <Field label="User ID" hint="The user the request acts for.">
-          <TextInput value={userId} onChange={(e) => setUserId(e.target.value)} />
+        <Field label="App ID" hint="The app the request acts for.">
+          <TextInput value={appId} onChange={(e) => setAppId(e.target.value)} />
+        </Field>
+        <Field label="Policy ID" hint="The policy the request runs under.">
+          <TextInput value={policyId} onChange={(e) => setPolicyId(e.target.value)} />
         </Field>
         <Field label="Message">
           <TextArea
@@ -223,10 +231,10 @@ function TestRequestDrawer({ open, host, onClose }) {
         </Field>
         {result ? (
           <Card className="space-y-2 bg-slate-50 p-3 text-sm">
-            <div className="font-medium text-emerald-700">Request accepted</div>
+            <div className="font-medium text-emerald-700">Event {result.status}</div>
             <div className="flex items-center gap-2">
-              <span className="text-slate-500">Agent</span>
-              <Mono>{result.agent_id}</Mono>
+              <span className="text-slate-500">Event</span>
+              <Mono>{result.event_id}</Mono>
             </div>
             <div className="flex items-center gap-2">
               <span className="text-slate-500">Request</span>
@@ -236,7 +244,7 @@ function TestRequestDrawer({ open, host, onClose }) {
               variant="secondary"
               onClick={() =>
                 navigate(
-                  `/logs?agent=${encodeURIComponent(result.agent_id)}&session=${encodeURIComponent(result.session_id || sessionId)}`,
+                  `/logs?agent=companion&session=${encodeURIComponent(result.session_id || sessionId)}`,
                 )
               }
             >

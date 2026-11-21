@@ -23,7 +23,8 @@ function GenerateDrawer({ open, onClose, hosts, onDone }) {
   const [hostId, setHostId] = useState('');
   const [guidance, setGuidance] = useState('');
   const [rowCount, setRowCount] = useState('20');
-  const [userId, setUserId] = useState('');
+  const [appId, setAppId] = useState('');
+  const [policyId, setPolicyId] = useState('');
   const [job, setJob] = useState(null);
   const [error, setError] = useState(null);
 
@@ -51,8 +52,8 @@ function GenerateDrawer({ open, onClose, hosts, onDone }) {
       setError('Rows must be a whole number between 1 and 100.');
       return;
     }
-    if (!userId.trim()) {
-      setError('User ID is required.');
+    if (!appId.trim() || !policyId.trim()) {
+      setError('App ID and Policy ID are required.');
       return;
     }
     setJob(null);
@@ -63,7 +64,8 @@ function GenerateDrawer({ open, onClose, hosts, onDone }) {
           user_guidance: guidance.trim(),
           row_count: parsedRowCount,
         },
-        user_id: userId.trim(),
+        app_id: appId.trim(),
+        policy_id: policyId.trim(),
       });
       setJob({ runId: run.run_id, status: run.status });
     } catch (err) {
@@ -117,8 +119,11 @@ function GenerateDrawer({ open, onClose, hosts, onDone }) {
               ))}
             </Select>
           </Field>
-          <Field label="User ID" hint="The user the generation run acts for.">
-            <TextInput value={userId} onChange={(e) => setUserId(e.target.value)} />
+          <Field label="App ID" hint="The app the generation run acts for.">
+            <TextInput value={appId} onChange={(e) => setAppId(e.target.value)} />
+          </Field>
+          <Field label="Policy ID" hint="The policy the generation run runs under.">
+            <TextInput value={policyId} onChange={(e) => setPolicyId(e.target.value)} />
           </Field>
           <Field label="Rows" hint="Number of dataset rows to generate (1–100).">
             <TextInput

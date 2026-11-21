@@ -48,8 +48,8 @@ class _LoopingLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=1, output_tokens=1, total_tokens=2),
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class _RecordingEventLogger:
@@ -98,8 +98,8 @@ class _ToolThenFinishLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=3, output_tokens=1, total_tokens=4),
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class _FinishImmediatelyLLMProvider(LLMProvider):
@@ -118,8 +118,8 @@ class _FinishImmediatelyLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class _ResponseThenFinishLLMProvider(LLMProvider):
@@ -151,8 +151,8 @@ class _ResponseThenFinishLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class _MaxTokensLLMProvider(LLMProvider):
@@ -183,8 +183,8 @@ class _MaxTokensLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class _MaxTokensToolCallLLMProvider(LLMProvider):
@@ -220,8 +220,8 @@ class _MaxTokensToolCallLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class _ToolUseInvalidThenFinishLLMProvider(LLMProvider):
@@ -268,15 +268,15 @@ class _ToolUseInvalidThenFinishLLMProvider(LLMProvider):
             usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class _LoggingFinishLLMProvider(BaseLLMProvider):
     provider_name = "test-provider"
 
     def __init__(self) -> None:
-        super().__init__(app_id="test", model="test-model")
+        super().__init__(agent_id="test", model="test-model")
 
     async def send(self, request: LLMRequest) -> LLMResponse:
         return LLMResponse(
@@ -310,7 +310,7 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             tools=tools,
             skills=SkillRegistry(),
             config=AgentConfig(
-                app_id="test",
+                agent_id="test",
                 system_prompt="You are a test agent.",
                 max_steps=1,
             ),
@@ -347,7 +347,7 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             tools=tools,
             skills=SkillRegistry(),
             config=AgentConfig(
-                app_id="test",
+                agent_id="test",
                 system_prompt="You are a test agent.",
                 max_steps=1,
             ),
@@ -387,7 +387,7 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             tools=tools,
             skills=SkillRegistry(),
             config=AgentConfig(
-                app_id="test",
+                agent_id="test",
                 system_prompt="You are a test agent.",
                 max_steps=3,
             ),
@@ -438,7 +438,7 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             tools=tools,
             skills=SkillRegistry(),
             config=AgentConfig(
-                app_id="test",
+                agent_id="test",
                 system_prompt="You are a test agent.",
                 max_steps=1,
             ),
@@ -458,7 +458,7 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             tools=ToolRegistry(),
             skills=SkillRegistry(),
             config=AgentConfig(
-                app_id="test",
+                agent_id="test",
                 system_prompt="You are a test agent.",
                 max_steps=3,
             ),
@@ -486,7 +486,7 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             tools=ToolRegistry(),
             skills=SkillRegistry(),
             config=AgentConfig(
-                app_id="test",
+                agent_id="test",
                 system_prompt="You are a test agent.",
                 max_steps=5,
             ),
@@ -530,7 +530,7 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             tools=tools,
             skills=SkillRegistry(),
             config=AgentConfig(
-                app_id="test",
+                agent_id="test",
                 system_prompt="You are a test agent.",
                 max_steps=5,
             ),
@@ -582,7 +582,7 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             tools=tools,
             skills=SkillRegistry(),
             config=AgentConfig(
-                app_id="test",
+                agent_id="test",
                 system_prompt="You are a test agent.",
                 max_steps=5,
             ),
@@ -611,14 +611,14 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             tools=ToolRegistry(),
             skills=SkillRegistry(),
             config=AgentConfig(
-                app_id="test",
+                agent_id="test",
                 system_prompt="You are a test agent.",
                 max_steps=1,
             ),
         )
         logger = _RecordingEventLogger()
         agent.set_event_logger(logger, session_id="s-1")
-        agent.llm.set_event_logger(logger, app_id="test")
+        agent.llm.set_event_logger(logger, agent_id="test")
         context = Context(system_prompt="You are a test agent.")
         context.add_user_message("just answer")
 
@@ -633,7 +633,7 @@ def _build_agent(tools: ToolRegistry, **config_kwargs) -> Agent:
         tools=tools,
         skills=SkillRegistry(),
         config=AgentConfig(
-            app_id="test",
+            agent_id="test",
             system_prompt="You are a test agent.",
             **config_kwargs,
         ),
@@ -885,8 +885,8 @@ class _PhasedLLMProvider(LLMProvider):
             provider_metadata=provider_metadata,
         )
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class AgentReasoningPropagationTests(unittest.IsolatedAsyncioTestCase):
@@ -910,7 +910,7 @@ class AgentReasoningPropagationTests(unittest.IsolatedAsyncioTestCase):
             tools=tools,
             skills=SkillRegistry(),
             config=AgentConfig(
-                app_id="test",
+                agent_id="test",
                 system_prompt="You are a test agent.",
                 max_steps=2,
                 **config,

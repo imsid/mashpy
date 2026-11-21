@@ -29,13 +29,13 @@ class MCPManager:
 
     def __init__(
         self,
-        app_id: str,
+        agent_id: str,
         event_logger: Optional[EventLogger] = None,
     ) -> None:
         self._servers: Dict[str, MCPServer] = {}
         self._tools: Dict[str, List[Dict[str, Any]]] = {}
         self._event_logger = event_logger
-        self._app_id = app_id
+        self._agent_id = agent_id
 
     async def _emit_event(self, event: MCPEvent) -> None:
         if self._event_logger is not None:
@@ -76,7 +76,7 @@ class MCPManager:
         await self._emit_event(
             MCPEvent(
                 event_type="mcp.client.connect",
-                app_id=self._app_id,
+                agent_id=self._agent_id,
                 session_id=get_session_id(),
                 server_name=name,
                 server_url=config.url,
@@ -91,7 +91,7 @@ class MCPManager:
             await self._emit_event(
                 MCPEvent(
                     event_type="mcp.client.error",
-                    app_id=self._app_id,
+                    agent_id=self._agent_id,
                     session_id=get_session_id(),
                     server_name=name,
                     server_url=config.url,
@@ -105,7 +105,7 @@ class MCPManager:
         await self._emit_event(
             MCPEvent(
                 event_type="mcp.client.connected",
-                app_id=self._app_id,
+                agent_id=self._agent_id,
                 session_id=get_session_id(),
                 server_name=name,
                 server_url=config.url,

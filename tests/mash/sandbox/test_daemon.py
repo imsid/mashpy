@@ -26,7 +26,7 @@ from mash.sandbox.daemon import (
 from mash.sandbox.tokens import derive_sandbox_token
 from slow_http import SlowHTTPServer
 
-TOKEN = derive_sandbox_token("secret", "u-1")
+TOKEN = derive_sandbox_token("secret", "p-1")
 
 
 class _Server(uvicorn.Server):
@@ -70,7 +70,7 @@ class SandboxDaemonTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.json(), {"status": "ok"})
 
     async def test_bad_token_is_refused(self) -> None:
-        for headers in ({}, {"Authorization": f"Bearer {derive_sandbox_token('secret', 'u-2')}"}):
+        for headers in ({}, {"Authorization": f"Bearer {derive_sandbox_token('secret', 'p-2')}"}):
             with self.subTest(headers=headers):
                 response = await self.client.post(
                     "/exec",

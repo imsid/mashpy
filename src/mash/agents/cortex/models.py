@@ -20,15 +20,15 @@ class CortexSettings:
 
 
 class CortexConflictError(RuntimeError):
-    """Another write landed on the user's Cortex since a build read it."""
+    """Another write landed on the app's Cortex since a build read it."""
 
 
 @dataclass(frozen=True)
 class CortexEntry:
-    """One fact about a user: written by a build, or pinned by the app."""
+    """One fact the app knows: written by a build, or pinned by the app."""
 
     entry_id: str
-    user_id: str
+    app_id: str
     topic: str
     content: str
     origin: str
@@ -38,10 +38,10 @@ class CortexEntry:
 
 
 @dataclass(frozen=True)
-class CortexUserInfo:
-    """A user's Cortex summary, as the app API reports it."""
+class CortexAppInfo:
+    """An app's Cortex summary, as the app API reports it."""
 
-    user_id: str
+    app_id: str
     profile: str
     built_through: float
     version: int
@@ -51,9 +51,9 @@ class CortexUserInfo:
 
 @dataclass(frozen=True)
 class CortexSnapshot:
-    """A user's Cortex as a build reads it. ``version`` is 0 for a new user."""
+    """An app's Cortex as a build reads it. ``version`` is 0 for a new app."""
 
-    user_id: str
+    app_id: str
     profile: str = ""
     built_through: float = 0.0
     version: int = 0

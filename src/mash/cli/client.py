@@ -22,10 +22,12 @@ DEFAULT_REQUEST_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 DEFAULT_STREAM_TIMEOUT = httpx.Timeout(10.0, read=None)
 # Compacting a session is a model call.
 COMPACT_TIMEOUT = httpx.Timeout(180.0, connect=10.0)
-# A browser call may start the user's browser container first.
+# A browser call may start the policy's browser container first.
 BROWSER_TIMEOUT = httpx.Timeout(90.0, connect=10.0)
 
-TERMINAL_EVENTS = frozenset({"request.completed", "request.error", "request.cancelled"})
+TERMINAL_EVENTS = frozenset(
+    {"request.completed", "request.error", "request.cancelled", "event.cancelled"}
+)
 
 # A dropped event stream is retried this many times, waiting
 # STREAM_RETRY_DELAY * 2**attempt seconds (capped) before each try. Any event
@@ -286,101 +288,106 @@ class MashHostClient:
         )
         return response.json()["data"]
 
-    def submit_host_request(
-        self,
-        host_id: str,
-        *,
-        message: str,
-        session_id: str,
-        user_id: str,
-        structured_output: Any = None,
-        mode: str | None = None,
-    ) -> dict[str, Any]:
-        json_body: dict[str, Any] = {
-            "message": message,
-            "session_id": session_id,
-            "user_id": user_id,
-        }
-        if mode is not None:
-            json_body["mode"] = mode
-        if structured_output is not None:
-            json_body["structured_output"] = serialize_structured_output(structured_output)
+    def put_policy(self, policy_id: str, policy: dict[str, Any]) -> dict[str, Any]:
+        """Create the policy, or replace the whole of an existing one."""
         response = self._request(
-            "POST",
-            f"/api/v1/hosts/{quote(host_id, safe='')}/request",
-            json_body=json_body,
+            "PUT", f"/api/v1/policies/{quote(policy_id, safe='')}", json_body=policy
         )
         data = response.json()["data"]
         return data if isinstance(data, dict) else {}
 
-    def submit_request(
+    def get_policy(self, policy_id: str) -> dict[str, Any]:
+        response = self._request("GET", f"/api/v1/policies/{quote(policy_id, safe='')}")
+        data = response.json()["data"]
+        return data if isinstance(data, dict) else {}
+
+    def delete_policy(self, policy_id: str) -> dict[str, Any]:
+        """Delete the policy with its sandbox and browser profile."""
+        response = self._request(
+            "DELETE", f"/api/v1/policies/{quote(policy_id, safe='')}", timeout=BROWSER_TIMEOUT
+        )
+        data = response.json()["data"]
+        return data if isinstance(data, dict) else {}
+
+    # --- events -------------------------------------------------------------
+
+    @staticmethod
+    def _events_path(session_id: str, *parts: str) -> str:
+        path = f"/api/v1/sessions/{quote(session_id, safe='')}/events"
+        return path + "".join(f"/{quote(part, safe='')}" for part in parts)
+
+    def post_event(
         self,
-        agent_id: str,
-        *,
-        message: str,
         session_id: str,
-        user_id: str,
+        *,
+        event_id: str,
+        host_id: str,
+        app_id: str,
+        policy_id: str,
+        message: str,
         structured_output: Any = None,
-        mode: str | None = None,
-    ) -> str:
+    ) -> dict[str, Any]:
+        """Post a new event; its state, with the ``request_id`` it runs as."""
         json_body: dict[str, Any] = {
+            "event_id": event_id,
+            "host_id": host_id,
+            "app_id": app_id,
+            "policy_id": policy_id,
             "message": message,
-            "session_id": session_id,
-            "user_id": user_id,
         }
-        if mode is not None:
-            json_body["mode"] = mode
         if structured_output is not None:
             json_body["structured_output"] = serialize_structured_output(structured_output)
-        response = self._request(
-            "POST",
-            f"/api/v1/agent/{quote(agent_id, safe='')}/request",
-            json_body=json_body,
-        )
-        return str(response.json()["data"]["request_id"])
+        response = self._request("POST", self._events_path(session_id), json_body=json_body)
+        data = response.json()["data"]
+        return data if isinstance(data, dict) else {}
 
-    def post_interaction(
-        self,
-        agent_id: str,
-        request_id: str,
-        *,
-        interaction_id: str,
-        response: Any,
+    def answer_event(
+        self, session_id: str, event_id: str, *, interaction_id: str, response: Any
     ) -> dict[str, Any]:
+        """Answer an open interaction of the event's request."""
         resp = self._request(
             "POST",
-            f"/api/v1/agent/{quote(agent_id, safe='')}/request/{quote(request_id, safe='')}/interaction",
-            json_body={"interaction_id": interaction_id, "response": response},
+            self._events_path(session_id),
+            json_body={"event_id": event_id, "interaction_id": interaction_id, "response": response},
         )
-        return resp.json().get("data", {})
+        data = resp.json()["data"]
+        return data if isinstance(data, dict) else {}
 
-    def set_request_mode(
-        self, agent_id: str, request_id: str, mode: str
+    def cancel_event(self, session_id: str, event_id: str) -> dict[str, Any]:
+        response = self._request("POST", self._events_path(session_id, event_id, "cancel"))
+        data = response.json()["data"]
+        return data if isinstance(data, dict) else {}
+
+    def get_event(self, session_id: str, event_id: str) -> dict[str, Any]:
+        response = self._request("GET", self._events_path(session_id, event_id))
+        data = response.json()["data"]
+        return data if isinstance(data, dict) else {}
+
+    def handoff_link(
+        self, session_id: str, event_id: str, interaction_id: str
     ) -> dict[str, Any]:
+        """A new live-view link for an open browser interaction: ``{url, expires_at}``."""
         response = self._request(
             "POST",
-            f"/api/v1/agent/{quote(agent_id, safe='')}/request/{quote(request_id, safe='')}/mode",
-            json_body={"mode": mode},
+            self._events_path(session_id, event_id, "interactions", interaction_id, "handoff"),
+            timeout=BROWSER_TIMEOUT,
         )
         data = response.json()["data"]
         return data if isinstance(data, dict) else {}
 
-    def cancel_request(self, agent_id: str, request_id: str) -> dict[str, Any]:
-        response = self._request(
-            "POST",
-            f"/api/v1/agent/{quote(agent_id, safe='')}/request/{quote(request_id, safe='')}/cancel",
-        )
-        data = response.json()["data"]
-        return data if isinstance(data, dict) else {}
+    async def event_events(
+        self, session_id: str, event_id: str, *, after: int = 0
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield the event's frames: ``event.queued`` while it waits, then its request's.
 
-    def rerun_request(self, agent_id: str, request_id: str) -> dict[str, Any]:
-        """Start a previous request over as a new request; returns its ``request_id``."""
-        response = self._request(
-            "POST",
-            f"/api/v1/agent/{quote(agent_id, safe='')}/request/{quote(request_id, safe='')}/rerun",
-        )
-        data = response.json()["data"]
-        return data if isinstance(data, dict) else {}
+        It ends at the request's end frame, or at ``event.cancelled`` for an
+        event cancelled while queued, and reconnects as ``request_events``
+        does.
+        """
+        async for event in self._follow(
+            self._events_path(session_id, event_id, "stream"), after=after, unsequenced_ok=True
+        ):
+            yield event
 
     def compact_session(self, agent_id: str, session_id: str) -> dict[str, Any]:
         """Summarize the session's history; returns ``summary_text`` and ``trace_id``."""
@@ -407,58 +414,58 @@ class MashHostClient:
     # --- Cortex -------------------------------------------------------------
 
     @staticmethod
-    def _cortex_path(user_id: str, *parts: str) -> str:
-        path = f"/api/v1/cortex/users/{quote(user_id, safe='')}"
+    def _cortex_path(app_id: str, *parts: str) -> str:
+        path = f"/api/v1/cortex/apps/{quote(app_id, safe='')}"
         return path + "".join(f"/{quote(part, safe='')}" for part in parts)
 
-    def get_cortex_user(self, user_id: str) -> dict[str, Any]:
-        """The user's Cortex: ``profile``, ``version`` and ``entry_count``."""
-        data = self._request("GET", self._cortex_path(user_id)).json()["data"]
+    def get_cortex_app(self, app_id: str) -> dict[str, Any]:
+        """The app's Cortex: ``profile``, ``version`` and ``entry_count``."""
+        data = self._request("GET", self._cortex_path(app_id)).json()["data"]
         return data if isinstance(data, dict) else {}
 
     def list_cortex_entries(
-        self, user_id: str, *, q: str | None = None, limit: int = 50
+        self, app_id: str, *, q: str | None = None, limit: int = 50
     ) -> list[dict[str, Any]]:
         query: dict[str, Any] = {"limit": limit}
         if q:
             query["q"] = q
         response = self._request(
-            "GET", self._cortex_path(user_id, "entries"), query=query
+            "GET", self._cortex_path(app_id, "entries"), query=query
         )
         entries = response.json()["data"].get("entries")
         return entries if isinstance(entries, list) else []
 
     def create_cortex_entry(
-        self, user_id: str, *, topic: str, content: str
+        self, app_id: str, *, topic: str, content: str
     ) -> dict[str, Any]:
         response = self._request(
             "POST",
-            self._cortex_path(user_id, "entries"),
+            self._cortex_path(app_id, "entries"),
             json_body={"topic": topic, "content": content},
         )
         entry = response.json()["data"].get("entry")
         return entry if isinstance(entry, dict) else {}
 
-    def delete_cortex_entry(self, user_id: str, entry_id: str) -> None:
-        self._request("DELETE", self._cortex_path(user_id, "entries", entry_id))
+    def delete_cortex_entry(self, app_id: str, entry_id: str) -> None:
+        self._request("DELETE", self._cortex_path(app_id, "entries", entry_id))
 
     # --- browser ------------------------------------------------------------
 
-    def list_browser_sites(self, user_id: str) -> list[dict[str, Any]]:
-        """The sites the user's browser profile holds cookies for."""
+    def list_browser_sites(self, policy_id: str) -> list[dict[str, Any]]:
+        """The sites the policy's browser profile holds cookies for."""
         response = self._request(
             "GET",
-            f"/api/v1/browser/users/{quote(user_id, safe='')}/sites",
+            f"/api/v1/browser/policies/{quote(policy_id, safe='')}/sites",
             timeout=BROWSER_TIMEOUT,
         )
         sites = response.json()["data"].get("sites")
         return sites if isinstance(sites, list) else []
 
-    def clear_browser_site(self, user_id: str, domain: str) -> dict[str, Any]:
-        """Sign the user's browser out of ``domain``."""
+    def clear_browser_site(self, policy_id: str, domain: str) -> dict[str, Any]:
+        """Sign the policy's browser out of ``domain``."""
         response = self._request(
             "DELETE",
-            f"/api/v1/browser/users/{quote(user_id, safe='')}/sites/{quote(domain, safe='')}",
+            f"/api/v1/browser/policies/{quote(policy_id, safe='')}/sites/{quote(domain, safe='')}",
             timeout=BROWSER_TIMEOUT,
         )
         data = response.json()["data"]
@@ -469,14 +476,12 @@ class MashHostClient:
         agent_id: str,
         session_id: str,
         *,
-        mode: str | None = None,
         status: str | None = None,
         started_by: str | None = None,
     ) -> list[dict[str, Any]]:
         query = {
             key: value
             for key, value in (
-                ("mode", mode),
                 ("status", status),
                 ("started_by", started_by),
             )
@@ -526,7 +531,19 @@ class MashHostClient:
         ``STREAM_RETRIES`` tries in a row without an event. A host that sends
         no seq cannot be continued: the generator ends where the stream did.
         """
-        path = self._request_events_path(agent_id, request_id)
+        async for event in self._follow(
+            self._request_events_path(agent_id, request_id), after=after
+        ):
+            yield event
+
+    async def _follow(
+        self, path: str, *, after: int, unsequenced_ok: bool = False
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Read a stream of request frames to its end, reconnecting after its last seq.
+
+        ``unsequenced_ok``: frames without a seq (an event's own) do not stop
+        a reconnect.
+        """
         cursor = max(0, int(after))
         failures = 0
         while True:
@@ -540,7 +557,7 @@ class MashHostClient:
                     seq = event.get("seq")
                     if isinstance(seq, int):
                         cursor = seq
-                    else:
+                    elif not unsequenced_ok:
                         resumable = False
                     yield event
                     if event.get("event") in TERMINAL_EVENTS:
@@ -565,13 +582,13 @@ class MashHostClient:
         self,
         agent_id: str,
         *,
-        user_id: str | None = None,
+        app_id: str | None = None,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        """The agent's sessions, most recently active first; one user's with ``user_id``."""
+        """The agent's sessions, most recently active first; the app's with ``app_id``."""
         query = {
             key: value
-            for key, value in (("user_id", user_id), ("limit", limit))
+            for key, value in (("app_id", app_id), ("limit", limit))
             if value is not None
         }
         response = self._request(
@@ -742,7 +759,8 @@ class MashHostClient:
         dedup_key: str | None = None,
         workflow_input: dict[str, Any] | None = None,
         session_id: str | None = None,
-        user_id: str | None = None,
+        app_id: str | None = None,
+        policy_id: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {}
         if dedup_key is not None:
@@ -751,8 +769,10 @@ class MashHostClient:
             body["input"] = workflow_input
         if session_id is not None:
             body["session_id"] = session_id
-        if user_id is not None:
-            body["user_id"] = user_id
+        if app_id is not None:
+            body["app_id"] = app_id
+        if policy_id is not None:
+            body["policy_id"] = policy_id
         response = self._request(
             "POST",
             f"/api/v1/workflow/{quote(workflow_id, safe='')}/run",

@@ -10,7 +10,6 @@ from mash.runtime.events.types import RuntimeEvent
 
 def _ev(agent_id: str, event_type: str, ts: float, **payload: object) -> RuntimeEvent:
     return RuntimeEvent(
-        app_id=agent_id,
         agent_id=agent_id,
         event_type=event_type,
         session_id="s1",

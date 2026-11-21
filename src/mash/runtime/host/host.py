@@ -4,21 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Any, Dict
 
 from mash.core.database import resolve_database_url
 from mash.memory.store import MemoryStore, PostgresStore
+from mash.policies import PolicyNotFoundError, PolicyStore
+from mash.sessions import EventService, EventStore
 from mash.workflows import AgentStep, CodeStep, WorkflowRegistry, WorkflowService, WorkflowSpec
 from mash.workflows.runs import resolve_runner_id
 from mash.workflows.store import WorkflowStore
 
-from ..client import AgentClient, AgentClientLike
+from ..client import AgentClient, AgentClientError, AgentClientLike
 from ..events import PostgresRuntimeStore, RuntimeStore
 from ..spec import AgentSpec
 from .processes import STATUS_UNAVAILABLE, AgentProvider
 from .directory import AgentMetadata
 from .types import AgentRegistration, Host
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from mash.browser.manager import BrowserManager
@@ -82,6 +87,8 @@ class Pool:
         self._shared_runtime_store: RuntimeStore | None = None
         self._shared_memory_store: MemoryStore | None = None
         self._shared_workflow_store: WorkflowStore | None = None
+        self._policy_store: PolicyStore | None = None
+        self._event_service: EventService | None = None
         self._workflow_registry = WorkflowRegistry()
         self._default_workflow_ids: list[str] = []
         # CortexSettings when HostBuilder.enable_cortex() was called. Each
@@ -110,7 +117,7 @@ class Pool:
         return self._agent_provider is not None
 
     def configure_sandboxes(self, sandboxes: "SandboxManager") -> None:
-        """Set where agents' code runs: each request user's sandbox.
+        """Set where agents' code runs: the sandbox of each request's policy.
 
         Without sandboxes, agents get no sandbox tools. The pool owns the
         manager from here and closes it in ``close()``.
@@ -123,7 +130,7 @@ class Pool:
         return self._sandboxes
 
     def configure_browsers(self, browsers: "BrowserManager") -> None:
-        """Set where agents browse: each request user's browser.
+        """Set where agents browse: the browser of each request's policy.
 
         Without browsers, agents get no browser tools. The pool owns the
         manager from here and closes it in ``close()``.
@@ -221,6 +228,9 @@ class Pool:
                     f"'{workflow_id}'"
                 ) from None
         self._hosts[host.host_id] = host
+        if self._event_service is not None:
+            # Events of the host's sessions may have waited for it.
+            self._event_service.host_defined(host.host_id)
         return host
 
     def get_host(self, host_id: str) -> Host:
@@ -312,18 +322,29 @@ class Pool:
         *,
         message: str,
         session_id: str,
-        user_id: str,
+        app_id: str,
+        policy_id: str,
         structured_output: Any = None,
         context: str | None = None,
         metadata: dict[str, Any] | None = None,
-        mode: str = "fg",
         traceparent: str | None = None,
         tracestate: str | None = None,
+        request_id: str | None = None,
+        policy: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Submit a request to the host's companion.
+
+        ``policy`` is the snapshot to run under; without it the policy is read
+        now. A known ``request_id`` returns the existing request. Raises
+        ``ValueError`` for an unknown host and ``PolicyNotFoundError`` for an
+        unknown policy.
+        """
         from mash.agents.companion import COMPANION_AGENT_ID
         from mash.agents.companion.workflows import format_workflow_list
 
         host = self.get_host(host_id)
+        if policy is None:
+            policy = await self.read_policy(policy_id)
         snapshot = self.snapshot_for(host)
         if snapshot["workflows"]:
             # The companion's workflow directory, built from the registered
@@ -340,8 +361,10 @@ class Pool:
             metadata=metadata,
             context=context,
             host=snapshot,
-            user_id=user_id,
-            mode=mode,
+            app_id=app_id,
+            policy_id=policy_id,
+            policy=policy,
+            request_id=request_id,
             traceparent=traceparent,
             tracestate=tracestate,
         )
@@ -349,9 +372,53 @@ class Pool:
             "request_id": request_id,
             "agent_id": COMPANION_AGENT_ID,
             "session_id": session_id,
-            "user_id": user_id,
+            "app_id": app_id,
+            "policy_id": policy_id,
             "status": "accepted",
         }
+
+    async def cancel_with_children(self, agent_id: str, request_id: str) -> dict[str, Any]:
+        """Cancel a request through its agent, then cancel its running children.
+
+        Children are the requests its RunSubAgents calls started. Each is
+        cancelled through the client for its own agent. Splitting is one level
+        deep, so there is no further level to walk. A child whose agent is
+        disabled is skipped, and so is one that fails to cancel: the parent is
+        already cancelled. The parent's errors propagate.
+        """
+        result = await self.get_client(agent_id).cancel_request(request_id)
+        store = self.get_runtime_store()
+        if store is None:
+            return result
+        for child in await store.list_child_requests(request_id, status="running"):
+            child_agent_id = child.get("agent_id")
+            if not child_agent_id:
+                continue
+            try:
+                await self.get_client(child_agent_id).cancel_request(child["request_id"])
+            except (AgentDisabledError, ValueError):
+                continue
+            except AgentClientError as exc:
+                logger.warning(
+                    "could not cancel child request %s of %s: %s",
+                    child["request_id"],
+                    request_id,
+                    exc,
+                )
+        return result
+
+    async def read_policy(self, policy_id: str) -> dict[str, Any]:
+        """The policy's document, the snapshot a request or run takes.
+
+        Raises ``PolicyNotFoundError`` when there is no such policy.
+        """
+        store = self._policy_store
+        if store is None:
+            raise RuntimeError("the pool is not started")
+        record = await store.get(policy_id)
+        if record is None:
+            raise PolicyNotFoundError(policy_id)
+        return record.policy.model_dump()
 
     def register_workflow(self, workflow: WorkflowSpec) -> None:
         self._ensure_workflow_task_agents(workflow)
@@ -411,12 +478,18 @@ class Pool:
             shared_runtime_store = PostgresRuntimeStore(self.runtime_database_url)
             shared_memory_store = PostgresStore(self.runtime_database_url)
             shared_workflow_store = WorkflowStore(self.runtime_database_url)
+            policy_store = PolicyStore(self.runtime_database_url)
+            event_store = EventStore(self.runtime_database_url, policy_store)
+            self._event_service = EventService(self, event_store)
             self._shared_runtime_store = shared_runtime_store
             self._shared_memory_store = shared_memory_store
             self._shared_workflow_store = shared_workflow_store
+            self._policy_store = policy_store
             await shared_runtime_store.open()
             await shared_memory_store.open()
             await shared_workflow_store.open()
+            await policy_store.open()
+            await event_store.open()
             # The host's pool plus one per agent process.
             await shared_runtime_store.check_connection_budget(
                 processes=len(self._registered) + 1
@@ -540,6 +613,19 @@ class Pool:
     def get_workflow_store(self) -> WorkflowStore | None:
         """Shared workflow run/step store, or None before the pool is started."""
         return self._shared_workflow_store
+
+    def get_policy_store(self) -> PolicyStore | None:
+        """The policies table, or None before the pool is started."""
+        return self._policy_store
+
+    def get_event_service(self) -> EventService | None:
+        """The session queues, or None before the pool is started."""
+        return self._event_service
+
+    async def start_events(self) -> None:
+        """Watch started events and dequeue queued ones; after ``start()``."""
+        if self._event_service is not None:
+            await self._event_service.start()
 
     def get_workflow_registry(self) -> WorkflowRegistry:
         return self._workflow_registry
@@ -671,6 +757,10 @@ class Pool:
         return [{"skill_name": name, **data} for name, data in counts.items()]
 
     async def close(self) -> None:
+        if self._event_service is not None:
+            await self._event_service.close()
+            await self._event_service.store.close()
+            self._event_service = None
         await self._workflow_service.close()
         for client in self._clients.values():
             await client.close()
@@ -692,6 +782,9 @@ class Pool:
         if self._shared_workflow_store is not None:
             await self._shared_workflow_store.close()
             self._shared_workflow_store = None
+        if self._policy_store is not None:
+            await self._policy_store.close()
+            self._policy_store = None
 
     def _ensure_workflow_task_agents(self, workflow: WorkflowSpec) -> None:
         # Agent steps bind an agent id (optionally with a spec to auto-register).

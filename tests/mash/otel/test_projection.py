@@ -213,25 +213,6 @@ class RunningRequestTests(unittest.TestCase):
         self.assertEqual(wait.parent_span_id, _by_name(projection)["mash.step 0"].span_id)
         self.assertEqual(wait.attributes["mash.interaction.type"], "approval")
 
-    def test_resume_and_mode_changes_are_log_records_on_the_root(self) -> None:
-        events = (
-            RequestEvents()
-            .accepted(100.0)
-            .mode_changed(100.1, "bg")
-            .end(100.5, "cancelled")
-            .resumed(101.0)
-            .events
-        )
-        projection = project_request(events, capture_content=False)
-        root = projection.span(projection.root_span_id)
-        self.assertIsNone(root.end_time)
-        self.assertEqual(
-            [(r.event_name, r.span_id) for r in projection.logs],
-            [
-                ("mash.request.mode_changed", root.span_id),
-                ("mash.request.resumed", root.span_id),
-            ],
-        )
 
 
 class SubagentTests(unittest.TestCase):

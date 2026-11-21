@@ -9,6 +9,8 @@ from contextlib import nullcontext
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Optional
 
+from pydantic import ValidationError
+
 from ..logging.trace_context import (
     bound_host_id,
     bound_workflow_ids,
@@ -17,15 +19,14 @@ from ..logging.trace_context import (
     get_workflow_run_id,
 )
 from .errors import (
-    RequestStaleError,
-    RequestTerminalError,
-    SessionUserMismatchError,
+    SessionPolicyMismatchError,
     classify_error,
 )
 from ..otel import semconv
-from .events import RequestMode, RequestStatus, RuntimeEvent, RuntimeEventType
+from .events import RequestStatus, RuntimeEvent, RuntimeEventType
 from .events.types import STARTED_BY_USER, EndStatus, end_status
 from .structured_output import serialize_structured_output
+from ..policies import Policy, validate_policy_id
 
 if TYPE_CHECKING:
     from .service import AgentRuntime
@@ -34,7 +35,7 @@ if TYPE_CHECKING:
 # Caller-supplied request ids end up in URLs and in subagent and workflow
 # request ids, so they are kept to a conservative charset.
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,255}$")
-_USER_ID_RE = re.compile(r"^[A-Za-z0-9._:@-]{1,255}$")
+_APP_ID_RE = re.compile(r"^[A-Za-z0-9._:@-]{1,255}$")
 
 
 class RequestIdConflictError(ValueError):
@@ -49,18 +50,22 @@ def validate_request_id(request_id: Any) -> str:
     return request_id
 
 
-def validate_user_id(user_id: Any) -> str:
-    if not isinstance(user_id, str) or not _USER_ID_RE.match(user_id):
+def validate_app_id(app_id: Any) -> str:
+    if not isinstance(app_id, str) or not _APP_ID_RE.match(app_id):
         raise ValueError(
-            "user_id must be 1-255 characters of letters, digits, '.', '_', ':', '@' or '-'"
+            "app_id must be 1-255 characters of letters, digits, '.', '_', ':', '@' or '-'"
         )
-    return user_id
+    return app_id
 
 
-def validate_mode(mode: Any) -> str:
-    if mode not in {m.value for m in RequestMode}:
-        raise ValueError("mode must be 'fg' or 'bg'")
-    return str(mode)
+def validate_policy_snapshot(policy: Any) -> dict[str, Any]:
+    """The policy document a request runs under, checked and normalized."""
+    if not isinstance(policy, dict):
+        raise ValueError("policy must be an object")
+    try:
+        return Policy.model_validate(policy).model_dump()
+    except ValidationError as exc:
+        raise ValueError(f"invalid policy: {exc}") from exc
 
 
 def _require_str(parent: dict[str, Any], key: str) -> str:
@@ -103,7 +108,7 @@ def parent_request_metadata(parent: Any, *, agent_id: str) -> dict[str, Any]:
         return {
             "parent": normalized,
             "primary_session_id": normalized["session_id"],
-            "primary_app_id": normalized["agent_id"],
+            "primary_agent_id": normalized["agent_id"],
             "subagent_id": agent_id,
             "subagent_invoke_opts": dict(invoke_opts),
         }
@@ -142,7 +147,7 @@ async def get_accepted_request(
     )
     if accepted is None:
         return None
-    if accepted.agent_id != self.app_id:
+    if accepted.agent_id != self.agent_id:
         raise RequestIdConflictError(
             f"request_id '{request_id}' belongs to another agent"
         )
@@ -154,14 +159,15 @@ async def submit_request(
     *,
     message: str,
     session_id: str,
-    user_id: str,
+    app_id: str,
+    policy_id: str,
+    policy: dict[str, Any],
     structured_output: Any = None,
     host_snapshot: dict[str, Any] | None = None,
     context: str | None = None,
     metadata: dict[str, Any] | None = None,
     request_id: str | None = None,
     parent: dict[str, Any] | None = None,
-    mode: str = RequestMode.FG.value,
     traceparent: str | None = None,
     tracestate: str | None = None,
 ) -> dict[str, Any]:
@@ -172,14 +178,19 @@ async def submit_request(
     """
     if request_id is not None:
         validate_request_id(request_id)
-    validate_user_id(user_id)
-    validate_mode(mode)
+    validate_app_id(app_id)
+    validate_policy_id(policy_id)
+    snapshot = validate_policy_snapshot(policy)
     normalized_structured_output = serialize_structured_output(structured_output)
-    # ``user_id`` is caller context like ``metadata``: stored with the
-    # request, never shown to the model.
-    request_metadata: dict[str, Any] = {"user_id": user_id}
+    # The app, the policy and its snapshot are caller context like
+    # ``metadata``: stored with the request, never shown to the model.
+    request_metadata: dict[str, Any] = {
+        "app_id": app_id,
+        "policy_id": policy_id,
+        "policy": snapshot,
+    }
     if parent is not None:
-        request_metadata.update(parent_request_metadata(parent, agent_id=self.app_id))
+        request_metadata.update(parent_request_metadata(parent, agent_id=self.agent_id))
     if normalized_structured_output is not None:
         request_metadata["structured_output_request"] = normalized_structured_output
     if host_snapshot is not None:
@@ -194,7 +205,6 @@ async def submit_request(
         session_id=session_id,
         request_metadata=request_metadata,
         request_id=request_id,
-        mode=mode,
         traceparent=traceparent,
         tracestate=tracestate,
     )
@@ -207,7 +217,6 @@ async def _submit_request(
     session_id: str,
     request_metadata: Optional[dict[str, Any]],
     request_id: str | None = None,
-    mode: str = RequestMode.FG.value,
     traceparent: str | None = None,
     tracestate: str | None = None,
 ) -> dict[str, Any]:
@@ -223,14 +232,14 @@ async def _submit_request(
         if existing is not None:
             return existing
 
-    # A session is one user's conversation: its turns replay into every
-    # request on it, so a request for another user is refused.
-    user_id = user_id_from_request_metadata(request_metadata)
-    if user_id is not None:
-        owner = await self.runtime_store.get_other_session_user(target_session_id, user_id)
-        if owner is not None:
-            raise SessionUserMismatchError(
-                f"session '{target_session_id}' belongs to another user"
+    # A session runs under the policy of its first request: its turns replay
+    # into every request on it, so a request under another policy is refused.
+    policy_id = policy_id_from_request_metadata(request_metadata)
+    if policy_id is not None:
+        other = await self.runtime_store.get_other_session_policy(target_session_id, policy_id)
+        if other is not None:
+            raise SessionPolicyMismatchError(
+                f"session '{target_session_id}' runs under another policy"
             )
 
     # Only a workflow-parented request binds workflow ids here; binding None
@@ -248,7 +257,6 @@ async def _submit_request(
             session_id=target_session_id,
             request_metadata=request_metadata,
             request_id=request_id,
-            mode=mode,
             traceparent=traceparent,
             tracestate=tracestate,
         )
@@ -264,24 +272,7 @@ def host_id_from_request_metadata(
     return host_id or None
 
 
-def request_attempt(events: list[RuntimeEvent]) -> int:
-    """Which attempt the request is on: 0 before any resume, +1 per resume.
 
-    Terminal dedupe keys are scoped by this. A fixed key would make the second
-    attempt's terminal event dedupe onto the first attempt's row and append
-    nothing, leaving ``mash.request.resumed`` as the last lifecycle event and
-    the request non-terminal forever.
-    """
-    return sum(
-        1
-        for event in events
-        if event.event_type == RuntimeEventType.REQUEST_RESUMED.value
-    )
-
-
-async def fetch_request_attempt(self: "AgentRuntime", request_id: str) -> int:
-    """``request_attempt`` over the request's stored events."""
-    return request_attempt(await self.runtime_store.list_request_events(request_id))
 
 
 def pending_interactions(events: list[RuntimeEvent]) -> list[str]:
@@ -304,11 +295,29 @@ def pending_interactions(events: list[RuntimeEvent]) -> list[str]:
     return list(pending)
 
 
-def user_id_from_request_metadata(
+def _metadata_text(request_metadata: Optional[dict[str, Any]], key: str) -> Optional[str]:
+    value = dict(request_metadata or {}).get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def app_id_from_request_metadata(
     request_metadata: Optional[dict[str, Any]],
 ) -> Optional[str]:
-    user_id = dict(request_metadata or {}).get("user_id")
-    return user_id if isinstance(user_id, str) and user_id else None
+    return _metadata_text(request_metadata, "app_id")
+
+
+def policy_id_from_request_metadata(
+    request_metadata: Optional[dict[str, Any]],
+) -> Optional[str]:
+    return _metadata_text(request_metadata, "policy_id")
+
+
+def policy_from_request_metadata(
+    request_metadata: Optional[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """The policy snapshot a request runs under, or None."""
+    policy = dict(request_metadata or {}).get("policy")
+    return dict(policy) if isinstance(policy, dict) else None
 
 
 def caller_metadata_from_request_metadata(
@@ -327,7 +336,6 @@ async def _submit_request_inner(
     session_id: str,
     request_metadata: Optional[dict[str, Any]],
     request_id: str | None = None,
-    mode: str = RequestMode.FG.value,
     traceparent: str | None = None,
     tracestate: str | None = None,
 ) -> dict[str, Any]:
@@ -342,11 +350,10 @@ async def _submit_request_inner(
     host_id = host_id_from_request_metadata(request_metadata)
     attributes: dict[str, Any] = {
         semconv.GEN_AI_OPERATION_NAME: semconv.OP_INVOKE_AGENT,
-        semconv.GEN_AI_AGENT_ID: self.app_id,
-        semconv.GEN_AI_AGENT_NAME: self.app_id,
+        semconv.GEN_AI_AGENT_ID: self.agent_id,
+        semconv.GEN_AI_AGENT_NAME: self.agent_id,
         semconv.GEN_AI_CONVERSATION_ID: target_session_id,
         semconv.MASH_REQUEST_ID: request_id,
-        semconv.MASH_REQUEST_MODE: mode,
     }
     if host_id:
         attributes[semconv.MASH_HOST_ID] = host_id
@@ -354,7 +361,6 @@ async def _submit_request_inner(
         "message": message,
         "initial_session_id": target_session_id,
         "request_metadata": dict(request_metadata or {}),
-        "mode": mode,
         "started_by": started_by,
         "parent_request_id": parent_request_id,
         "attributes": attributes,
@@ -370,8 +376,7 @@ async def _submit_request_inner(
         self,
         RuntimeEvent(
             request_id=request_id,
-            app_id=self.app_id,
-            agent_id=self.app_id,
+            agent_id=self.agent_id,
             trace_id=str(uuid.uuid4()),
             session_id=target_session_id,
             event_type=RuntimeEventType.INVOKE_AGENT_START.value,
@@ -393,17 +398,15 @@ async def _submit_request_inner(
             self,
             RuntimeEvent(
                 request_id=request_id,
-                app_id=self.app_id,
-                agent_id=self.app_id,
+                agent_id=self.agent_id,
                 trace_id=accepted_event.trace_id,
                 session_id=target_session_id,
                 event_type=RuntimeEventType.INVOKE_AGENT_END.value,
-                # Submit-time failure: the request has never been resumed.
-                dedupe_key="request.failed.0",
+                dedupe_key="request.failed",
                 lifecycle=RequestStatus.FAILED,
                 payload={
                     "request_id": request_id,
-                    "agent_id": self.app_id,
+                    "agent_id": self.agent_id,
                     "status": EndStatus.ERROR.value,
                     "session_id": target_session_id,
                     **error,
@@ -415,51 +418,6 @@ async def _submit_request_inner(
         )
         raise
     return to_public_event(accepted_event)["data"]
-
-
-async def set_request_mode(
-    self: "AgentRuntime",
-    request_id: str,
-    mode: str,
-) -> dict[str, Any]:
-    """Switch a running request between ``fg`` and ``bg``.
-
-    Raises ``KeyError`` for an unknown request and ``RequestTerminalError``
-    once the request has finished.
-    """
-    self.require_open()
-    validate_mode(mode)
-    events = await self.runtime_store.list_request_events(request_id)
-    accepted = next(
-        (
-            e
-            for e in events
-            if e.event_type == RuntimeEventType.INVOKE_AGENT_START.value
-        ),
-        None,
-    )
-    if accepted is None or accepted.agent_id != self.app_id:
-        raise KeyError(request_id)
-    status = await self.runtime_store.get_request_lifecycle(request_id)
-    if status is not None and status.terminal:
-        raise RequestTerminalError(
-            f"request '{request_id}' is {status.value}; its mode cannot change"
-        )
-    # No dedupe key: a request can switch any number of times, and seq
-    # orders the switches.
-    await append_runtime_event(
-        self,
-        RuntimeEvent(
-            request_id=request_id,
-            app_id=self.app_id,
-            agent_id=self.app_id,
-            trace_id=next((e.trace_id for e in events if e.trace_id), None),
-            session_id=accepted.session_id,
-            event_type=RuntimeEventType.REQUEST_MODE_CHANGED.value,
-            payload={"mode": mode, "attributes": {semconv.MASH_REQUEST_MODE: mode}},
-        ),
-    )
-    return {"request_id": request_id, "agent_id": self.app_id, "mode": mode}
 
 
 def _stream_event(event: RuntimeEvent) -> dict[str, Any]:
@@ -517,152 +475,6 @@ async def stream_response_events(
         self.runtime_store.unregister_request_waiter(request_id, waiter)
 
 
-def _session_has_later_turn(
-    turns: list[dict[str, Any]],
-    *,
-    accepted_at: float,
-    request_trace_id: str | None,
-) -> bool:
-    """True if a replayable turn was persisted after the request was accepted.
-
-    Excludes the request's own turn (matched by trace id) so re-resuming a
-    completed request is not treated as stale.
-    """
-    for turn in turns:
-        if not bool(turn.get("replayable", True)):
-            continue
-        if request_trace_id and str(turn.get("trace_id")) == str(request_trace_id):
-            continue
-        if float(turn.get("created_at") or 0.0) > accepted_at:
-            return True
-    return False
-
-
-async def resume_request(
-    self: "AgentRuntime",
-    request_id: str,
-) -> dict[str, Any]:
-    self.require_open()
-    events = await self.runtime_store.list_request_events(request_id)
-    if not events:
-        raise KeyError(request_id)
-    accepted = next(
-        (
-            e
-            for e in events
-            if e.event_type == RuntimeEventType.INVOKE_AGENT_START.value
-        ),
-        None,
-    )
-    accepted_at = float(accepted.created_at) if accepted is not None else 0.0
-    session_id = next((e.session_id for e in events if e.session_id), None)
-    request_trace_id = next((e.trace_id for e in events if e.trace_id), None)
-
-    # A completed request has nothing to replay, so it answers completed even
-    # once the session has moved on, rather than reporting stale.
-    status = await self.runtime_store.get_request_lifecycle(request_id)
-
-    # Stale-session guard: resume replays the request's original context
-    # snapshot, so it is unsafe once the session has a newer replayable turn.
-    if session_id and status is not RequestStatus.COMPLETED:
-        turns = await self.store.get_turns(session_id, self.app_id)
-        if _session_has_later_turn(
-            turns,
-            accepted_at=accepted_at,
-            request_trace_id=request_trace_id,
-        ):
-            raise RequestStaleError(
-                f"request '{request_id}' cannot be resumed: its session has "
-                f"newer turns"
-            )
-
-    if status is RequestStatus.COMPLETED:
-        return {
-            "request_id": request_id,
-            "status": "completed",
-            "message": "request already completed successfully",
-        }
-    if status is RequestStatus.RUNNING:
-        return {
-            "request_id": request_id,
-            "status": "running",
-            "message": "request is already running",
-        }
-
-    # Recorded before the loop restarts, so the new attempt's terminal event
-    # gets a dedupe key of its own (see request_attempt). Because terminality
-    # reads the last lifecycle event, this also re-opens closed streams.
-    prior_resumes = request_attempt(events)
-    await append_runtime_event(
-        self,
-        RuntimeEvent(
-            request_id=request_id,
-            app_id=self.app_id,
-            agent_id=self.app_id,
-            trace_id=request_trace_id,
-            session_id=session_id,
-            event_type=RuntimeEventType.REQUEST_RESUMED.value,
-            dedupe_key=f"request.resumed.{prior_resumes}",
-            lifecycle=RequestStatus.RUNNING,
-            payload={
-                "request_id": request_id,
-                "agent_id": self.app_id,
-                "session_id": session_id,
-                "status": "resumed",
-                "previous_status": status.value if status else None,
-                "attributes": {semconv.MASH_REQUEST_ID: request_id},
-            },
-        ),
-    )
-    await self.engine.continue_request(request_id)
-    return {
-        "request_id": request_id,
-        "status": "resumed",
-        "previous_status": status.value if status else None,
-        "message": "request has been resumed from its last step",
-    }
-
-
-async def rerun_request(
-    self: "AgentRuntime",
-    request_id: str,
-) -> dict[str, Any]:
-    """Start a previous request over as a brand-new request.
-
-    Rebuilds from the original ``invoke_agent.start`` payload (message + full
-    request metadata, including the host snapshot and structured-output
-    request), stamps ``rerun_of`` provenance, and submits through the normal
-    path — new request id, new trace, and a fresh ``context.load`` against the
-    session's current history. Works for any previous request regardless of its
-    terminal state.
-    """
-    self.require_open()
-    events = await self.runtime_store.list_request_events(request_id)
-    accepted = next(
-        (
-            e
-            for e in events
-            if e.event_type == RuntimeEventType.INVOKE_AGENT_START.value
-        ),
-        None,
-    )
-    if accepted is None:
-        raise KeyError(request_id)
-    payload = accepted.payload or {}
-    message = str(payload.get("message") or "")
-    session_id = str(payload.get("initial_session_id") or accepted.session_id or "")
-    request_metadata = dict(payload.get("request_metadata") or {})
-    # Provenance for code and the UI; a top-level key, never shown to the model
-    # (which only sees host/context, not sibling metadata keys).
-    request_metadata["rerun_of"] = request_id
-    return await _submit_request(
-        self,
-        message=message,
-        session_id=session_id,
-        request_metadata=request_metadata or None,
-    )
-
-
 async def append_runtime_event(
     self: "AgentRuntime",
     event: RuntimeEvent,
@@ -703,11 +515,13 @@ def to_public_event(event: RuntimeEvent) -> dict[str, Any]:
             "session_id": event.session_id,
             "status": "accepted",
         }
-        user_id = user_id_from_request_metadata(
-            (event.payload or {}).get("request_metadata")
-        )
-        if user_id is not None:
-            data["user_id"] = user_id
+        request_metadata = (event.payload or {}).get("request_metadata")
+        for key, value in (
+            ("app_id", app_id_from_request_metadata(request_metadata)),
+            ("policy_id", policy_id_from_request_metadata(request_metadata)),
+        ):
+            if value is not None:
+                data[key] = value
         return {"event": "request.accepted", "data": data}
     if event.event_type == RuntimeEventType.CONTEXT_LOAD_START.value:
         return {
@@ -754,8 +568,6 @@ def to_public_event(event: RuntimeEvent) -> dict[str, Any]:
     if event.event_type == RuntimeEventType.INVOKE_AGENT_END.value:
         frame = _END_FRAMES[end_status(event) or EndStatus.OK.value]
         return {"event": frame, "data": dict(event.payload or {})}
-    if event.event_type == RuntimeEventType.REQUEST_RESUMED.value:
-        return {"event": "request.resumed", "data": dict(event.payload or {})}
     return {
         "event": "agent.trace",
         "data": {

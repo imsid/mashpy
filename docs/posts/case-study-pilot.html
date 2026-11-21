@@ -319,8 +319,8 @@
   </div>
 
   <h2>What Pilot does</h2>
-  <p>Pilot ships a catalog of agents the user can browse, compose into teams, and enter from a terminal. Its featured application is a guide to the Mash codebase with two agents. The <code>pilot</code> agent answers questions from the source. The <code>builder</code> agent builds Mash apps in the user's sandbox and checks that they work. The user composes which agents work together, then enters the REPL.</p>
-  <p>It also serves as the application behind the Mash documentation series, so framework features are observable in a real running system: agent processes, per-user sandboxes, the companion's routing through the host's relay, host composition at runtime, durable workflows, skills, and traces.</p>
+  <p>Pilot ships a catalog of agents the user can browse, compose into teams, and enter from a terminal. Its featured application is a guide to the Mash codebase with two agents. The <code>pilot</code> agent answers questions from the source. The <code>builder</code> agent builds Mash apps in the policy's sandbox and checks that they work. The user composes which agents work together, then enters the REPL.</p>
+  <p>It also serves as the application behind the Mash documentation series, so framework features are observable in a real running system: agent processes, per-policy sandboxes, the companion's routing through the host's relay, host composition at runtime, durable workflows, skills, and traces.</p>
 
   <h2>The catalog</h2>
   <p>Every agent the store ships is a <code>CatalogEntry</code> in <code>pilot/catalog/__init__.py</code>. Each entry pairs a spec class with a metadata factory that returns the <code>AgentMetadata</code> for that agent's listing.</p>
@@ -375,7 +375,7 @@ CATALOG: tuple[CatalogEntry, ...] = (
     </div>
     <div class="arch-layer arch-layer-green">
       <div class="arch-layer-label">builder</div>
-      <div class="arch-layer-title">Tools: bash in its folder of the user's sandbox · Skill</div>
+      <div class="arch-layer-title">Tools: bash in its folder of the policy's sandbox · Skill</div>
       <div class="arch-layer-sub">Skills: build-mash-agent · build-mash-workflow · build-mash-host</div>
     </div>
   </div>
@@ -384,7 +384,7 @@ CATALOG: tuple[CatalogEntry, ...] = (
   <p>The <code>pilot</code> agent registers an <code>AskUserTool</code> and gets <code>bash</code> from the host, like every agent on a host with sandboxes. Its prompt carries a map of where things are documented (<code>CLAUDE.md</code>, each module's <code>README.md</code> and <code>AGENTS.md</code>, the posts, the H2A RFC) rather than the documents themselves. It finds the answer with <code>rg</code>, reads the lines it needs with <code>sed</code>, and cites them as <code>path:line</code>. Requests for an app go to the builder: the companion routes them there.</p>
 
   <h2>The builder agent</h2>
-  <p>The <code>builder</code> builds each app in its own directory under <code>/home/agent/workspaces/builder/apps</code> in the user's sandbox. It loads the matching skill, creates the project with <code>uv init</code>, installs mashpy with <code>uv add</code>, and writes the files. It checks the result by importing the pool and running the app's tests, and replies with the directory, the files, and the check output. The sandbox's volume outlives the container, so the apps survive a sandbox being stopped or replaced. The builder cannot serve what it builds, because a sandbox has no Docker; the user copies the app out with <code>docker cp</code>.</p>
+  <p>The <code>builder</code> builds each app in its own directory under <code>/home/agent/workspaces/builder/apps</code> in the policy's sandbox. It loads the matching skill, creates the project with <code>uv init</code>, installs mashpy with <code>uv add</code>, and writes the files. It checks the result by importing the pool and running the app's tests, and replies with the directory, the files, and the check output. The sandbox's volume outlives the container, so the apps survive a sandbox being stopped or replaced. The builder cannot serve what it builds, because a sandbox has no Docker; the user copies the app out with <code>docker cp</code>.</p>
 
   <h2>Workflows</h2>
   <p><code>pilot-changelog</code> shows the mixed-step shape. A <code>CodeStep</code> reads <code>CHANGELOG.md</code> and slices out the most recent release section(s) in deterministic Python, then an <code>AgentStep</code> summarizes that excerpt, reaching into the source with bash only when an entry is too terse to explain. The code step runs on the host, which mounts the checkout at the same path. Its <code>ChangelogSummarizerSpec</code> rides the <code>agent_spec</code> path, so registering the workflow registers the summarizer as a workflow-only agent with its own process. <code>/workflow run pilot-changelog</code> runs it from the REPL.</p>
@@ -421,8 +421,8 @@ CATALOG: tuple[CatalogEntry, ...] = (
     </thead>
     <tbody>
       <tr>
-        <td>One sandbox per user (<code>mash sandbox ls</code>)</td>
-        <td>Per-user sandboxes with workspace volumes and bind mounts</td>
+        <td>One sandbox per policy (<code>mash sandbox ls</code>)</td>
+        <td>Per-policy sandboxes with workspace volumes and bind mounts</td>
       </tr>
       <tr>
         <td><code>pilot browse</code>: catalog listings</td>
@@ -460,7 +460,8 @@ docker compose -f docker-compose.pilot.yml up -d --build</code></pre>
   <p>The CLI installs separately and points at any running store by URL.</p>
 
   <pre><code>curl -fsSL https://raw.githubusercontent.com/imsid/mashpy/main/install.sh | sh
-mash connect --api-base-url http://127.0.0.1:8000 --user-id me
+echo '{}' | mash policy put me --file - --api-base-url http://127.0.0.1:8000
+mash connect --api-base-url http://127.0.0.1:8000 --app-id pilot --policy-id me
 pilot browse                  <span class="cm"># see the catalog</span>
 pilot repl --host guide       <span class="cm"># enter the default composition</span></code></pre>
 
@@ -489,7 +490,7 @@ pilot repl --host guide       <span class="cm"># enter the default composition</
   </div>
 
   <div class="callout">
-    The stock <code>mash</code> CLI speaks the same protocol as <code>pilot</code>. <code>mash connect --api-base-url http://127.0.0.1:8000</code> then <code>mash repl --agent builder</code> opens a direct REPL against any catalog agent, bypassing the store CLI. This is useful for debugging a new agent before composing it into a host.
+    The stock <code>mash</code> CLI speaks the same protocol as <code>pilot</code>. <code>mash compose --host builder-only --agents builder</code> then <code>mash repl --host builder-only</code> opens a REPL on a host with one catalog agent, bypassing the store CLI. This is useful for debugging a new agent before composing it into a larger host.
   </div>
 
 </div>

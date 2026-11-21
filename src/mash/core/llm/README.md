@@ -169,7 +169,7 @@ Constructor options (also on every preset):
 
   ```python
   OSSCompatibleProvider(
-      app_id="my-agent",
+      agent_id="my-agent",
       model="google/gemma-3-27b-it",
       base_url="https://openrouter.ai/api/v1",
       api_key=os.environ["OPENROUTER_API_KEY"],
@@ -215,7 +215,7 @@ Required members:
   accumulated `LLMResponse`. The return contract is identical whether or not
   streaming is used.
 
-`set_event_logger(logger, app_id) -> None`
+`set_event_logger(logger, agent_id) -> None`
 - Gives the provider the event logger its streamed `chat.delta` chunks go to.
 - The runtime calls it once, when the agent process starts.
 

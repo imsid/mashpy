@@ -86,7 +86,7 @@ class PostgresRuntimeStore(RuntimeStore):
 
     async def list_events(
         self,
-        app_id: str,
+        agent_id: str,
         *,
         session_id: str | None = None,
         trace_id: str | None = None,
@@ -99,7 +99,7 @@ class PostgresRuntimeStore(RuntimeStore):
         await self.open()
         return await loaders.list_events(
             self._pool,
-            app_id,
+            agent_id,
             session_id=session_id,
             trace_id=trace_id,
             host_id=host_id,
@@ -125,9 +125,9 @@ class PostgresRuntimeStore(RuntimeStore):
         await self.open()
         return await loaders.get_request_identity(self._pool, request_id)
 
-    async def get_other_session_user(self, session_id: str, user_id: str) -> str | None:
+    async def get_other_session_policy(self, session_id: str, policy_id: str) -> str | None:
         await self.open()
-        return await loaders.get_other_session_user(self._pool, session_id, user_id)
+        return await loaders.get_other_session_policy(self._pool, session_id, policy_id)
 
     async def save_checkpoint(self, request_id: str, checkpoint: dict[str, Any]) -> None:
         await self.open()
@@ -157,11 +157,11 @@ class PostgresRuntimeStore(RuntimeStore):
         self,
         trace_id: str,
         *,
-        app_id: str | None = None,
+        agent_id: str | None = None,
     ) -> str | None:
         await self.open()
         return await loaders.get_request_id_for_trace(
-            self._pool, trace_id, app_id=app_id
+            self._pool, trace_id, agent_id=agent_id
         )
 
     async def list_request_ends(
@@ -188,13 +188,12 @@ class PostgresRuntimeStore(RuntimeStore):
         self,
         session_id: str,
         *,
-        mode: str | None = None,
         status: str | None = None,
         started_by: str | None = None,
     ) -> list[dict[str, Any]]:
         await self.open()
         return await loaders.list_session_requests(
-            self._pool, session_id, mode=mode, status=status, started_by=started_by
+            self._pool, session_id, status=status, started_by=started_by
         )
 
     async def list_child_requests(
@@ -214,7 +213,7 @@ class PostgresRuntimeStore(RuntimeStore):
 
     async def list_feedback(
         self,
-        app_id: str,
+        agent_id: str,
         *,
         after: float,
         before: float | None = None,
@@ -226,7 +225,7 @@ class PostgresRuntimeStore(RuntimeStore):
         await self.open()
         return await loaders.list_feedback(
             self._pool,
-            app_id,
+            agent_id,
             after=after,
             before=before,
             feedback_type=feedback_type,
@@ -236,14 +235,14 @@ class PostgresRuntimeStore(RuntimeStore):
         )
 
     async def get_latest_trace(
-        self, app_id: str, session_id: str
+        self, agent_id: str, session_id: str
     ) -> dict[str, Any] | None:
-        traces = await self.list_recent_traces(app_id, session_id=session_id, limit=1)
+        traces = await self.list_recent_traces(agent_id, session_id=session_id, limit=1)
         return traces[0] if traces else None
 
     async def list_recent_traces(
         self,
-        app_id: str | None = None,
+        agent_id: str | None = None,
         *,
         session_id: str | None = None,
         host_id: str | None = None,
@@ -253,7 +252,7 @@ class PostgresRuntimeStore(RuntimeStore):
         await self.open()
         return await loaders.list_recent_traces(
             self._pool,
-            app_id,
+            agent_id,
             session_id=session_id,
             host_id=host_id,
             status=status,
@@ -261,10 +260,10 @@ class PostgresRuntimeStore(RuntimeStore):
         )
 
     async def list_thought_traces(
-        self, app_id: str | None = None, *, limit: int = 50, trace_id: str | None = None,
+        self, agent_id: str | None = None, *, limit: int = 50, trace_id: str | None = None,
     ) -> list[dict[str, Any]]:
         await self.open()
-        return await loaders.list_thought_traces(self._pool, app_id, limit=limit, trace_id=trace_id)
+        return await loaders.list_thought_traces(self._pool, agent_id, limit=limit, trace_id=trace_id)
 
     async def session_usage(self, session_id: str) -> dict[str, Any]:
         await self.open()
@@ -284,7 +283,7 @@ class PostgresRuntimeStore(RuntimeStore):
 
     async def aggregate_usage(
         self,
-        app_id: str,
+        agent_id: str,
         *,
         host_id: str | None = None,
         session_id: str | None = None,
@@ -295,7 +294,7 @@ class PostgresRuntimeStore(RuntimeStore):
         await self.open()
         return await loaders.aggregate_usage(
             self._pool,
-            app_id,
+            agent_id,
             host_id=host_id,
             session_id=session_id,
             bucket=bucket,
@@ -305,24 +304,24 @@ class PostgresRuntimeStore(RuntimeStore):
 
     async def count_tool_invocations(
         self,
-        app_id: str,
+        agent_id: str,
         *,
         from_ts: float | None = None,
         to_ts: float | None = None,
     ) -> list[dict[str, Any]]:
         await self.open()
         return await loaders.count_tool_invocations(
-            self._pool, app_id, from_ts=from_ts, to_ts=to_ts
+            self._pool, agent_id, from_ts=from_ts, to_ts=to_ts
         )
 
     async def count_skill_invocations(
         self,
-        app_id: str,
+        agent_id: str,
         *,
         from_ts: float | None = None,
         to_ts: float | None = None,
     ) -> list[dict[str, Any]]:
         await self.open()
         return await loaders.count_skill_invocations(
-            self._pool, app_id, from_ts=from_ts, to_ts=to_ts
+            self._pool, agent_id, from_ts=from_ts, to_ts=to_ts
         )

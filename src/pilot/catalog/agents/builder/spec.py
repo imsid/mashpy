@@ -1,4 +1,4 @@
-"""Builder — builds Mash apps in the user's sandbox.
+"""Builder: builds Mash apps in the policy's sandbox.
 
 It writes each app into its folder there, installs mashpy with uv, and checks the
 result by importing the pool and running the app's tests. The ``build-mash-*``
@@ -64,7 +64,7 @@ class BuilderSpec(AgentSpec):
         return BUILDER_AGENT_ID
 
     def build_tools(self) -> ToolRegistry:
-        # run_code comes from the user's sandbox; it is all the builder needs.
+        # run_code comes from the policy's sandbox; it is all the builder needs.
         return ToolRegistry()
 
     def build_skills(self) -> SkillRegistry:
@@ -78,7 +78,7 @@ class BuilderSpec(AgentSpec):
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
-            app_id=BUILDER_AGENT_ID,
+            agent_id=BUILDER_AGENT_ID,
             system_prompt=[
                 {
                     "type": "text",

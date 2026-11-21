@@ -1,4 +1,4 @@
-"""Cancelling a request on the host also cancels its running children."""
+"""Pool.cancel_with_children: an event cancel stops its request and the running children."""
 
 from __future__ import annotations
 
@@ -46,7 +46,6 @@ def _append(client: TestClient, request_id: str, agent_id: str, event_type: str,
         _store(client).append_event,
         RuntimeEvent(
             request_id=request_id,
-            app_id=agent_id,
             agent_id=agent_id,
             session_id="s-1",
             trace_id=f"trace-{request_id}",
@@ -65,7 +64,6 @@ def _accept(client: TestClient, request_id: str, agent_id: str, parent: str | No
         agent_id,
         RuntimeEventType.INVOKE_AGENT_START.value,
         message=request_id,
-        mode="bg" if parent else "fg",
         started_by="primary" if parent else "user",
         parent_request_id=parent,
     )
@@ -85,13 +83,16 @@ def _seed_family(client: TestClient) -> None:
     _accept(client, "stranger", "research", parent="someone-else")
 
 
+def _cancel(client: TestClient, agent_id: str, request_id: str) -> dict:
+    pool = client.app.state.runtime_state.pool
+    return client.portal.call(pool.cancel_with_children, agent_id, request_id)
+
+
 def test_cancelling_a_parent_cancels_its_running_children() -> None:
     with _client() as client:
         _seed_family(client)
 
-        resp = client.post("/api/v1/agent/primary/request/parent/cancel")
-        assert resp.status_code == 200, resp.text
-        assert resp.json()["data"]["status"] == "cancelled"
+        assert _cancel(client, "primary", "parent")["status"] == "cancelled"
         assert _statuses(client) == {
             "parent": "cancelled",
             "child-a": "cancelled",
@@ -101,17 +102,6 @@ def test_cancelling_a_parent_cancels_its_running_children() -> None:
         }
 
 
-def test_the_trace_cancel_route_also_cancels_children() -> None:
-    with _client() as client:
-        _seed_family(client)
-
-        resp = client.post("/api/v1/agent/primary/trace/trace-parent/cancel")
-        assert resp.status_code == 200, resp.text
-        statuses = _statuses(client)
-        assert statuses["child-a"] == statuses["child-b"] == "cancelled"
-        assert statuses["child-done"] == "completed"
-
-
 def test_a_child_on_a_disabled_agent_is_skipped() -> None:
     with _client() as client:
         _accept(client, "parent", "primary")
@@ -119,8 +109,7 @@ def test_a_child_on_a_disabled_agent_is_skipped() -> None:
         _accept(client, "child-a", "research", parent="parent")
         assert client.post("/api/v1/agent/solo/disable").status_code == 200
 
-        resp = client.post("/api/v1/agent/primary/request/parent/cancel")
-        assert resp.status_code == 200, resp.text
+        _cancel(client, "primary", "parent")
         statuses = _statuses(client)
         assert statuses["parent"] == "cancelled"
         assert statuses["child-a"] == "cancelled"

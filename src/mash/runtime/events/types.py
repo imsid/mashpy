@@ -30,8 +30,6 @@ class RuntimeEventType(str, Enum):
     STEP_END = "mash.step.end"
     INTERACTION_START = "mash.interaction.start"
     INTERACTION_END = "mash.interaction.end"
-    REQUEST_RESUMED = "mash.request.resumed"
-    REQUEST_MODE_CHANGED = "mash.request.mode_changed"
 
 
 class EndStatus(str, Enum):
@@ -75,18 +73,6 @@ class RequestStatus(str, Enum):
         return self is not RequestStatus.RUNNING
 
 
-class RequestMode(str, Enum):
-    """Whether the conversation waits on a request.
-
-    ``fg``: a client reads its stream and the user's next message comes after
-    it. ``bg``: the user keeps talking and the client reports it when it ends
-    or needs input. The mode says nothing about how the request runs.
-    """
-
-    FG = "fg"
-    BG = "bg"
-
-
 # ``started_by`` of a request the user started; an agent-started request
 # records the starting agent's id instead.
 STARTED_BY_USER = "user"
@@ -102,7 +88,7 @@ class FeedbackType(str, Enum):
 class FeedbackRecord:
     """One piece of user feedback captured with its session context."""
 
-    app_id: str
+    agent_id: str
     message: str
     feedback_type: str = FeedbackType.TEXT.value
     feedback_id: int = 0
@@ -118,7 +104,6 @@ class FeedbackRecord:
 class RuntimeEvent:
     """One durable runtime event in append-only storage."""
 
-    app_id: str
     agent_id: str
     event_type: str
     event_id: int = 0
@@ -141,22 +126,34 @@ class RuntimeEvent:
 
 @dataclass(frozen=True)
 class RequestIdentity:
-    """The agent a request was accepted for, the user it acts for, its
+    """Who a request runs for: the agent it was accepted for, the app that
+    posted it, the policy it runs under with the snapshot it took, its
     session, and the request that started it with RunSubAgents, if any."""
 
     agent_id: str
-    user_id: Optional[str] = None
+    app_id: Optional[str] = None
+    policy_id: Optional[str] = None
+    policy: Optional[Dict[str, Any]] = None
     session_id: Optional[str] = None
     parent_request_id: Optional[str] = None
 
 
-def accepted_user_id(event: RuntimeEvent) -> Optional[str]:
-    """The ``user_id`` an accepted event's request carries, or None."""
+def _accepted_metadata_text(event: RuntimeEvent, key: str) -> Optional[str]:
     if event.event_type != RuntimeEventType.INVOKE_AGENT_START.value:
         return None
     request_metadata = (event.payload or {}).get("request_metadata") or {}
-    user_id = request_metadata.get("user_id")
-    return user_id if isinstance(user_id, str) and user_id else None
+    value = request_metadata.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def accepted_app_id(event: RuntimeEvent) -> Optional[str]:
+    """The ``app_id`` an accepted event's request carries, or None."""
+    return _accepted_metadata_text(event, "app_id")
+
+
+def accepted_policy_id(event: RuntimeEvent) -> Optional[str]:
+    """The ``policy_id`` an accepted event's request carries, or None."""
+    return _accepted_metadata_text(event, "policy_id")
 
 
 @dataclass(frozen=True)
@@ -164,7 +161,6 @@ class AcceptedRequest:
     """What an accepted event records about how its request was started."""
 
     session_id: Optional[str]
-    mode: str
     started_by: str
     started_at: float
     parent_request_id: Optional[str]
@@ -175,12 +171,10 @@ def accepted_request(event: RuntimeEvent) -> Optional[AcceptedRequest]:
     if event.event_type != RuntimeEventType.INVOKE_AGENT_START.value:
         return None
     payload = event.payload or {}
-    mode = payload.get("mode")
     started_by = payload.get("started_by")
     parent_request_id = payload.get("parent_request_id")
     return AcceptedRequest(
         session_id=event.session_id,
-        mode=mode if mode in {m.value for m in RequestMode} else RequestMode.FG.value,
         started_by=(
             started_by
             if isinstance(started_by, str) and started_by

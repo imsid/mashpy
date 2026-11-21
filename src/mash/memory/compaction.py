@@ -30,7 +30,7 @@ Requirements:
 async def compact_conversation(
     store: MemoryStore,
     llm: LLMProvider,
-    app_id: str,
+    agent_id: str,
     session_id: str,
     max_tokens: int,
     temperature: float,
@@ -42,7 +42,7 @@ async def compact_conversation(
     if turn_limit <= 0:
         raise ValueError("turn_limit must be > 0")
 
-    turns = await store.get_turns(session_id=session_id, app_id=app_id, limit=None)
+    turns = await store.get_turns(session_id=session_id, agent_id=agent_id, limit=None)
     # Only the replayable conversation is summarized; workflow / subagent turns
     # are recorded in the session but never part of the replayed history.
     turns = [turn for turn in turns if turn.get("replayable", True)]
@@ -115,7 +115,7 @@ async def compact_conversation(
         "reason": reason,
         "turn_limit": turn_limit,
         "turn_ids": turn_ids,
-        "app_id": app_id,
+        "agent_id": agent_id,
         "token_usage": {"input": 0, "output": 0},
     }
     if ledger:
@@ -123,7 +123,7 @@ async def compact_conversation(
     saved_trace_id = await store.save_turn(
         trace_id=trace_id,
         session_id=session_id,
-        app_id=app_id,
+        agent_id=agent_id,
         user_message=f"[summary checkpoint:{reason}]",
         agent_response=summary_text,
         signals={},

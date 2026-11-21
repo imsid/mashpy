@@ -8,7 +8,6 @@ enter one with `pilot repl --host <id>` — the REPL is scoped to that host.
 
 from __future__ import annotations
 
-from mash.agents.companion import COMPANION_AGENT_ID
 import argparse
 import os
 from typing import Any, Sequence
@@ -19,7 +18,7 @@ from mash.cli.render import RichRenderer
 from mash.cli.session import Repl, Target
 
 from . import store
-from .catalog.agents.pilot import PILOT_AGENT_ID
+from .spec import GUIDE_HOST_ID
 
 PILOT_DEFAULT_API_BASE_URL = os.environ.get(
     "PILOT_API_BASE_URL",
@@ -73,19 +72,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--api-base-url", default=None, help="Mash host base URL")
     parser.add_argument("--api-key", default=None, help="Bearer API key")
-    parser.add_argument(
-        "--agent",
-        default=None,
-        help="Target a single agent directly (bare-agent mode, without the companion)",
-    )
     subparsers = parser.add_subparsers(dest="command")
 
     repl = subparsers.add_parser("repl", help="Enter the REPL of a composed host")
     repl.add_argument("--session-id", default=None, help="Remote session id")
     repl.add_argument(
-        "--user-id",
+        "--app-id",
         default=None,
-        help="User to act for (falls back to `mash connect --user-id`)",
+        help="App to act for (falls back to `mash connect --app-id`)",
+    )
+    repl.add_argument(
+        "--policy-id",
+        default=None,
+        help="Policy to run under (falls back to `mash connect --policy-id`)",
     )
     repl.add_argument(
         "--host",
@@ -215,29 +214,30 @@ def _run_repl(
     args: argparse.Namespace,
     base_url: str,
 ) -> int:
-    if not args.agent and not args.target_host:
-        args.agent = PILOT_AGENT_ID
-
-    if args.agent:
-        agent_id, host_id = args.agent, None
-    else:
+    if args.target_host:
         # Hosts are config: publish them to the deployment (idempotent
         # PUTs), then enter the requested one.
         store.publish_hosts(client, renderer)
         host_id = args.target_host
         _describe_host(client, host_id)
-        # The companion routes every host request.
-        agent_id = COMPANION_AGENT_ID
+    else:
+        # The guide host, which the pool defines, routes among pilot and
+        # builder.
+        host_id = GUIDE_HOST_ID
 
     saved = load_config()
-    user_id = args.user_id or (saved.user_id if saved else None)
-    if not user_id:
-        raise ValueError("a user id is required. Use --user-id or `mash connect --user-id`.")
+    app_id = args.app_id or (saved.app_id if saved else None)
+    policy_id = args.policy_id or (saved.policy_id if saved else None)
+    if not app_id or not policy_id:
+        raise ValueError(
+            "an app id and a policy id are required. Use --app-id and --policy-id, "
+            "or `mash connect --app-id <app> --policy-id <policy>`."
+        )
     target = Target(
         api_base_url=base_url,
-        agent_id=agent_id,
         session_id=args.session_id or Repl.new_session_id(),
-        user_id=user_id,
+        app_id=app_id,
+        policy_id=policy_id,
         host_id=host_id,
     )
     # /agents and /workflow are host-scoped natively by mash >= 0.5.3

@@ -21,7 +21,8 @@ class CLIContext:
     api_base_url: str
     agent_id: str
     session_id: str
-    user_id: str
+    app_id: str
+    policy_id: str
     client: MashHostClient
     renderer: RichRenderer
     session_ids: Dict[str, str] = field(default_factory=dict)
@@ -62,7 +63,7 @@ class CommandRegistry:
 
     def __init__(
         self,
-        app_id: str,
+        agent_id: str,
         event_logger: Optional[SupportsCommandEventLogger],
         session_id: str,
     ) -> None:
@@ -71,13 +72,13 @@ class CommandRegistry:
         Args:
             event_logger: Eevent logger for logging command execution.
             session_id: session ID for event logging.
-            app_id: app ID for event logging.
+            agent_id: agent id for event logging.
         """
         self._commands: Dict[str, Command] = {}
         self._lookup: Dict[str, Command] = {}
         self._event_logger = event_logger
         self._session_id = session_id
-        self._app_id = app_id
+        self._agent_id = agent_id
 
     def _emit_event(self, event: CommandEvent) -> None:
         if self._event_logger is None:
@@ -189,7 +190,7 @@ class CommandRegistry:
             self._emit_event(
                 CommandEvent(
                     event_type="command.start",
-                    app_id=self._app_id,
+                    agent_id=self._agent_id,
                     session_id=getattr(ctx, "session_id", None) or self._session_id,
                     command_name=command_name,
                     args=args_str,
@@ -207,7 +208,7 @@ class CommandRegistry:
                 self._emit_event(
                     CommandEvent(
                         event_type="command.complete",
-                        app_id=self._app_id,
+                        agent_id=self._agent_id,
                         session_id=getattr(ctx, "session_id", None) or self._session_id,
                         command_name=command_name,
                         duration_ms=int((time.time() - start_time) * 1000),
@@ -223,7 +224,7 @@ class CommandRegistry:
                 self._emit_event(
                     CommandEvent(
                         event_type="command.error",
-                        app_id=self._app_id,
+                        agent_id=self._agent_id,
                         session_id=getattr(ctx, "session_id", None) or self._session_id,
                         command_name=command_name,
                         error=str(e),

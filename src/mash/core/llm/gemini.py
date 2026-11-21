@@ -65,7 +65,7 @@ class GeminiProvider(BaseLLMProvider):
 
     def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
-        app_id: str,
+        agent_id: str,
         model: str = DEFAULT_GEMINI_MODEL,
         api_key: Optional[str] = None,
         event_logger: Optional[Any] = None,
@@ -80,7 +80,7 @@ class GeminiProvider(BaseLLMProvider):
                 behaviour.
         """
         super().__init__(
-            app_id=app_id,
+            agent_id=agent_id,
             model=model,
             event_logger=event_logger,
         )

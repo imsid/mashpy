@@ -27,13 +27,14 @@ standardizes interactions between user applications and agents.
   tools, skills, memory, and structured output. Requests are recorded as
   replayable runtime events; retries, restarts, and long-running work just
   work.
-- **Sandboxes**: every request acts for a user, and each user gets a sandbox,
-  a container where the code the model writes (Python, JavaScript, shell) runs
-  as an unprivileged user. It holds a folder per agent, whose files and SQLite
-  databases persist across requests, and only that user's files: the agents'
-  secrets and the database stay with the host. Pages, files and servers the
+- **Sandboxes**: every request runs under a policy, a named resource many
+  sessions share, and each policy gets a sandbox, a container where the code
+  the model writes (Python, JavaScript, shell) runs as an unprivileged user.
+  It holds a folder per agent, whose files and SQLite databases persist across
+  requests, and only that policy's files: the agents' secrets and the database
+  stay with the host. Pages, files and servers the
   code makes open at links the host serves.
-- **Browsers**: each user also gets a browser, a Chromium in its own container
+- **Browsers**: each policy also gets a browser, a Chromium in its own container
   whose profile keeps the sites the user signed in to. An agent that lists
   sites drives it with Playwright MCP's page tools, on those sites only. When a
   site needs a sign-in, the agent hands the browser to the user through a
@@ -69,11 +70,11 @@ standardizes interactions between user applications and agents.
 │            ▼                         ▼                         ▼            │
 │      ┌───────────┐            ┌─────────────┐            ┌───────────┐      │
 │      │   agent   │            │  companion  │            │ workflow  │      │
-│      │           │            │  (router)   │            │           │      │
+│      │           │            │  (events)   │            │           │      │
 │      └───────────┘            └─────────────┘            └───────────┘      │
 │            │                         ▲                         │            │
 │            │   approvals, questions  │ RunSubAgents: one or    │            │
-│            │   and answers go back   │ more bg subagents       │            │
+│            │   and answers go back   │ more subagents          │            │
 │            │           ┌─────────────┼─────────────┐           │            │
 │            │           ▼             ▼             ▼           │            │
 │            │      ┌─────────┐   ┌─────────┐   ┌─────────┐      │            │
@@ -104,23 +105,24 @@ standardizes interactions between user applications and agents.
             │ run_code                 │ browser                  │ MCP tools
             ▼                          ▼                          ▼
 ┌───────────────────────┐  ┌───────────────────────┐  ┌───────────────────────┐
-│ Sandbox: one per user │  │ Browser: one per user │  │ MCP servers: your own │
+│ Sandbox: per policy   │  │ Browser: per policy   │  │ MCP servers: your own │
 │ workspaces/<agent_id> │  │ Chromium, own profile │  │ remote tools          │
 │ files persist         │  │ listed sites only     │  │ web search            │
 │ no secrets · no db    │  │ sign-in via live view │  │ listed at startup     │
 └───────────────────────┘  └───────────────────────┘  └───────────────────────┘
 ```
 
-A request to a host goes to the companion, which runs the host's agents as
-background requests, each in its own session, or starts a workflow, and then
-writes the answer. When one of those agents needs an approval or an answer,
-the companion relays it to the user. A request to one agent or one workflow
-skips the companion. Any request can run in the background: the user keeps
-talking and the client reports when it finishes or needs input. Whichever way
-a request reaches an agent, it rides the same durable loop, and the code it
-runs lands in the sandbox of the user it acts for. An agent that lists sites
-drives that user's browser, and remote tools call the MCP servers the agent
-connects to.
+Every input to a host is an event in a session, such as a Slack thread.
+Events in a session run one at a time, in arrival order, and the user can
+keep sending while one runs; the rest wait in the session's queue. Each event
+runs as a request on the companion, which runs the host's agents as child
+requests, each in its own session, or starts a workflow, and then writes the
+answer. When one of those agents needs an approval or an answer, the
+companion relays it to the user. A workflow run skips the companion. Whichever
+way a request reaches an agent, it rides the same durable loop, and the code
+it runs lands in the sandbox of the policy it runs under. An agent that lists
+sites drives that policy's browser, and remote tools call the MCP servers the
+agent connects to.
 
 See [Mash under the hood](docs/posts/mash-under-the-hood.md) for a deeper look
 at each capability, and the [product brief](docs/posts/product-brief.md) for
@@ -164,11 +166,11 @@ class SupportAgent(AgentSpec):
         return SkillRegistry()
 
     def build_llm(self):
-        return AnthropicProvider(app_id="support")
+        return AnthropicProvider(agent_id="support")
 
     def build_agent_config(self):
         return AgentConfig(
-            app_id="support",
+            agent_id="support",
             system_prompt="You answer product and account questions.",
         )
 
@@ -184,11 +186,11 @@ class ResearchAgent(AgentSpec):
         return SkillRegistry()
 
     def build_llm(self):
-        return AnthropicProvider(app_id="research")
+        return AnthropicProvider(agent_id="research")
 
     def build_agent_config(self):
         return AgentConfig(
-            app_id="research",
+            agent_id="research",
             system_prompt="You handle research-heavy questions in depth.",
         )
 ```
@@ -332,15 +334,18 @@ image, `ghcr.io/imsid/mash-browser`, the first time one opens a page.
 mash host serve --host-app my_app.host:build_pool --host 127.0.0.1 --port 8000
 ```
 
-**Connect as a user and browse available agents.** Every request acts for a
-user, so the connection saves one:
+**Create a policy, connect, and browse available agents.** Every message is
+an event that names the app posting it and the policy it runs under, so the
+connection saves both:
 ```bash
-mash connect --api-base-url http://127.0.0.1:8000 --user-id u-1
+echo '{"sandbox": true}' | mash policy put dev --file - \
+  --api-base-url http://127.0.0.1:8000
+mash connect --api-base-url http://127.0.0.1:8000 --app-id my-app --policy-id dev
 mash browse
 ```
 
-**Compose an assistant host from agents and a workflow.** Every request to it
-goes to the built-in companion, which routes it:
+**Compose an assistant host from agents and a workflow.** Every event to it
+runs on the built-in companion, which routes it:
 ```bash
 mash compose --host assistant --agents support,research \
   --workflows research-brief
@@ -358,17 +363,19 @@ mash repl --host assistant
 | **AgentSpec** | Abstract contract defining one agent (id, tools, skills, LLM, config) |
 | **HostBuilder** | Fluent builder that composes agents, workflows, and hosts into a Pool |
 | **Pool** | The deployed pool of agents the API server runs; each agent runs as a subprocess of the host |
-| **User** | The end user a request acts for, named by a required `user_id`; it scopes the request's conversations, memory, sandbox and browser |
-| **Sandbox** | A container per user where agents' code runs, holding that user's workspaces and nothing else |
-| **Browser** | A Chromium per user, in its own container, whose profile keeps the sites the user signed in to; agents that list sites with `browser_sites()` drive it on those sites |
-| **Host** | A composition over the pool (agents + workflows), defined in code or dynamically over the API; the built-in companion routes every request to it |
+| **App** | The application posting events, named by the `app_id` every event carries; it scopes Cortex and conversation search |
+| **Policy** | A named, durable resource many sessions share; it owns the sandbox and the browser profile and sets whether agents get the sandbox, which sites they may open, and how long an interaction may wait |
+| **Session and event** | Every input to a host is an event in a session; a session's events run one at a time, each as one request on the companion |
+| **Sandbox** | A container per policy where agents' code runs, holding that policy's workspaces and nothing else |
+| **Browser** | A Chromium per policy, in its own container, whose profile keeps the sites the user signed in to; agents that list sites with `browser_sites()` drive it on those sites |
+| **Host** | A composition over the pool (agents + workflows), defined in code or dynamically over the API; the built-in companion runs every event posted to it |
 | **ToolRegistry** | Register callable tools; built-ins include AskUser and the companion's RunSubAgents and RunWorkflow, and the host adds `run_code` and `edit_file` when it has sandboxes, `sandbox_put` and `sandbox_get` for specs that declare file roots, and the browser tools for specs that list sites |
 | **SkillRegistry** | Markdown instruction bundles loaded on demand via a meta-tool |
 | **LLMProvider** | Adapters for Anthropic, OpenAI, and Gemini |
 | **OSSCompatibleProvider** | Runs open-source models (Gemma, Qwen, DeepSeek) over any Chat Completions endpoint, self-hosted (vLLM, Ollama) or hosted (OpenRouter); chosen in `build_llm()` like any provider |
 | **WorkflowSpec** | Ordered pipeline of typed steps (`CodeStep` / `AgentStep`); runs are durable and observable |
 | **Eval / Experiment** | A generated dataset and rubric bound to a host; an experiment runs the dataset against the host, snapshots its composition, and scores results with an LLM judge |
-| **Cortex** | Opt-in per-user memory kept by the host and shared by every agent; each request reads its user's, the `cortex-build` workflow builds it on demand, and apps edit it over the API |
+| **Cortex** | Opt-in per-app memory kept by the host and shared by every agent; each request reads its app's, the `cortex-build` workflow builds it on demand, and apps edit it over the API |
 
 ## Mushy / Thoughts
 
@@ -387,14 +394,16 @@ generation API, or public sharing surface. See
 
 Pilot is a command-line guide to the Mash codebase, built on the Mash SDK and
 shipped in this repo at [`src/pilot/`](src/pilot/). Its `pilot` agent answers
-questions from the source and searches the docs site and GitHub in the user's
-browser, and its `builder` agent builds Mash apps in the user's sandbox. It also ships the `pilot-changelog` workflow. Run it from a checkout,
+questions from the source and searches the docs site and GitHub in the policy's
+browser, and its `builder` agent builds Mash apps in the policy's sandbox. It also ships the `pilot-changelog` workflow. Run it from a checkout,
 with `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `MASH_HOST_SECRET` and `MASH_API_KEY` in `.env`:
 
 ```bash
 docker compose -f docker-compose.pilot.yml up -d --build
 
 curl -fsSL https://raw.githubusercontent.com/imsid/mashpy/main/install.sh | sh
+echo '{}' | mash policy put me --file - --api-base-url http://127.0.0.1:8000
+mash connect --api-base-url http://127.0.0.1:8000 --app-id pilot --policy-id me
 pilot repl --host guide
 ```
 
@@ -413,7 +422,7 @@ scaffolding from the REPL.
 ## Documentation
 
 An app can ship its own terminal client with `mash.cli.App`: set its name,
-default host or agent, deployment URL and user, then expose `app.main` as a
+default host, deployment URL, app and policy, then expose `app.main` as a
 console entrypoint. It includes the live REPL and one-shot commands. See the
 [CLI README](src/mash/cli/README.md#ship-your-own-client) for the app kit.
 

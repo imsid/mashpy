@@ -1,4 +1,4 @@
-"""Browser providers: where each user's browser runs.
+"""Browser providers: where each policy's browser runs.
 
 ``DockerBrowserProvider`` runs each browser as a container,
 ``<ns>-browser-<key>``, with a named volume of the same name for
@@ -37,7 +37,7 @@ from mash.sandbox.provider import (
 from .daemon import BROWSER_HOME, BROWSER_PORT, MASH_BROWSER_TOKEN_ENV
 from .tokens import derive_browser_token
 
-BROWSER_USER_LABEL = "mash.browser.user"
+BROWSER_POLICY_LABEL = "mash.browser.policy"
 MASH_BROWSER_IMAGE_ENV = "MASH_BROWSER_IMAGE"
 BROWSER_IMAGE_REPOSITORY = "ghcr.io/imsid/mash-browser"
 # Chromium needs more shared memory than Docker's 64 MB default.
@@ -45,7 +45,7 @@ _SHM_BYTES = 1024 * 1024 * 1024
 
 
 class BrowserUnavailableError(RuntimeError):
-    """A user's browser could not be started or reached."""
+    """A policy's browser could not be started or reached."""
 
 
 def default_browser_image() -> str:
@@ -57,30 +57,30 @@ def default_browser_image() -> str:
     return f"{BROWSER_IMAGE_REPOSITORY}:{tag}"
 
 
-def browser_name(user_id: str, namespace: str) -> str:
-    """The user's browser container and volume name."""
-    return f"{namespace}-browser-{sandbox_key(user_id)}"
+def browser_name(policy_id: str, namespace: str) -> str:
+    """The policy's browser container and volume name."""
+    return f"{namespace}-browser-{sandbox_key(policy_id)}"
 
 
 def browser_network(namespace: str) -> str:
     return f"{namespace}-browsers"
 
 
-def browser_labels(user_id: str, namespace: str) -> dict[str, str]:
-    return {BROWSER_USER_LABEL: user_id, NAMESPACE_LABEL: namespace}
+def browser_labels(policy_id: str, namespace: str) -> dict[str, str]:
+    return {BROWSER_POLICY_LABEL: policy_id, NAMESPACE_LABEL: namespace}
 
 
 @dataclass(frozen=True)
 class BrowserEndpoint:
-    """How the host reaches one user's browser daemon."""
+    """How the host reaches one policy's browser daemon."""
 
-    user_id: str
+    policy_id: str
     base_url: str
     token: str
 
 
 class DockerBrowserProvider:
-    """Browsers as Docker containers, one per user, with a volume each."""
+    """Browsers as Docker containers, one per policy, with a volume each."""
 
     def __init__(
         self,
@@ -129,24 +129,24 @@ class DockerBrowserProvider:
                 await self._engine.connect_network(self._network, str(own["Id"]))
             self._prepared = True
 
-    async def ensure(self, user_id: str) -> BrowserEndpoint:
+    async def ensure(self, policy_id: str) -> BrowserEndpoint:
         await self.prepare()
-        name = browser_name(user_id, self.namespace)
-        token = derive_browser_token(self._host_secret, user_id)
-        await self._engine.ensure_volume(name, labels=browser_labels(user_id, self.namespace))
+        name = browser_name(policy_id, self.namespace)
+        token = derive_browser_token(self._host_secret, policy_id)
+        await self._engine.ensure_volume(name, labels=browser_labels(policy_id, self.namespace))
         container = await self._engine.inspect_container(name)
         if container is not None and (container.get("Config") or {}).get("Image") != self._image:
             await self._engine.remove_container(name)
             container = None
         if container is None:
-            await self._engine.create_container(name, self._container_config(user_id, token))
+            await self._engine.create_container(name, self._container_config(policy_id, token))
             await self._engine.start_container(name)
             container = await self._engine.inspect_container(name)
         elif not container["State"].get("Running"):
             await self._engine.start_container(name)
             container = await self._engine.inspect_container(name)
         endpoint = BrowserEndpoint(
-            user_id=user_id, base_url=self._base_url(name, container), token=token
+            policy_id=policy_id, base_url=self._base_url(name, container), token=token
         )
         try:
             await wait_healthy(
@@ -156,22 +156,22 @@ class DockerBrowserProvider:
             raise BrowserUnavailableError(str(exc)) from exc
         return endpoint
 
-    async def stop(self, user_id: str) -> None:
-        await self._engine.stop_container(browser_name(user_id, self.namespace))
+    async def stop(self, policy_id: str) -> None:
+        await self._engine.stop_container(browser_name(policy_id, self.namespace))
 
-    async def delete(self, user_id: str) -> None:
-        """Remove the user's browser and its volume: the profile is gone."""
-        name = browser_name(user_id, self.namespace)
+    async def delete(self, policy_id: str) -> None:
+        """Remove the policy's browser and its volume: the profile is gone."""
+        name = browser_name(policy_id, self.namespace)
         await self._engine.remove_container(name)
         await self._engine.remove_volume(name)
 
     async def list(self) -> list[SandboxInfo]:
         containers = await self._engine.list_containers(
-            labels=[BROWSER_USER_LABEL, f"{NAMESPACE_LABEL}={self.namespace}"]
+            labels=[BROWSER_POLICY_LABEL, f"{NAMESPACE_LABEL}={self.namespace}"]
         )
         return [
             SandboxInfo(
-                user_id=str(summary["Labels"][BROWSER_USER_LABEL]),
+                policy_id=str(summary["Labels"][BROWSER_POLICY_LABEL]),
                 name=str((summary.get("Names") or ["/"])[0]).lstrip("/"),
                 running=summary.get("State") == "running",
                 status=str(summary.get("Status") or summary.get("State") or ""),
@@ -179,14 +179,14 @@ class DockerBrowserProvider:
             for summary in containers
         ]
 
-    def _container_config(self, user_id: str, token: str) -> dict:
+    def _container_config(self, policy_id: str, token: str) -> dict:
         host_config: dict = {
             "RestartPolicy": {"Name": "unless-stopped"},
             "ShmSize": _SHM_BYTES,
             "Mounts": [
                 {
                     "Type": "volume",
-                    "Source": browser_name(user_id, self.namespace),
+                    "Source": browser_name(policy_id, self.namespace),
                     "Target": BROWSER_HOME,
                 }
             ],
@@ -202,7 +202,7 @@ class DockerBrowserProvider:
             "User": "browser",
             "Cmd": ["mash", "browser", "serve", "--host", "0.0.0.0", "--port", str(BROWSER_PORT)],
             "Env": [f"{MASH_BROWSER_TOKEN_ENV}={token}"],
-            "Labels": browser_labels(user_id, self.namespace),
+            "Labels": browser_labels(policy_id, self.namespace),
             # Time for Chromium to write its profile out on a stop.
             "StopTimeout": 30,
             "ExposedPorts": {f"{BROWSER_PORT}/tcp": {}},
@@ -220,7 +220,7 @@ class DockerBrowserProvider:
 
 __all__ = [
     "BROWSER_IMAGE_REPOSITORY",
-    "BROWSER_USER_LABEL",
+    "BROWSER_POLICY_LABEL",
     "BrowserEndpoint",
     "BrowserUnavailableError",
     "DockerBrowserProvider",

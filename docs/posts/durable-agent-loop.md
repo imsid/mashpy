@@ -1,6 +1,6 @@
 ---
 title: The Durable Agent Loop
-description: How the Mash agent loop runs, what runs through tool calls, how per-step checkpoints make the hosted runtime crash-safe, and how cancel, resume, and rerun control a request.
+description: How the Mash agent loop runs, what runs through tool calls, how per-step checkpoints make the hosted runtime crash-safe, and how cancel stops a request.
 date: 2026-06-10
 author: imsid
 tags:
@@ -99,17 +99,13 @@ The loop carries all execution state in one dict, the checkpoint's `state`:
 
 Nothing here is written to `memory_turns` until the trace completes. Partial progress lives in the checkpoint and the event log until then.
 
-## Cancel, resume, and rerun
+## Cancel
 
-The replay that recovers a crashed process also gives a person control over a request that is running or already finished. Three verbs sit on the API: `POST .../request/{request_id}/cancel`, `.../resume`, and `.../rerun`.
+A request runs until it ends or someone cancels its event: `POST /api/v1/sessions/{session_id}/events/{event_id}/cancel`. The host cancels the event's request on the companion and every `RunSubAgents` child still running under it, each through its own agent.
 
-Cancel stops a running request at the next step boundary. The step in flight finishes and checkpoints first, so a tool call that already started completes and its result is recorded. A request parked on an approval or `AskUser` has that tool call terminated. A `RunSubAgents` call is a tool call like any other: a child that has already been invoked runs to completion, and cancel never cascades to it.
+Cancel stops a running request at the next step boundary. The step in flight finishes and checkpoints first, so a tool call that already started completes and its result is recorded. A request parked on an approval or `AskUser` has that interaction acked as cancelled and the tool call terminated.
 
-Resume continues a cancelled or failed request from its last checkpoint; a failed one runs its failed step again. All of its context comes from the checkpoints, so the request picks up with the model context as it stood rather than one rebuilt from the original message. A request whose session has accrued a later turn is rejected with a 409, because resume replays the original context snapshot and allowing it would persist a turn that ignores everything after it. A request cancelled while parked on an interaction resumes by issuing a fresh `AskUser` call under a new interaction id.
-
-Rerun starts a previous request over as a new request, with a new request id, a new trace, and a `rerun_of` key stamped into the request metadata for provenance. The original message and host snapshot ride along, and `context.load` runs fresh against the session as it stands now.
-
-One request's event log across a cancel and a resume, cancelled while the LLM call after the seventh tool call was in flight:
+One request's event log, cancelled while the LLM call after the seventh tool call was in flight:
 
 ```
 seq  event_type                     detail
@@ -119,17 +115,13 @@ seq  event_type                     detail
 43   chat.start
 44   invoke_agent.end               cancelled
 45   chat.end
-46   mash.request.resumed
-47   execute_tool.start             sleep 3 && echo step-8
 ```
 
-Seq 44 is where the cancel landed. The model call that was already running finished and checkpointed, which is why its `chat.end` sits after the cancelled `invoke_agent.end`. Resume at 46 reads the checkpoint and execution continues at the eighth tool call. No work between step-7 and step-8 ran twice.
-
-Because terminality reads the last lifecycle event for a request, `mash.request.resumed` returns a cancelled request to non-terminal, and a client whose stream ended reopens it. Trace and request are one to one, so the admin UI hangs these three actions off the Logs trace view and addresses the request by its trace id.
+Seq 44 is where the cancel landed. The model call that was already running finished and checkpointed, which is why its `chat.end` sits after the cancelled `invoke_agent.end`. Terminality reads the last lifecycle event for a request, so the trailing `chat.end` leaves the request cancelled and its stream closes. A cancelled or failed request stays ended. Trying again means posting the message as a new event, which runs as a new request against the session as it stands.
 
 ## Event sourcing
 
-Every plan, tool call, and commit emits structured events to the `runtime_event_log` table alongside the checkpoint. Those events are how the streaming API works: a client polling `GET .../request/{id}/events` is reading from that log. They are also how the runtime provides observability into a run.
+Every plan, tool call, and commit emits structured events to the `runtime_event_log` table alongside the checkpoint. Those events are how the streaming API works: a client reading an event's stream is reading from that log. They are also how the runtime provides observability into a run.
 
 The events are the same regardless of which LLM provider runs the think step. All providers (Anthropic, OpenAI, Gemini, and OSS models via `OSSCompatibleProvider`) implement the same `send(LLMRequest) -> LLMResponse` interface. The loop works only with `LLMResponse`, so `chat.end` carries the same fields whether Claude or a self-hosted Qwen model produced the plan, with the provider and model as its `gen_ai.provider.name` and `gen_ai.request.model` attributes. Swapping providers is a change to `build_llm()`; the events, the tooling, and the loop are unaffected.
 
@@ -151,7 +143,7 @@ Three layers cover different failure modes:
 | Failure | Handled by | You do |
 |---|---|---|
 | Transient error (rate limit, timeout, network blip) | `retry_transient()`: in-process retry with exponential backoff and jitter, three retries after the first attempt | nothing |
-| Retries exhausted, or terminal error (bad API key, context overflow) | the loop emits `request.error` with `error_code` and `retryable` | inspect; call `POST .../resume` to retry the failed step, or `.../rerun` to start over |
+| Retries exhausted, or terminal error (bad API key, context overflow) | the loop emits `request.error` with `error_code` and `retryable` | inspect; post the message again as a new event |
 | Process crash (OOM, `kill -9`, hardware) | the restarted process continues the agent's running requests from their checkpoints; after 10 recoveries a request fails | nothing |
 
 The first layer wraps LLM planning and tool execution and classifies errors by pattern:

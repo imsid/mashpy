@@ -14,7 +14,7 @@ Each agent picks its model in `build_llm()`. Pointing one at an open-source mode
 
 ```python
 def build_llm(self):
-    return GemmaProvider(app_id="assistant", base_url="http://localhost:11434/v1")
+    return GemmaProvider(agent_id="assistant", base_url="http://localhost:11434/v1")
 ```
 
 The agent loop, tools, skills, streaming, and observability stay exactly as they were. Everything that makes an open-source model behave inside the harness lives in one adapter, `OSSCompatibleProvider`, and the family presets over it.
@@ -65,7 +65,7 @@ The cleaner fix is to not land on that backend in the first place. `default_prov
 ```python
 def build_llm(self):
     return GemmaProvider(
-        app_id="assistant",
+        agent_id="assistant",
         model="google/gemma-4-27b-it",
         base_url="https://openrouter.ai/api/v1",
         api_key=os.environ["OPENROUTER_API_KEY"],
@@ -88,7 +88,7 @@ ollama pull qwen2.5
 
 ```python
 def build_llm(self):
-    return QwenProvider(app_id="assistant", base_url="http://localhost:11434/v1")
+    return QwenProvider(agent_id="assistant", base_url="http://localhost:11434/v1")
 ```
 
 A hosted gateway is the same code with a different URL and a key:
@@ -98,7 +98,7 @@ import os
 
 def build_llm(self):
     return GemmaProvider(
-        app_id="assistant",
+        agent_id="assistant",
         model="google/gemma-4-27b-it",
         base_url="https://openrouter.ai/api/v1",
         api_key=os.environ["OPENROUTER_API_KEY"],

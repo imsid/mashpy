@@ -17,10 +17,10 @@ class _FakeClient:
     def __init__(self) -> None:
         self.workflow_runs: list[dict[str, Any]] = []
         self.workflow_status_requests: list[dict[str, str]] = []
-        self.host_workflows: list[str] = []
+        # The REPL runs the workflows its host lists.
+        self.host_workflows: list[str] = ["changelog"]
         self.feedback: list[dict[str, Any]] = []
         self.interactions: list[dict[str, Any]] = []
-        self.submitted_user_ids: list[str] = []
         self.workflow_result: dict[str, Any] = {"status": "ok"}
 
     def health(self):
@@ -106,14 +106,16 @@ class _FakeClient:
         *,
         dedup_key: str | None = None,
         workflow_input: dict[str, Any] | None = None,
-        user_id: str | None = None,
+        app_id: str | None = None,
+        policy_id: str | None = None,
     ):
         self.workflow_runs.append(
             {
                 "workflow_id": workflow_id,
                 "dedup_key": dedup_key,
                 "workflow_input": workflow_input,
-                "user_id": user_id,
+                "app_id": app_id,
+                "policy_id": policy_id,
             }
         )
         return {
@@ -135,13 +137,6 @@ class _FakeClient:
             "error": None,
             "result": {"digest": "ok"},
         }
-
-    def submit_request(
-        self, agent_id: str, *, message: str, session_id: str, user_id: str, mode: str = "fg"
-    ):
-        del agent_id, message, session_id, mode
-        self.submitted_user_ids.append(user_id)
-        return "req-1"
 
     def list_session_requests(self, agent_id: str, session_id: str, **filters: Any):
         del agent_id, session_id, filters
@@ -288,7 +283,7 @@ class DefaultCommandTests(unittest.TestCase):
     def _build_shell(self) -> Repl:
         return Repl(
             cast("MashHostClient", _FakeClient()),
-            Target(api_base_url="http://localhost:8000", agent_id="primary", session_id="s-1", user_id="u-1"),
+            Target(api_base_url="http://localhost:8000", session_id="s-1", host_id="assistant", app_id="app-1", policy_id="p-1"),
         )
 
     def _build_host_shell(self, *, host_workflows: list[str] | None = None) -> Repl:
@@ -298,10 +293,9 @@ class DefaultCommandTests(unittest.TestCase):
             cast("MashHostClient", client),
             Target(
                 api_base_url="http://localhost:8000",
-                agent_id="primary",
                 session_id="s-1",
                 host_id="assistant",
-                user_id="u-1",
+                app_id="app-1", policy_id="p-1",
             ),
         )
 
@@ -312,7 +306,7 @@ class DefaultCommandTests(unittest.TestCase):
             names,
             {
                 "new", "resume", "compact", "usage", "copy",
-                "bg", "subagent", "retry", "trace",
+                "subagent", "retry", "trace",
                 "agents", "tools", "workflow", "memory", "browser",
                 "help", "keys", "feedback", "clear", "exit",
             },
@@ -326,7 +320,7 @@ class DefaultCommandTests(unittest.TestCase):
             )
         self.assertEqual(len(_fake(shell).feedback), 1)
         recorded = _fake(shell).feedback[0]
-        self.assertEqual(recorded["agent_id"], "primary")
+        self.assertEqual(recorded["agent_id"], "companion")
         self.assertEqual(recorded["message"], "the trace output is hard to read")
         self.assertEqual(recorded["host_id"], "assistant")
         self.assertEqual(recorded["session_id"], "s-1")
@@ -369,7 +363,7 @@ class DefaultCommandTests(unittest.TestCase):
             _run(shell, "/workflow run changelog manual")
         self.assertEqual(
             _fake(shell).workflow_runs,
-            [{"workflow_id": "changelog", "dedup_key": "manual", "workflow_input": None, "user_id": "u-1"}],
+            [{"workflow_id": "changelog", "dedup_key": "manual", "workflow_input": None, "app_id": "app-1", "policy_id": "p-1"}],
         )
         lines = [call.args[0] for call in info.call_args_list]
         self.assertIn("Workflow status: completed", lines)
@@ -413,7 +407,7 @@ class DefaultCommandTests(unittest.TestCase):
             _run(shell, "/workflow run changelog manual")
         self.assertEqual(
             _fake(shell).workflow_runs,
-            [{"workflow_id": "changelog", "dedup_key": "manual", "workflow_input": None, "user_id": "u-1"}],
+            [{"workflow_id": "changelog", "dedup_key": "manual", "workflow_input": None, "app_id": "app-1", "policy_id": "p-1"}],
         )
         lines = [call.args[0] for call in info.call_args_list]
         self.assertIn("Workflow: changelog", lines)
@@ -429,7 +423,7 @@ class DefaultCommandTests(unittest.TestCase):
         self.assertEqual(
             _fake(shell).workflow_runs,
             [{"workflow_id": "changelog", "dedup_key": "manual",
-              "workflow_input": {"note": "--no-follow"}, "user_id": "u-1"}],
+              "workflow_input": {"note": "--no-follow"}, "app_id": "app-1", "policy_id": "p-1"}],
         )
         self.assertEqual(
             [call.args[0] for call in info.call_args_list],
@@ -454,7 +448,7 @@ class DefaultCommandTests(unittest.TestCase):
                     "workflow_id": "changelog",
                     "dedup_key": "manual",
                     "workflow_input": {"x": 1},
-                    "user_id": "u-1",
+                    "app_id": "app-1", "policy_id": "p-1",
                 }
             ],
         )
@@ -521,7 +515,7 @@ class WorkflowResultRenderingTests(unittest.TestCase):
     def _build_shell(self) -> Repl:
         return Repl(
             cast("MashHostClient", _FakeClient()),
-            Target(api_base_url="http://localhost:8000", agent_id="primary", session_id="s-1", user_id="u-1"),
+            Target(api_base_url="http://localhost:8000", session_id="s-1", host_id="assistant", app_id="app-1", policy_id="p-1"),
         )
 
     def test_result_renders_as_json_code_block_by_default(self) -> None:

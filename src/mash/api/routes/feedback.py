@@ -43,7 +43,7 @@ def build_feedback_router() -> APIRouter:
         store = get_runtime_store(request, agent_id)
 
         record = FeedbackRecord(
-            app_id=agent_id,
+            agent_id=agent_id,
             message=body.message.strip(),
             feedback_type=body.feedback_type.strip() or FeedbackType.TEXT.value,
             host_id=normalize_optional_text(body.host_id),

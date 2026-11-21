@@ -99,7 +99,7 @@ At a high level, H2A standardizes three communication standards:
 
 ### 4.1 User Application To Host
 
-The user application talks to a host that accepts request submission, exposes streamed request events, delivers interaction responses, and controls requests after submission (status, cancel, resume, rerun). Section 10 defines the HTTP binding for this layer.
+The user application talks to a host that accepts events (messages posted to a session), exposes each event's streamed request events, delivers interaction responses, and cancels events. Section 10 defines the HTTP binding for this layer.
 
 ### 4.2 Host To Client
 
@@ -115,17 +115,18 @@ H2A request flow proceeds through the three communication standards in sequence.
 
 ### 5.1 User Application To Host
 
-The user application submits work to the host using a host-facing request operation such as `submit_request`.
+The user application posts work to the host as an event in a session (section 10.2).
 
-The host-facing submission includes:
+An event includes:
 
-- `agent_id`, or a host composition id that resolves to a primary agent (section 10.3)
+- `event_id`, unique in its session
+- `host_id`: the host composition that runs it (section 10.3)
+- `app_id` and `policy_id` (section 6.6)
 - `message`
-- `session_id`
 
-The host returns a request identifier after the downstream agent request has been accepted.
+The host stores the event, returns the id of the request it runs as, and runs a session's events one at a time on the composition's primary agent.
 
-After submission, the user application consumes the resulting lifecycle from the host using a host-facing stream operation such as `stream_request_events`.
+The user application consumes the resulting lifecycle from the host through the event's stream.
 
 ### 5.2 Host To Client
 
@@ -201,14 +202,15 @@ Inputs:
 
 - `message: string`
 - `session_id: string`
-- `user_id: string`: the end user the request acts for. Like `metadata`, it is stored with the request and never shown to the model
+- `app_id: string`: the application the request acts for. Like `metadata`, it is stored with the request and never shown to the model
+- `policy_id: string`: the policy the request runs under
+- `policy: object`: a snapshot of that policy (`sandbox`, `browser_sites`, `wait_max_seconds`), taken when the request is started (section 6.6)
 - optional `structured_output: object`: a JSON schema the final response must satisfy
 - optional `metadata: object`: opaque caller context stored with the request and readable by tools; it is never shown to the model
 - optional `request_id: string`: the id to give the request, so a caller that retries submission reaches the same request
 - optional `context: string`: prompt text added to the request
 - optional `host: object`: the host composition snapshot the request runs against (`host_id`, `primary`, `subagents`)
 - optional `parent: object`: the request or workflow step that issued this request
-- optional `mode: string`: `fg` (the default) when the conversation waits on the request, or `bg` when the user keeps talking while it runs
 
 `parent` has one of two shapes:
 
@@ -226,13 +228,11 @@ Rules:
 - `message` MUST be present and MUST be a non-empty string.
 - `session_id` MUST be present and MUST be a non-empty string.
 - `request_id`, when present, MUST be 1 to 255 characters of letters, digits, `.`, `_`, `:` or `-`.
-- `user_id` MUST be present and MUST be 1 to 255 characters of letters, digits, `.`, `_`, `:`, `@` or `-`.
-- A request with a `subagent` parent MUST carry the parent request's `user_id`. A host relay enforces this (section 10.5).
-- A request with a `workflow` parent MUST carry the workflow run's `user_id`.
-- `mode`, when present, MUST be `fg` or `bg`.
-- Requests that share a `session_id` MUST be accepted. The runtime does not wait for an earlier request in the same session to finish.
-
-The mode says nothing about how the request runs. A `bg` request runs the same agent loop, saves its turn when it finishes, and can be resumed, cancelled and answered like any other. The mode changes only while the request runs (section 6.6).
+- `app_id` and `policy_id` MUST be present and MUST each be 1 to 255 characters of letters, digits, `.`, `_`, `:`, `@` or `-`. `policy` MUST be present and MUST be a policy object.
+- A request with a `subagent` parent MUST carry the parent request's `app_id`, `policy_id` and `policy`. A host relay enforces this (section 10.5).
+- A request with a `workflow` parent MUST carry the workflow run's `app_id`, `policy_id` and policy snapshot.
+- A session's requests MUST share one `policy_id`. A request for a session that already has a request under another policy is rejected with `409 SESSION_POLICY_MISMATCH`.
+- Requests that share a `session_id` MUST be accepted. The runtime does not wait for an earlier request in the same session to finish; a host that wants one at a time queues them (section 10.2).
 
 The accepted payload contains:
 
@@ -240,7 +240,8 @@ The accepted payload contains:
 - `agent_id: string`
 - `session_id: string`
 - `status: "accepted"`
-- `user_id: string`
+- `app_id: string`
+- `policy_id: string`
 
 Example:
 
@@ -248,7 +249,9 @@ Example:
 {
   "message": "Plan the next release.",
   "session_id": "sess_123",
-  "user_id": "u-42"
+  "app_id": "slack-bot",
+  "policy_id": "acme-ws",
+  "policy": {"sandbox": true, "browser_sites": null, "wait_max_seconds": 86400}
 }
 ```
 
@@ -260,7 +263,8 @@ Accepted payload:
   "agent_id": "planner",
   "session_id": "sess_123",
   "status": "accepted",
-  "user_id": "u-42"
+  "app_id": "slack-bot",
+  "policy_id": "acme-ws"
 }
 ```
 
@@ -324,10 +328,9 @@ Every recorded runtime event is published under one of these names:
 |---|---|---|
 | `request.accepted` | No | The request was recorded, its `trace_id` was assigned, and execution was started |
 | `request.started` | No | Execution began loading the request's context |
-| `agent.trace` | No | Any other recorded event: context loaded, a model call starting, streaming or ending, a tool call starting or ending, a step completed, a mode switch |
+| `agent.trace` | No | Any other recorded event: context loaded, a model call starting, streaming or ending, a tool call starting or ending, a step completed |
 | `request.interaction.create` | No | Execution is waiting for a response (section 7) |
 | `request.interaction.ack` | No | The waiting execution received a response, timed out, or was cancelled |
-| `request.resumed` | No | A cancelled or failed request was resumed (section 10.4) |
 | `request.completed` | Yes | The request finished and its turn was saved |
 | `request.error` | Yes | The request failed |
 | `request.cancelled` | Yes | The request was cancelled |
@@ -335,11 +338,10 @@ Every recorded runtime event is published under one of these names:
 Rules:
 
 - `request.accepted` MUST be the first event for a request.
-- `request.started` MUST be emitted before any `agent.trace` or terminal event of the first attempt.
+- `request.started` MUST be emitted before any `agent.trace` or terminal event.
 - `request.interaction.create` MUST be followed by exactly one `request.interaction.ack` with the same `interaction_id`.
 - `request.interaction.create` and `request.interaction.ack` MAY appear zero or more times between `request.started` and the terminal event.
-- Each execution attempt MUST end with exactly one terminal event.
-- `request.resumed` MAY follow `request.cancelled` or `request.error`, and starts a new attempt, which ends with its own terminal event. A request's lifecycle state is the state set by its latest lifecycle event.
+- A request MUST end with exactly one terminal event. A cancelled or failed request stays ended.
 
 Stored events are named after the OpenTelemetry span they open or close, and the agent maps each to a frame:
 
@@ -349,9 +351,8 @@ Stored events are named after the OpenTelemetry span they open or close, and the
 | `mash.context_load.start` | `request.started` |
 | `mash.interaction.start` | `request.interaction.create` |
 | `mash.interaction.end` | `request.interaction.ack` |
-| `mash.request.resumed` | `request.resumed` |
 | `invoke_agent.end` | `request.completed`, `request.error` or `request.cancelled`, by its `status` |
-| `mash.context_load.end`, `chat.start`, `chat.delta`, `chat.end`, `execute_tool.start`, `execute_tool.end`, `mash.step.end`, `mash.request.mode_changed` | `agent.trace` |
+| `mash.context_load.end`, `chat.start`, `chat.delta`, `chat.end`, `execute_tool.start`, `execute_tool.end`, `mash.step.end` | `agent.trace` |
 
 Every `.end` event carries `status`: `"ok"`, `"error"` or `"cancelled"`. OpenTelemetry attributes, such as `gen_ai.request.model`, `gen_ai.usage.input_tokens` and `gen_ai.tool.name`, are under `attributes` in the payload. A `RunSubAgents` call is an `execute_tool.start` / `execute_tool.end` pair; its start lists the children's `agent_id` and `request_id` under `subagents`.
 
@@ -362,7 +363,6 @@ Payloads:
 - `request.completed`: the `invoke_agent.end` payload: `request_id`, `agent_id`, `session_id`, `status: "ok"`, `trace_id`, `attributes`, and the saved turn, including `response` with `text`, `signals`, and `metadata`, plus `structured_output` when one was requested.
 - `request.error`: `request_id`, `agent_id`, `session_id`, `status: "error"`, `attributes`, `error`, and when known `error_type`, `error_code`, `retryable`, and `stop_reason`.
 - `request.cancelled`: `request_id`, `agent_id`, `session_id`, `status: "cancelled"`, `attributes`.
-- `request.resumed`: `request_id`, `agent_id`, `session_id`, `status: "resumed"`, `previous_status`.
 
 Transient errors (rate limits, timeouts, network errors, provider overload) in model calls and tool calls are retried automatically at the step level before `request.error` is emitted. `retryable` reports the original classification of the error that ended the request.
 
@@ -378,17 +378,20 @@ A client also provides these operations:
 
 - `get_request_status`: report the execution state of a request (section 10.4)
 - `cancel_request`: stop a running request
-- `resume_request`: continue a cancelled request from its last recorded step
-- `rerun_request`: start a previous request over as a new request
-- `set_request_mode`: switch a running request between `fg` and `bg` (section 6.6)
 - `describe`: list the agent's tools and skills (section 8.7)
 - `compact_session`: summarize a session's history and reset its token accounting (section 8.8)
 
 Request submission is idempotent on `request_id`. When `post_request` names a `request_id` that already belongs to a request of the same agent, the runtime returns that request's accepted payload and does not start a new execution. Its stream then replays from the first event. A `request_id` that belongs to another agent is rejected. Without `request_id`, every submission creates a new request.
 
-### 6.6 Request Mode
+### 6.6 Request Identity
 
-A running request switches mode with `set_request_mode(request_id, mode)`. The runtime appends a `mash.request.mode_changed` event with payload `{"mode": "fg" | "bg"}`, which the stream publishes as `agent.trace`. A request can switch any number of times, and the event order gives the switches' order. A request that is terminal keeps its mode, and the switch fails with `409 REQUEST_TERMINAL`.
+Every request carries an `app_id`, a `policy_id` and a `policy` snapshot. The app scopes memory: an agent's conversation search reaches the request's session or every session of its app, and app-level memory is keyed by `app_id`. The policy owns the resources the request's tools act in (in the reference host, a sandbox and a browser profile) and sets three rules the runtime applies from the snapshot:
+
+- `sandbox: false` removes the sandbox tools from the request's tool list.
+- `browser_sites`, when a list, is intersected with the agent's own browser sites; an empty intersection removes the browser tools.
+- `wait_max_seconds` caps every interaction's timeout (section 7.5); `null` sets no cap.
+
+The snapshot is taken once, when the request starts, so changing the policy does not affect running requests.
 
 ## 7. Interactions
 
@@ -403,6 +406,7 @@ H2A defines three interaction types:
 | `approval` | `{ "type": "enum", "options": ["approve", "deny", "skip"] }` | Request permission before running tools that require approval |
 | `info` | `{ "type": "text" }` | Request free-form text input from the user |
 | `choice` | `{ "type": "multi_select", "options": [...] }` | Request one or more selections from a set of options |
+| `browser` | `{ "type": "enum", "options": ["done", "cancel"] }` | Hand a browser to a person to sign in; the payload carries no link, and the host mints one on request (section 10.2) |
 
 An `approval` interaction covers every tool call the agent planned in that step. A response of `"deny"` or `"skip"` denies all of them, and each call returns an error result to the agent in place of running.
 
@@ -424,7 +428,7 @@ Fields:
 - `type: string`: one of `approval`, `info`, `choice`
 - `prompt: string`: human-readable question or description
 - `schema: object`: describes the expected response shape
-- `timeout_seconds: number`: how long execution will wait
+- `timeout_seconds: number | null`: how long execution will wait; `null` for an interaction with no deadline
 
 ### 7.3 `request.interaction.ack`
 
@@ -467,9 +471,11 @@ sequenceDiagram
 
 ### 7.5 Timeout Behavior
 
+An interaction's timeout is its type's timeout capped by the request policy's `wait_max_seconds`. A `browser` interaction has no timeout of its own: its timeout is the cap, and with no cap it waits until answered or cancelled.
+
 If no response arrives within `timeout_seconds`:
 
-- Execution continues with the default response for the type: `"deny"` for approval, `""` for info, `[]` for choice.
+- Execution continues with the default response for the type: `"deny"` for approval, `""` for info, `[]` for choice, `"cancel"` for browser.
 - The agent MUST emit `request.interaction.ack` carrying the default response and `timed_out: true`.
 
 ### 7.6 Durability
@@ -478,7 +484,7 @@ Interaction waiting MUST be durable. If the agent runtime restarts while waiting
 
 ### 7.7 Cancellation
 
-If a request is cancelled while waiting on an interaction, the agent MUST emit `request.interaction.ack` for that interaction with `response: null` and `cancelled: true`, followed by `request.cancelled`. If the request is later resumed, execution issues a new interaction with a new `interaction_id` and a new `request.interaction.create`.
+If a request is cancelled while waiting on an interaction, the agent MUST emit `request.interaction.ack` for that interaction with `response: null` and `cancelled: true`, followed by `request.cancelled`.
 
 ## 8. Client To Agent HTTP Server
 
@@ -497,10 +503,7 @@ The HTTP plus SSE binding defines these endpoints for one agent:
 - `GET /agent/{agent_id}/request/{request_id}`
 - `POST /agent/{agent_id}/request/{request_id}/interaction`
 - `GET /agent/{agent_id}/request/{request_id}/status`
-- `POST /agent/{agent_id}/request/{request_id}/resume`
 - `POST /agent/{agent_id}/request/{request_id}/cancel`
-- `POST /agent/{agent_id}/request/{request_id}/rerun`
-- `POST /agent/{agent_id}/request/{request_id}/mode`
 
 Equivalent route shapes are permitted if they preserve the same semantics.
 
@@ -517,10 +520,10 @@ For `POST /agent/{agent_id}/request`, the server MUST:
 7. if `metadata` is present, validate that it is an object, returning `400 INVALID_REQUEST` otherwise
 8. if `context` is present, validate that it is a string, and if `host` is present, validate that it is an object, returning `400 INVALID_REQUEST` otherwise
 9. if `parent` is present, validate it against the shapes in section 6.1, returning `400 INVALID_PARENT` otherwise
-10. validate that `user_id` is present and well formed, and that `mode`, when present, is `fg` or `bg` (section 6.1), returning `400 INVALID_REQUEST` otherwise
+10. validate that `app_id`, `policy_id` and `policy` are present and well formed (section 6.1), returning `400 INVALID_REQUEST` otherwise
 11. if `request_id` is present, validate it (section 6.1), returning `400 INVALID_REQUEST` otherwise. If it belongs to a request of this agent, return `200 OK` with that request's accepted payload. If it belongs to another agent, return `409 REQUEST_ID_CONFLICT`
-12. return `409 SESSION_USER_MISMATCH` if the session already has a request for another `user_id`. A session is one user's conversation: its turns replay into every request on it
-13. call the runtime request-submission operation with `message`, `session_id`, `structured_output`, `metadata`, `request_id`, `context`, `host`, `parent`, `user_id`, and `mode`
+12. return `409 SESSION_POLICY_MISMATCH` if the session already has a request under another `policy_id`
+13. call the runtime request-submission operation with `message`, `session_id`, `structured_output`, `metadata`, `request_id`, `context`, `host`, `parent`, `app_id`, `policy_id` and `policy`
 14. return `202 Accepted` with the accepted payload as the body
 
 Example error:
@@ -560,24 +563,14 @@ For `POST /agent/{agent_id}/request/{request_id}/interaction`, the server MUST:
 
 ### 8.5 Request Control Handling
 
-For the `status`, `resume`, `cancel`, and `rerun` routes, the server MUST:
+For the `status` and `cancel` routes, the server MUST:
 
 1. return `404 ROUTE_NOT_FOUND` if `agent_id` is not the agent it serves
 2. return `404 REQUEST_NOT_FOUND` if the runtime does not know the request, or it was accepted for another agent, without running the operation
 3. call the runtime's corresponding operation for `request_id`
-4. return `409 REQUEST_STALE` if a resume is refused because the session has newer turns, and `409 SESSION_USER_MISMATCH` if a rerun's session now belongs to another user
-5. otherwise return `200 OK` with the operation's result as the body, without the host's `{data}` envelope
+4. return `200 OK` with the operation's result as the body, without the host's `{data}` envelope
 
-Results and semantics are the same as the host routes in section 10.4.
-
-For `POST /agent/{agent_id}/request/{request_id}/mode`, the server MUST:
-
-1. return `404 ROUTE_NOT_FOUND` if `agent_id` is not the agent it serves
-2. return `404 REQUEST_NOT_FOUND` for an unknown `request_id`, or one accepted for another agent
-3. read the body as JSON, returning `400 INVALID_JSON` or `400 INVALID_REQUEST` for a body that does not parse or is not an object
-4. validate that `mode` is `fg` or `bg`, returning `400 INVALID_REQUEST` otherwise
-5. return `409 REQUEST_TERMINAL` if the request is terminal
-6. append `mash.request.mode_changed` and return `200 OK` with `{"request_id", "agent_id", "mode"}`
+`status` returns `request_id` and the request's recorded state: `running`, `completed`, `failed` or `cancelled`. `cancel` stops a running request at its next step boundary (section 7.7) and appends `request.cancelled`; a request already terminal is left unchanged. A cancelled or failed request stays ended.
 
 ### 8.6 Authentication
 
@@ -659,33 +652,30 @@ Successful responses wrap the result in `{"data": ...}`. Errors return:
 }
 ```
 
-A body that fails schema validation, including an empty `message` or `session_id` or a missing `user_id`, returns `422 VALIDATION_ERROR` with the validation errors in `details`. A `message` or `session_id` that is only whitespace returns `400 INVALID_REQUEST`.
+A body that fails schema validation returns `422 VALIDATION_ERROR` with the validation errors in `details`. A missing or blank required field, or an unknown one, returns `400 INVALID_REQUEST`.
 
-### 10.2 Agent Requests
+### 10.2 Events
 
-- `POST /agent/{agent_id}/request`: body `{message, session_id, user_id, structured_output?, metadata?, mode?}`. `mode` is `fg` (the default) or `bg`. Returns `200` with `{"data": {"request_id": ...}}`. A missing `user_id` fails schema validation (section 10.1), and an invalid one returns `400 INVALID_USER_ID`. A request to a disabled agent returns `409 AGENT_DISABLED`.
-- `GET /agent/{agent_id}/request/{request_id}/events`: the SSE stream for the request (section 6.2). The host closes the stream after writing `request.completed`, `request.error`, or `request.cancelled`.
-- `POST /agent/{agent_id}/request/{request_id}/interaction`: body `{interaction_id, response}`. Returns `200` with `{"data": {"ok": true, "interaction_id": ...}}`, `404 INTERACTION_NOT_FOUND` for an interaction the request never opened, and `409 INTERACTION_CLOSED` for one that already has an answer.
+Every input to a host is an event in a session. A session is created by its first event and bound to that event's `host_id` and `policy_id`. The host runs a session's events one at a time, in arrival order, each as one request on the host composition's primary agent; the rest wait. When a request ends, the host records its response or error on the event.
+
+- `POST /sessions/{session_id}/events`: body `{event_id, host_id, app_id, policy_id, message, context?, metadata?, structured_output?}`. Returns `202` with the event: `{"data": {"session_id", "event_id", "request_id", "seq", "status", ...}}`. `request_id` is derived from the session and event ids, so it is known while the event waits. An `event_id` the session already has returns `200` with that event and runs nothing. An unknown host or policy returns `404 HOST_NOT_FOUND` or `404 POLICY_NOT_FOUND`; a session bound to another host or policy returns `409 SESSION_HOST_MISMATCH` or `409 SESSION_POLICY_MISMATCH`.
+- `POST /sessions/{session_id}/events` with body `{event_id, interaction_id, response}` answers an interaction of the event's request (section 6.3). Returns `200`, `404 INTERACTION_NOT_FOUND` for an interaction the request has not opened, `400 INVALID_INTERACTION_RESPONSE` for a response its schema does not allow, and `409 INTERACTION_CLOSED` for one closed by another answer, a timeout or a cancel. Repeating the stored answer returns `200`.
+- `GET /sessions/{session_id}/events/{event_id}/stream`: the SSE stream of the event's request (section 6.2). While the event waits, the stream holds with an `event.queued` frame. An event cancelled before it started gets one `event.cancelled` frame. The host closes the stream after writing `request.completed`, `request.error`, `request.cancelled` or `event.cancelled`.
+- `GET /sessions/{session_id}/events/{event_id}`: the event's `status` (`queued`, `running`, `waiting`, `completed`, `failed` or `cancelled`), its request's open interactions, `response` and `error`.
+- `GET /sessions/{session_id}/events` and `GET /hosts/{host_id}/events`: the events of a session, or of every session on a host, in arrival order.
+- `POST /sessions/{session_id}/events/{event_id}/interactions/{interaction_id}/handoff`: for an open `browser` interaction, mints a short-lived link to the browser and returns `{url, expires_at}`.
+
+The host is the trust boundary for `app_id` and `policy_id`: the user application authenticates to the host and asserts them, and the host passes them, with the policy's snapshot, to the primary.
 
 ### 10.3 Host Compositions
 
-A host MAY expose named compositions of a primary agent and its subagents. A request submitted to a composition runs on the primary agent with a snapshot of the composition taken at submit time, so redefining the composition does not affect requests already accepted.
-
-- `POST /hosts/{host_id}/request`: body `{message, session_id, user_id, structured_output?, context?, metadata?, mode?}`. `context` is prompt text added for this request. Returns `200` with `{"data": {"request_id", "agent_id", "session_id", "user_id"}}`, where `agent_id` is the primary. An unknown `host_id` returns `404 HOST_NOT_FOUND`. A missing `user_id` fails schema validation (section 10.1), and an invalid one returns `400 INVALID_USER_ID`.
-
-The host is the trust boundary for `user_id`: the user application authenticates to the host and asserts the user, and the host passes it unchanged to the primary.
-
-The caller streams and answers interactions through the agent routes using the returned `agent_id`.
+A host MAY expose named compositions of a primary agent and its subagents. An event names one with `host_id`. Its request runs on the primary agent with a snapshot of the composition taken when the request starts, so redefining the composition does not affect requests already running.
 
 ### 10.4 Request Control
 
 - `GET /agent/{agent_id}/request/{request_id}/status` returns `request_id` and `status`, the request's recorded lifecycle state: `running`, `completed`, `failed` or `cancelled`. A request the runtime does not know returns `404 REQUEST_NOT_FOUND`. This is useful when a stream goes silent after a process crash: `running` means the request continues once the agent's runtime restarts.
-- `POST /agent/{agent_id}/request/{request_id}/cancel` stops a running request at its next step boundary. The step in flight finishes and is recorded. If the request is waiting on an interaction, that interaction is acked with `response: null` (section 7.7). The runtime then appends `request.cancelled`. The host then cancels the request's running children, each through its own agent; a child whose agent is disabled is skipped. Returns `request_id`, `status: "cancelled"`, and `message`. A request that is already terminal is left unchanged and its current status is returned.
-- `POST /agent/{agent_id}/request/{request_id}/resume` continues a cancelled or failed request from its last recorded step, and appends `request.resumed`. A failed request runs its failed step again. Returns `request_id`, `status: "resumed"`, `previous_status`, and `message`. A completed or running request returns its current status without changes. If the request's session has a newer saved turn than the request, resume returns `409 REQUEST_STALE`, because resuming would replay context the session has moved past.
-- `POST /agent/{agent_id}/request/{request_id}/rerun` starts the request over as a new request with a new `request_id`, from the original message and request metadata, against the session's current history. It works for a request in any state. Returns the new request's accepted payload.
-- `POST /agent/{agent_id}/request/{request_id}/mode`: body `{"mode": "fg" | "bg"}`. Switches a running request (section 6.6) and returns `request_id`, `agent_id` and `mode`. A terminal request returns `409 REQUEST_TERMINAL`.
-
-Unknown request ids, and requests accepted for another agent than the one in the path, return `404 REQUEST_NOT_FOUND` on all five routes.
+- `GET /agent/{agent_id}/request/{request_id}/events`: the SSE stream of any request, such as a subagent's.
+- `POST /sessions/{session_id}/events/{event_id}/cancel` cancels an event. A waiting event is cancelled before it starts. A running event's request stops at its next step boundary. The step in flight finishes and is recorded. If the request is waiting on an interaction, that interaction is acked with `response: null` (section 7.7). The runtime then appends `request.cancelled`, and the host cancels the request's running children, each through its own agent; a child whose agent is disabled is skipped. An event that has ended returns `409 EVENT_TERMINAL`.
 
 ### 10.5 Agent Relay
 
@@ -695,8 +685,8 @@ A host whose agents run in separate processes MAY expose a relay that agents use
 - `POST /agent/{subagent_id}/request` MUST carry a `parent` of kind `subagent` whose `agent_id` is the caller. Otherwise the relay returns `403 FORBIDDEN`.
 - The relay looks up the parent request. A parent request it does not know returns `400 INVALID_PARENT`, and one that belongs to another agent returns `403 FORBIDDEN`.
 - `subagent_id` MUST be the caller itself, or be in the `subagents` of the `host` snapshot stored with the parent request; a parent without one may target only the caller. Otherwise the relay returns `403 FORBIDDEN`. The relay forwards that stored snapshot and ignores a `host` in the body, so an agent cannot widen its composition.
-- The relay sets the forwarded request's `user_id` to the parent request's. A `user_id` in the body that differs from the parent's returns `403 FORBIDDEN`. An agent cannot act for another user through its subagents.
-- An allowed request is forwarded to the subagent's client, `mode` included. A `409 SESSION_USER_MISMATCH` from the subagent is returned as is.
+- The relay sets the forwarded request's `app_id`, `policy_id` and `policy` to the parent request's. A value in the body that differs from the parent's returns `403 FORBIDDEN`. An agent cannot act for another app or under another policy through its subagents.
+- An allowed request is forwarded to the subagent's client. A `409 SESSION_POLICY_MISMATCH` from the subagent is returned as is.
 - `GET /agent/{subagent_id}/request/{request_id}` streams the request's events. Only the agent named in the request's `parent` may stream it.
 - `POST /agent/{subagent_id}/request/{request_id}/cancel` cancels the request through the subagent's client and returns its result (section 10.4). Only the agent named in the request's `parent` may cancel it; another caller gets `403 FORBIDDEN`, and an unknown request `404 REQUEST_NOT_FOUND`.
 
@@ -717,7 +707,6 @@ The host binding adds a `details` object (section 10.1).
 
 Request execution failures after acceptance MUST be emitted as `request.error` events rather than converted into a different HTTP response. Transient errors (rate limits, timeouts, network errors, provider overload) in model calls and tool calls are retried automatically at the step level before `request.error` is emitted. The `request.error` payload SHOULD include `error_code` and `retryable` fields so clients can distinguish transient failures (retries exhausted) from permanent ones.
 
-A failed request continues from its failed step with resume, or starts over with rerun (section 10.4).
 
 HTTP status codes used by the bindings:
 
@@ -727,7 +716,7 @@ HTTP status codes used by the bindings:
 - `401 Unauthorized` for a missing or invalid bearer token
 - `403 Forbidden` for an agent relay call the caller's token or the parent request does not permit (section 10.5)
 - `404 Not Found` for unknown routes, agents, hosts, or request ids
-- `409 Conflict` for resuming a stale request, switching the mode of a terminal request, answering an interaction that already has an answer, a `request_id` that belongs to another agent, or a request to a disabled agent
+- `409 Conflict` for answering an interaction that already has an answer, a `request_id` that belongs to another agent, a request to a disabled agent, a session bound to another host or policy, or cancelling an event that has ended
 - `422 Unprocessable Entity` for host request bodies that fail schema validation
 - `500 Internal Server Error` for unexpected failures
 

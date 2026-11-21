@@ -10,7 +10,7 @@ from unittest.mock import patch
 from mash.agents.companion import COMPANION_AGENT_ID, CompanionSpec, build_companion_metadata
 from mash.core.llm import AnthropicProvider
 from mash.runtime import Host, HostBuilder
-from mash.testing.runtime_fixtures import DelegatingLLMProvider, build_spec, metadata
+from mash.testing.runtime_fixtures import DEFAULT_POLICY, DelegatingLLMProvider, build_spec, metadata
 
 
 def _builder() -> HostBuilder:
@@ -54,7 +54,7 @@ class CompanionSpecTests(unittest.TestCase):
         config = spec.build_agent_config()
 
         self.assertEqual(spec.get_agent_id(), "companion")
-        self.assertEqual(config.app_id, "companion")
+        self.assertEqual(config.agent_id, "companion")
         self.assertEqual(config.conversation_history_turns, 10)
         self.assertFalse(spec.enable_sandbox())
         self.assertEqual(spec.browser_sites(), [])
@@ -105,7 +105,7 @@ class CompanionRoutingTests(unittest.IsolatedAsyncioTestCase):
             await pool.start()
             try:
                 accepted = await pool.submit_host_request(
-                    "guide", message="build it", session_id="s-1", user_id="u-1"
+                    "guide", message="build it", session_id="s-1", app_id="app-1", policy_id="p-1"
                 )
                 self.assertEqual(accepted["agent_id"], COMPANION_AGENT_ID)
                 terminal = None
@@ -206,8 +206,8 @@ class _WorkflowCaller(LLMProvider):
         )
         return _response(calls=[call])
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class CompanionWorkflowTests(unittest.IsolatedAsyncioTestCase):
@@ -231,9 +231,9 @@ class CompanionWorkflowTests(unittest.IsolatedAsyncioTestCase):
             ("companion", None, False),
             ("pilot", {"agents": ["pilot"], "workflows": ["changelog"]}, False),
         ]
-        for app_id, host, expected in cases:
-            with self.subTest(app_id=app_id, host=host):
-                runtime = SimpleNamespace(app_id=app_id, get_host_access=lambda: access)
+        for agent_id, host, expected in cases:
+            with self.subTest(agent_id=agent_id, host=host):
+                runtime = SimpleNamespace(agent_id=agent_id, get_host_access=lambda: access)
                 agent = SimpleNamespace(tools=ToolRegistry())
                 configure_run_workflow(runtime, agent, host=host)
                 self.assertEqual("RunWorkflow" in agent.tools, expected)
@@ -255,7 +255,7 @@ class CompanionWorkflowTests(unittest.IsolatedAsyncioTestCase):
             try:
                 accepted = await pool.submit_host_request(
                     "guide", message="what changed in the last 3 releases?",
-                    session_id="s-1", user_id="u-1",
+                    session_id="s-1", app_id="app-1", policy_id="p-1",
                 )
                 request_id = accepted["request_id"]
                 async for event in pool.get_client(COMPANION_AGENT_ID).stream_response(
@@ -281,7 +281,10 @@ class CompanionWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertIn("3 releases", entry["got"])
                 run = await pool.get_workflow_service().get_run("changelog", entry["run_id"])
-                self.assertEqual(run.user_id, "u-1")
+                # The run takes the companion request's app and policy.
+                self.assertEqual((run.app_id, run.policy_id), ("app-1", "p-1"))
+                stored = await pool.get_workflow_store().get_run(entry["run_id"])
+                self.assertEqual(stored.policy, DEFAULT_POLICY)
                 self.assertTrue(run.dedup_key.startswith(f"{request_id}-wf-"))
 
                 relay_url = await pool._agent_provider._ensure_relay()
@@ -307,11 +310,11 @@ class CompanionWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     not_owner = await post("changelog", {"parent": parent, "input": {}}, agent="pilot")
                     self.assertEqual(not_owner.status_code, 403)
 
-                    other_user = await pool.get_workflow_service().run_workflow(
-                        "changelog", workflow_input={}, user_id="u-2"
+                    other_app = await pool.get_workflow_service().run_workflow(
+                        "changelog", workflow_input={}, app_id="app-2", policy_id="p-1"
                     )
                     read = await http.get(
-                        f"/workflow/changelog/runs/{other_user.run_id}",
+                        f"/workflow/changelog/runs/{other_app.run_id}",
                         params={"parent_request_id": request_id},
                         headers={"Authorization": f"Bearer {token}"},
                     )

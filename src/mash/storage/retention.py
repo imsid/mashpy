@@ -13,7 +13,7 @@ statement holds locks for long:
   and no checkpoint save used within the window.
 
 Conversation turns (``memory_turns``), Cortex, feedback and evals are kept.
-A deleted request can no longer be resumed, rerun or shown in traces.
+A deleted request can no longer be read or shown in traces.
 """
 
 from __future__ import annotations
@@ -54,11 +54,16 @@ def retention_days() -> float | None:
 
 # The requests are locked first and skipped when another transaction holds
 # them, such as a resume in progress. The outer DELETE repeats the filter, so
-# a row changed while this waited is checked again.
+# a row changed while this waited is checked again. A request whose event is
+# still started is kept: its watcher has not copied its outcome yet.
 _PURGE_REQUESTS = """
     WITH expired AS (
-        SELECT request_id FROM runtime_request
+        SELECT request_id FROM runtime_request AS r
         WHERE status <> 'running' AND updated_at < %(cutoff)s
+          AND NOT EXISTS (
+              SELECT 1 FROM events AS e
+              WHERE e.request_id = r.request_id AND e.status = 'started'
+          )
         ORDER BY updated_at
         LIMIT %(batch)s
         FOR UPDATE SKIP LOCKED

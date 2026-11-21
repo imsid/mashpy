@@ -1,6 +1,6 @@
-/* Interactive H2A walkthrough for docs/posts/h2a-envelope-interactive.md.
-   Routes, payload keys and status codes come from src/mash/api/routes/agent.py,
-   src/mash/api/routes/host.py, src/mash/runtime/client.py,
+/* Interactive H2A walkthrough for docs/posts/h2a-envelope-walkthrough.md.
+   Routes, payload keys and status codes come from src/mash/api/routes/sessions.py,
+   src/mash/sessions/service.py, src/mash/runtime/client.py,
    src/mash/runtime/server.py and to_public_event in src/mash/runtime/requests.py.
    Ids and message text are illustrative. */
 (function () {
@@ -36,44 +36,64 @@
       ],
       ops: {
         submit: {
-          label: "Submit to an agent",
+          label: "Post an event",
           hops: [
             {
               lane: 0,
               who: "User application",
-              what: "POST /api/v1/agent/assistant/request",
+              what: "POST /api/v1/sessions/s-1/events",
               body:
-                "<p>The caller addresses the host with the agent id in the path. " +
-                code("message") + ", " + code("session_id") + " and " + code("user_id") +
-                ", the end user the request acts for, are required. " +
-                code("metadata") + " is optional caller context that tools can read " +
-                "and the model never sees. " + code("structured_output") +
-                " is an optional JSON schema.</p>",
+                "<p>Every input to a host is an event in a session. " +
+                code("event_id") + ", " + code("host_id") + ", " + code("app_id") +
+                ", " + code("policy_id") + " and " + code("message") +
+                " are required. " + code("metadata") + " is optional caller " +
+                "context that tools can read and the model never sees; " +
+                code("context") + " and " + code("structured_output") +
+                " are optional too.</p>",
               payload: json({
+                event_id: "e-1",
+                host_id: "release-desk",
+                app_id: "release-bot",
+                policy_id: "acme",
                 message: "Plan the next release.",
-                session_id: "s-1",
-                user_id: "u-42",
                 metadata: { tenant: "acme" },
               }),
             },
             {
               lane: 1,
               who: "Host",
-              what: "submit_request route → pool.get_client(agent_id)",
+              what: "post_event route → EventService.post_event",
               body:
-                "<p>" + link("submit_request", "api/routes/agent.py") +
-                " validates the body. An empty message or session id fails schema " +
-                "validation and returns 422 " + code("VALIDATION_ERROR") +
-                "; one that is only whitespace returns 400 " + code("INVALID_REQUEST") +
-                ". The route then resolves the agent id to its client with " +
-                code("pool.get_client") + ".</p>",
+                "<p>" + link("post_event", "api/routes/sessions.py") +
+                " validates the body and returns 400 " + code("INVALID_REQUEST") +
+                " for a missing field. A seen " + code("(session_id, event_id)") +
+                " returns its row with 200 and changes nothing. The first event " +
+                "binds the session to its host and policy; a later one naming " +
+                "another gets 409. A new event is stored " + code("queued") + ".</p>",
               payload: json({
                 error: {
-                  code: "INVALID_REQUEST",
-                  message: "session_id is required",
+                  code: "SESSION_POLICY_MISMATCH",
+                  message: "session 's-1' runs on policy 'acme'",
                   details: {},
                 },
-              }) + '\n# status 400 when session_id is "   "; an empty string returns 422 VALIDATION_ERROR',
+              }) + "\n# status 409 for an event naming another policy",
+            },
+            {
+              lane: 1,
+              who: "Host",
+              what: "the session's queue → Pool.submit_host_request",
+              body:
+                "<p>Events in a session run one at a time. When this one reaches " +
+                "the front, the host snapshots the host composition and the " +
+                "policy, and submits one request to the companion under an id " +
+                "derived from the session and event ids.</p>",
+              payload:
+                'request_id = uuid5(EVENTS_NS, "s-1:e-1")\n' +
+                "await pool.submit_host_request(\n" +
+                '    "release-desk", message=message, session_id="s-1",\n' +
+                '    app_id="release-bot", policy_id="acme", policy=policy,\n' +
+                "    request_id=request_id, metadata=metadata,\n" +
+                ")",
             },
             {
               lane: 2,
@@ -81,16 +101,17 @@
               what: "AgentClient.post_request(...)",
               body:
                 "<p>" + link("AgentClient.post_request", "runtime/client.py") +
-                " POSTs to " + code("/agent/assistant/request") + " on the agent's " +
-                "process with the agent's bearer token, and returns the " +
-                code("request_id") + " from the accepted payload. The agent process's " +
+                " POSTs to " + code("/agent/companion/request") + " on the " +
+                "companion's process with its bearer token. The agent process's " +
                 link("AgentServer", "runtime/server.py") + " calls " +
                 code("runtime.submit_request") + ".</p>",
               payload:
-                'request_id = await client.post_request(\n' +
+                "await client.post_request(\n" +
                 '    "Plan the next release.",\n' +
                 '    session_id="s-1",\n' +
-                '    user_id="u-42",\n' +
+                "    host=snapshot,\n" +
+                '    app_id="release-bot", policy_id="acme", policy=policy,\n' +
+                "    request_id=request_id,\n" +
                 '    metadata={"tenant": "acme"},\n' +
                 ")",
             },
@@ -99,14 +120,14 @@
               who: "Agent",
               what: "AgentRuntime.submit_request → request.accepted",
               body:
-                "<p>The runtime mints " + code("request_id") + ", appends " +
-                code("invoke_agent.start") + " to " + code("runtime_event_log") +
-                ", which records the request " + code("running") + " in " +
-                code("runtime_request") + ", and starts the request loop. It returns " +
-                "once the loop has started, without waiting for it.</p>",
+                "<p>The runtime appends " + code("invoke_agent.start") + " to " +
+                code("runtime_event_log") + ", which records the request " +
+                code("running") + " in " + code("runtime_request") +
+                ", and starts the request loop. It returns once the loop has " +
+                "started, without waiting for it.</p>",
               payload: json({
                 request_id: RID,
-                agent_id: "assistant",
+                agent_id: "companion",
                 session_id: "s-1",
                 status: "accepted",
               }),
@@ -114,72 +135,20 @@
             {
               lane: 0,
               who: "User application",
-              what: "200 {data: {request_id}}",
+              what: "202 {data: {event_id, request_id, seq, status}}",
               body:
-                "<p>The route wraps the id in the API's " + code("{data: ...}") +
-                " envelope. The caller opens the event stream next.</p>",
-              payload: json({ data: { request_id: RID } }),
-            },
-          ],
-        },
-        host: {
-          label: "Submit to a host",
-          hops: [
-            {
-              lane: 0,
-              who: "User application",
-              what: "POST /api/v1/hosts/release-desk/request",
-              body:
-                "<p>The caller addresses a host composition instead of one agent. " +
-                code("context") + " is optional prompt text added for this request.</p>",
+                "<p>The route wraps the event's state in the API's " +
+                code("{data: ...}") + " envelope: " + code("queued") +
+                " while earlier events in the session run, " + code("running") +
+                " once it started. The caller opens the event's stream next.</p>",
               payload: json({
-                message: "Plan the next release.",
-                session_id: "s-1",
-                user_id: "u-42",
-                context: "Release train: 0.24",
-              }),
-            },
-            {
-              lane: 1,
-              who: "Host",
-              what: "Pool.submit_host_request(host_id, ...)",
-              body:
-                "<p>" + link("submit_host_request", "runtime/host/host.py") +
-                " looks up the host and its primary agent. An unknown host returns " +
-                "404 " + code("HOST_NOT_FOUND") + ". It submits through the " +
-                "primary's client with the host snapshot and the request context.</p>",
-              payload:
-                "host = self.get_host(host_id)\n" +
-                "client = self.get_client(host.primary)",
-            },
-            {
-              lane: 3,
-              who: "Agent",
-              what: "AgentServer → submit_request(host_snapshot=...)",
-              body:
-                "<p>The runtime stores the host snapshot in the request metadata. " +
-                code("context.load") + " uses it to build the primary's system " +
-                "prompt with the subagent block, and the snapshot is part of the " +
-                "recorded step output, so redefining the host later never changes " +
-                "an in-flight request.</p>",
-              payload:
-                "await client.post_request(\n" +
-                "    message,\n" +
-                "    session_id=session_id,\n" +
-                "    user_id=user_id,\n" +
-                "    host=self.snapshot_for(host),\n" +
-                "    context=context,\n" +
-                ")",
-            },
-            {
-              lane: 0,
-              who: "User application",
-              what: "200 {data: {request_id, agent_id, session_id}}",
-              body:
-                "<p>The response names the primary " + code("agent_id") +
-                ". The caller streams from the agent route with that id.</p>",
-              payload: json({
-                data: { request_id: RID, agent_id: "concierge", session_id: "s-1" },
+                data: {
+                  session_id: "s-1",
+                  event_id: "e-1",
+                  request_id: RID,
+                  seq: 1,
+                  status: "running",
+                },
               }),
             },
           ],
@@ -190,37 +159,39 @@
             {
               lane: 0,
               who: "User application",
-              what: "GET /api/v1/agent/assistant/request/" + RID + "/events",
+              what: "GET /api/v1/sessions/s-1/events/e-1/stream",
               body:
-                "<p>The caller opens a server-sent events stream for one request.</p>",
+                "<p>The caller opens a server-sent events stream for the event. " +
+                code("?after=") + " takes the id of the last frame it has.</p>",
               payload: "Accept: text/event-stream",
             },
             {
               lane: 1,
               who: "Host",
-              what: "stream_request_events route → StreamingResponse",
+              what: "stream_event route → EventService.stream",
               body:
-                "<p>" + link("stream_request_events", "api/routes/agent.py") +
-                " iterates " + code("client.stream_response(request_id)") +
-                " and writes each event as one SSE frame. It stops after " +
+                "<p>" + link("stream_event", "api/routes/sessions.py") +
+                " holds with an " + code("event.queued") + " frame and keepalives " +
+                "while the event waits in the queue, then relays the request's " +
+                "frames, each with its seq as " + code("id:") + ". It stops after " +
                 code("request.completed") + ", " + code("request.error") + ", or " +
                 code("request.cancelled") + ".</p>",
-              payload: "event: <name>\ndata: <json>\n\n",
+              payload: "id: <seq>\nevent: <name>\ndata: <json>\n\n",
             },
             {
               lane: 2,
               who: "Client",
               what: "AgentClient.stream_response over SSE",
               body:
-                "<p>The client opens " + code("GET /agent/assistant/request/" + RID) +
-                " on the agent's process and parses each SSE frame. Its " +
+                "<p>The client opens " + code("GET /agent/companion/request/" + RID) +
+                " on the companion's process and parses each SSE frame. Its " +
                 "AgentServer keeps a cursor and calls " +
                 code("runtime.stream_response_events(request_id, cursor, wait_timeout=15)") +
                 " until the runtime reports " + code("done") + ", writing a " +
                 code(": keep-alive") + " comment when nothing arrives.</p>",
               payload:
-                "async for event in client.stream_response(request_id):\n" +
-                "    yield event  # {\"event\": ..., \"data\": ...}",
+                "async for event in client.stream_response(request_id, after=after):\n" +
+                "    yield event  # {\"event\": ..., \"data\": ..., \"seq\": ...}",
             },
             {
               lane: 3,
@@ -247,11 +218,11 @@
                 "<p>The stream carries the lifecycle events plus " +
                 code("agent.trace") + " frames for each step. The table below shows the full mapping.</p>",
               payload:
-                "event: request.accepted\n" +
-                'data: {"request_id": "' + RID + '", "agent_id": "assistant", "session_id": "s-1", "status": "accepted"}\n\n' +
-                "event: request.started\n" +
-                'data: {"request_id": "' + RID + '", "agent_id": "assistant", "session_id": "s-1", "status": "started"}\n\n' +
-                "event: agent.trace\n" +
+                "id: 1\nevent: request.accepted\n" +
+                'data: {"request_id": "' + RID + '", "agent_id": "companion", "session_id": "s-1", "status": "accepted"}\n\n' +
+                "id: 2\nevent: request.started\n" +
+                'data: {"request_id": "' + RID + '", "agent_id": "companion", "session_id": "s-1", "status": "started"}\n\n' +
+                "id: 3\nevent: agent.trace\n" +
                 'data: {"event_type": "mash.context_load.end", "trace_id": "tr-91c2", ...}\n\n' +
                 "...\n\n" +
                 "event: request.completed\n" +
@@ -271,7 +242,7 @@
                 "prompt, the response schema, and the timeout.</p>",
               payload: json({
                 request_id: RID,
-                agent_id: "assistant",
+                agent_id: "companion",
                 session_id: "s-1",
                 interaction_id: ITR,
                 type: "approval",
@@ -283,12 +254,15 @@
             {
               lane: 1,
               who: "Host",
-              what: "POST /api/v1/agent/assistant/request/" + RID + "/interaction",
+              what: "POST /api/v1/sessions/s-1/events",
               body:
-                "<p>" + link("post_interaction", "api/routes/agent.py") +
-                " requires a JSON object with a non-empty " + code("interaction_id") +
-                " and returns 400 " + code("INVALID_REQUEST") + " otherwise.</p>",
-              payload: json({ interaction_id: ITR, response: "approve" }),
+                "<p>The answer goes to the same route as the event, with the " +
+                "waiting event's " + code("event_id") + " and only " +
+                code("interaction_id") + " and " + code("response") + " beside it. " +
+                link("EventService.answer", "sessions/service.py") + " returns 404 " +
+                code("INTERACTION_NOT_FOUND") + " when the request has no such open " +
+                "interaction.</p>",
+              payload: json({ event_id: "e-1", interaction_id: ITR, response: "approve" }),
             },
             {
               lane: 2,
@@ -296,9 +270,9 @@
               what: "AgentClient.post_interaction → answer_interaction",
               body:
                 "<p>" + link("AgentClient.post_interaction", "runtime/client.py") +
-                " POSTs the response to the agent's process. Its AgentServer appends " +
-                "the answer as the interaction's " + code("mash.interaction.end") +
-                " and wakes the waiting loop.</p>",
+                " POSTs the response to the companion's process. Its AgentServer " +
+                "appends the answer as the interaction's " +
+                code("mash.interaction.end") + " and wakes the waiting loop.</p>",
               payload: json({ interaction_id: ITR, response: "approve" }),
             },
             {
@@ -310,7 +284,7 @@
                 ". The loop reads " + code('"approve"') + " from it and runs the tool.</p>",
               payload: json({
                 request_id: RID,
-                agent_id: "assistant",
+                agent_id: "companion",
                 session_id: "s-1",
                 interaction_id: ITR,
                 response: "approve",
@@ -319,9 +293,15 @@
             {
               lane: 0,
               who: "User application",
-              what: "200 {data: {ok, interaction_id}}",
-              body: "<p>The POST returns as soon as the message is sent.</p>",
-              payload: json({ data: { ok: true, interaction_id: ITR } }),
+              what: "200 {data: {event_id, request_id, status, interaction_id}}",
+              body:
+                "<p>The POST returns as soon as the answer is stored. An answer the " +
+                "schema doesn't list gets 400 " + code("INVALID_INTERACTION_RESPONSE") +
+                ", and one to an interaction already closed gets 409 " +
+                code("INTERACTION_CLOSED") + ".</p>",
+              payload: json({
+                data: { event_id: "e-1", request_id: RID, status: "running", interaction_id: ITR },
+              }),
             },
           ],
         },
@@ -345,13 +325,17 @@
             {
               lane: 0,
               who: "Host",
-              what: "client.post_request(message, session_id=...)",
+              what: "client.post_request(message, session_id=..., app_id=..., policy_id=..., policy=...)",
               body:
                 "<p>The host holds one " + code("AgentClient") + " per agent, " +
-                "built from the agent server's base URL and agent id.</p>",
+                "built from the agent server's base URL and agent id. Every " +
+                "request names its app and its policy, with a snapshot of the policy.</p>",
               payload:
                 'client = AgentClient(base_url="http://127.0.0.1:9101", agent_id="assistant")\n' +
-                'request_id = await client.post_request("Plan the next release.", session_id="s-1")',
+                'request_id = await client.post_request(\n' +
+                '    "Plan the next release.", session_id="s-1",\n' +
+                '    app_id="release-bot", policy_id="acme", policy=policy,\n' +
+                ")",
             },
             {
               lane: 1,
@@ -361,7 +345,13 @@
                 "<p>" + link("AgentClient.post_request", "runtime/client.py") +
                 " sends the JSON body and expects exactly 202. Any other status " +
                 "raises " + code("AgentClientError") + ".</p>",
-              payload: json({ message: "Plan the next release.", session_id: "s-1" }),
+              payload: json({
+                message: "Plan the next release.",
+                session_id: "s-1",
+                app_id: "release-bot",
+                policy_id: "acme",
+                policy: { sandbox: true, browser_sites: null, wait_max_seconds: 86400 },
+              }),
             },
             {
               lane: 2,
@@ -372,8 +362,9 @@
                 " returns 404 " + code("ROUTE_NOT_FOUND") + " if the path's agent id " +
                 "is not the one it serves, 400 " + code("INVALID_JSON") +
                 " for a bad body, and 400 " + code("INVALID_REQUEST") +
-                " for a missing message or session id. It passes message and " +
-                "session id to the runtime.</p>",
+                " for a missing message, session id, app, policy id or policy. It " +
+                "returns 409 " + code("SESSION_POLICY_MISMATCH") + " when the session " +
+                "already runs under another policy, and passes the rest to the runtime.</p>",
               payload: json({
                 error: { code: "INVALID_REQUEST", message: "message is required" },
               }),
@@ -693,12 +684,6 @@
       wire: "request.cancelled",
       note: "Terminal. Appended when the request is cancelled.",
       data: withBase({ status: "cancelled" }),
-    },
-    {
-      internal: "mash.request.resumed",
-      wire: "request.resumed",
-      note: "Non-terminal. A cancelled or failed request was resumed, so the stream reopens.",
-      data: withBase({ status: "resumed", previous_status: "cancelled" }),
     },
     {
       internal:

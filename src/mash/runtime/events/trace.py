@@ -73,7 +73,6 @@ def serialize_runtime_event(event: RuntimeEvent) -> dict[str, Any]:
         "request_id": event.request_id,
         "request_seq": event.request_seq,
         "trace_id": event.trace_id,
-        "app_id": event.app_id,
         "agent_id": event.agent_id,
         "session_id": event.session_id,
         "host_id": event.host_id,
@@ -101,9 +100,7 @@ def build_runtime_trace(events: list[RuntimeEvent]) -> RuntimeTrace:
     token_usage = _sum_token_usage(serialized)
     tool_events = _tool_events(serialized)
     reasoning_steps, reasoning_status, reasoning_error = _build_reasoning_steps(events)
-    target_agent_id = _first_text(
-        [event.app_id for event in events] + [event.agent_id for event in events]
-    )
+    target_agent_id = _first_text(event.agent_id for event in events)
     session_id = _first_text(event.session_id for event in events)
     trace_id = _first_text(event.trace_id for event in events)
 
@@ -141,8 +138,7 @@ def build_reasoning_trace(events: list[RuntimeEvent]) -> dict[str, Any]:
 def runtime_event_from_stream_payload(
     payload: Mapping[str, Any],
     *,
-    app_id: str,
-    agent_id: str | None = None,
+    agent_id: str,
 ) -> RuntimeEvent | None:
     """Hydrate one streamed agent.trace payload into a RuntimeEvent."""
     nested = payload.get("payload")
@@ -156,8 +152,7 @@ def runtime_event_from_stream_payload(
         request_id=_clean_text(payload.get("request_id")),
         request_seq=_as_int(payload.get("request_seq")),
         trace_id=_clean_text(payload.get("trace_id")),
-        app_id=str(app_id or ""),
-        agent_id=str(agent_id or app_id or ""),
+        agent_id=str(agent_id or ""),
         session_id=_clean_text(payload.get("session_id")),
         event_type=event_type,
         loop_index=_as_int(payload.get("loop_index")),
@@ -225,10 +220,6 @@ def _build_reasoning_steps(
             else:
                 status = "completed"
             continue
-
-        if event.event_type == RuntimeEventType.REQUEST_RESUMED.value:
-            status = "in_progress"
-            error = None
 
     return steps, status, error
 

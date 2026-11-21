@@ -81,7 +81,8 @@ def test_an_apps_commands_are_listed_under_their_own_group_or_more() -> None:
 
 def test_keys_lists_the_keys() -> None:
     out, _ = say("/keys")
-    assert "Ctrl-Z" in out and "Send the running request to the background" in out
+    assert "Ctrl-O" in out and "Show or hide model steps" in out
+    assert "Ctrl-Z" not in out
     assert "\\ then Enter" in out
 
 
@@ -232,13 +233,13 @@ def test_memory_shows_the_profile_and_entries() -> None:
     assert "Lives in Oakland." in out
     assert "abc12345" in out and "Has solar panels." in out and "conversations" in out
     row = next(line for line in out.splitlines() if "def67890" in line)
-    assert "Prefers email." in row and row.rstrip().endswith("you")
+    assert "Prefers email." in row and row.rstrip().endswith("the app")
 
 
 def test_memory_with_nothing_remembered_says_so() -> None:
     host = FakeHost()
     host.cortex = {"profile": "", "entries": []}
-    assert "Nothing is remembered about you yet." in say("/memory", host=host)[0]
+    assert "Nothing is remembered in this app yet." in say("/memory", host=host)[0]
 
 
 def test_memory_add_pins_a_fact_and_forget_removes_it() -> None:
@@ -289,7 +290,7 @@ def test_browser_lists_sites_and_signs_out_of_one() -> None:
 def test_browser_with_no_sites_and_with_no_browsers() -> None:
     host = FakeHost()
     host.browser_sites = []
-    assert "Your browser is not signed in to any site." in say("/browser", host=host)[0]
+    assert "The policy's browser is not signed in to any site." in say("/browser", host=host)[0]
     assert "Command failed: this host has no browsers" in say("/browser")[0]
 
 
@@ -373,8 +374,9 @@ def test_retry_runs_the_last_request_again_and_follows_it() -> None:
 
     d = run(script, host)
     assert "Nothing to retry yet." in d.output
-    assert host.reruns == [("primary", "r-1", "r-2")]
-    assert len(host.submitted) == 1
+    # The last message again, as a new event.
+    assert [s["message"] for s in host.submitted] == ["go", "go"]
+    assert len(set(host.events)) == 2
     assert d.repl.context.last_request_id == "r-2"
     assert d.repl.last_answer == "Second try."
 
@@ -393,8 +395,8 @@ def test_retry_and_compact_wait_for_the_running_request() -> None:
         await d.idle()
 
     out = run(script, host).output
-    assert out.count("A request is running in the foreground.") == 2
-    assert host.reruns == []
+    assert out.count("A request is running. Wait for it, or press Ctrl-C to cancel it.") == 2
+    assert len(host.submitted) == 1
     assert not any(call[0] == "compact_session" for call in host.calls)
 
 
@@ -405,7 +407,7 @@ def test_compact_summarizes_the_session() -> None:
     out, host = say("/compact", host=host)
     assert "Session summarized. Later requests start from:" in out
     assert "The user asked about March bills." in out
-    assert ("compact_session", ("primary", "s-1")) in host.calls
+    assert ("compact_session", ("companion", "s-1")) in host.calls
 
 
 def test_compact_with_nothing_to_summarize_says_so() -> None:
@@ -425,17 +427,19 @@ def test_a_command_the_host_refuses_is_reported() -> None:
 # --- argument menus ---------------------------------------------------------------
 
 
-def test_the_argument_menu_offers_subcommands_ids_and_subagent_numbers() -> None:
+def test_the_argument_menu_offers_subcommands_and_subagent_numbers() -> None:
     from mash.cli.views import RequestView
 
     host = FakeHost()
 
     async def script(d: ReplDriver) -> None:
         repl = d.repl
-        assert [word for word, _ in repl._argument_menu("bg", [])] == ["list", "switch", "kill"]
+        assert [word for word, _ in repl._argument_menu("workflow", [])] == [
+            "list", "run", "status", "resume",
+        ]
         assert [word for word, _ in repl._argument_menu("copy", [])] == ["code"]
         assert repl._argument_menu("nope", []) == []
-        assert repl._argument_menu("subagent", []) == [("cancel", "Cancel one subagent")]
+        assert repl._argument_menu("subagent", []) == []
         parent = RequestView(agent_id="companion", request_id="r", started_at=0.0)
         done = RequestView(agent_id="energy", request_id="c-0", started_at=0.0,
                            brief="usage", parent=parent, status="completed", ended_at=1.0)
@@ -444,15 +448,8 @@ def test_the_argument_menu_offers_subcommands_ids_and_subagent_numbers() -> None
         parent.children.extend([done, going])
         repl.last_parent = parent
         assert repl._argument_menu("subagent", []) == [
-            ("1", "energy: usage"), ("2", "review: bills"), ("cancel", "Cancel one subagent"),
+            ("1", "energy: usage"), ("2", "review: bills"),
         ]
-        # Only a running child can be cancelled.
-        assert repl._argument_menu("subagent", ["cancel"]) == [("2", "review")]
-        repl.watchers.watch("primary", "a1b2c3d4-0000")
-        assert repl._argument_menu("bg", ["kill"]) == [
-            ("a1b2c3d4", "running in the background")
-        ]
-        assert repl._argument_menu("bg", ["list"]) == []
+        assert repl._argument_menu("bg", []) == []
 
-    host.script("a1b2c3d4-0000", Gate())
     run(script, host)

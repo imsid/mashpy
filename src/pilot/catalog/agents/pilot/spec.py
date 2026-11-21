@@ -19,7 +19,7 @@ from ..._base import APP_NAME, REPO_ROOT, build_guide_llm
 
 PILOT_AGENT_ID = "pilot"
 
-# The sites pilot may open in the user's browser.
+# The sites pilot may open in the policy's browser.
 DOCS_SITE = "https://imsid.github.io/mashpy/"
 GITHUB_REPO = "https://github.com/imsid/mashpy"
 BROWSER_SITES = ("https://imsid.github.io", "https://github.com")
@@ -84,7 +84,7 @@ class PilotSpec(AgentSpec):
         return PILOT_AGENT_ID
 
     def build_tools(self) -> ToolRegistry:
-        # run_code, sandbox_put and sandbox_get come from the user's sandbox.
+        # run_code, sandbox_put and sandbox_get come from the policy's sandbox.
         tools = ToolRegistry()
         tools.register(AskUserTool())
         return tools
@@ -100,7 +100,7 @@ class PilotSpec(AgentSpec):
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
-            app_id=PILOT_AGENT_ID,
+            agent_id=PILOT_AGENT_ID,
             system_prompt=[
                 {
                     "type": "text",

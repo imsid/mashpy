@@ -1,9 +1,9 @@
-"""``mash browser``: serve and manage per-user browsers.
+"""``mash browser``: serve and manage per-policy browsers.
 
 ``serve`` runs inside a browser container. ``ls`` and ``stop`` run on the
-Docker host and find browsers by their ``mash.browser.user`` label, so no host
+Docker host and find browsers by their ``mash.browser.policy`` label, so no host
 connection is needed; ``--namespace`` (or ``MASH_SANDBOX_NAMESPACE``) picks a
-deployment's browsers. ``view`` prints a live-view link to a user's browser,
+deployment's browsers. ``view`` prints a live-view link to a policy's browser,
 signed with ``MASH_HOST_SECRET``, for the address in ``MASH_PUBLIC_URL``.
 """
 
@@ -23,7 +23,7 @@ from mash.browser.daemon import (
     resolve_browser_token,
 )
 from mash.browser.manager import DEFAULT_HANDOFF_SECONDS
-from mash.browser.provider import BROWSER_USER_LABEL, browser_name
+from mash.browser.provider import BROWSER_POLICY_LABEL, browser_name
 from mash.browser.tokens import make_view_token
 from mash.sandbox.docker_engine import DockerEngine, DockerEngineError
 from mash.sandbox.provider import NAMESPACE_LABEL, resolve_namespace
@@ -35,7 +35,7 @@ DEFAULT_NOVNC_DIR = "/usr/share/novnc"
 
 
 def add_browser_parser(subparsers) -> None:
-    browser = subparsers.add_parser("browser", help="Serve and manage per-user browsers")
+    browser = subparsers.add_parser("browser", help="Serve and manage per-policy browsers")
     browser_subparsers = browser.add_subparsers(dest="browser_command")
     browser.set_defaults(handler=lambda _: (browser.print_help(), 0)[1])
 
@@ -63,9 +63,9 @@ def add_browser_parser(subparsers) -> None:
     ls.set_defaults(handler=_run_ls)
 
     view = browser_subparsers.add_parser(
-        "view", help="Print a live-view link to a user's browser"
+        "view", help="Print a live-view link to a policy's browser"
     )
-    view.add_argument("user_id")
+    view.add_argument("policy_id")
     view.add_argument(
         "--public-url",
         default=None,
@@ -74,9 +74,9 @@ def add_browser_parser(subparsers) -> None:
     view.set_defaults(handler=_run_view)
 
     stop = browser_subparsers.add_parser(
-        "stop", help="Stop a user's browser; its profile is kept"
+        "stop", help="Stop a policy's browser; its profile is kept"
     )
-    stop.add_argument("user_id")
+    stop.add_argument("policy_id")
     _add_namespace_argument(stop)
     stop.set_defaults(handler=_run_stop)
 
@@ -123,14 +123,14 @@ async def _list_rows(namespace: str) -> list[list[str]]:
     try:
         rows: list[list[str]] = []
         containers = await engine.list_containers(
-            labels=[BROWSER_USER_LABEL, f"{NAMESPACE_LABEL}={namespace}"]
+            labels=[BROWSER_POLICY_LABEL, f"{NAMESPACE_LABEL}={namespace}"]
         )
-        for summary in sorted(containers, key=lambda c: c["Labels"][BROWSER_USER_LABEL]):
+        for summary in sorted(containers, key=lambda c: c["Labels"][BROWSER_POLICY_LABEL]):
             details = await engine.inspect_container(summary["Id"]) or {}
             state = details.get("State") or {}
             rows.append(
                 [
-                    summary["Labels"][BROWSER_USER_LABEL],
+                    summary["Labels"][BROWSER_POLICY_LABEL],
                     str(state.get("Status") or summary.get("State") or ""),
                     _uptime(str(state.get("StartedAt") or ""), bool(state.get("Running"))),
                     str(details.get("Name") or "").lstrip("/"),
@@ -151,7 +151,7 @@ def _run_ls(args) -> int:
     if not rows:
         renderer.info("No browsers.")
         return 0
-    renderer.table(["User", "Status", "Uptime", "Container and volume"], rows)
+    renderer.table(["Policy", "Status", "Uptime", "Container and volume"], rows)
     return 0
 
 
@@ -166,7 +166,7 @@ def _run_view(args) -> int:
         renderer.error("set --public-url or MASH_PUBLIC_URL to the address users reach the host at")
         return 1
     expires_at = int(time.time()) + DEFAULT_HANDOFF_SECONDS
-    token = make_view_token(secret, args.user_id, "", expires_at)
+    token = make_view_token(secret, args.policy_id, "", expires_at)
     renderer.link(f"{public_url.rstrip('/')}/s/{token}/browser/")
     renderer.info(f"Valid for {DEFAULT_HANDOFF_SECONDS // 60} minutes.")
     return 0
@@ -183,7 +183,7 @@ def _run_stop(args) -> int:
             await engine.close()
 
     try:
-        name = browser_name(args.user_id, resolve_namespace(args.namespace))
+        name = browser_name(args.policy_id, resolve_namespace(args.namespace))
         asyncio.run(_stop(name))
     except (DockerEngineError, ValueError) as exc:
         renderer.error(str(exc))

@@ -11,7 +11,7 @@ class LogEventNormalizationTests(unittest.TestCase):
     def test_mcp_client_error_normalizes_with_required_fields(self) -> None:
         event = MCPEvent(
             event_type="mcp.client.error",
-            app_id="primary",
+            agent_id="primary",
             session_id="session-1",
             server_name="demo",
             error="boom",
@@ -28,7 +28,7 @@ class LogEventNormalizationTests(unittest.TestCase):
     def test_chat_delta_normalizes_with_its_chunk(self) -> None:
         event = LLMEvent(
             event_type="chat.delta",
-            app_id="primary",
+            agent_id="primary",
             session_id="session-1",
             trace_id="trace-1",
             provider="anthropic",
@@ -45,7 +45,7 @@ class LogEventNormalizationTests(unittest.TestCase):
     def test_mcp_event_requires_a_server_name(self) -> None:
         with self.assertRaises(ValueError):
             normalize_log_event(
-                MCPEvent(event_type="mcp.client.error", app_id="primary", session_id=None)
+                MCPEvent(event_type="mcp.client.error", agent_id="primary", session_id=None)
             )
 
 

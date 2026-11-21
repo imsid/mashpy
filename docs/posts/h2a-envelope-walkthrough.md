@@ -15,7 +15,7 @@ tags:
 
 The [Host-to-Agent Protocol (H2A)](../rfcs/host-to-agent-protocol.md) defines four roles: a user application, a host, a client per agent, and the agent. A request crosses them with three operations: `post_request` to submit, `stream_response` to read the event stream, and `post_interaction` to answer a paused request. This page follows each operation hop by hop through the Mash code.
 
-Mash has one binding for these roles: HTTP plus SSE. Each agent runs behind its own [`AgentServer`](https://github.com/imsid/mashpy/blob/main/src/mash/runtime/server.py), in its own process in a pool deploy (`mash host serve`), and the host reaches it with an [`AgentClient`](https://github.com/imsid/mashpy/blob/main/src/mash/runtime/client.py). The walkthrough has two views: a pool deploy, where the user application talks to the host, and code that holds an `AgentClient` for one server directly. Both end at the same `AgentRuntime` methods.
+Mash has one binding for these roles: HTTP plus SSE. Each agent runs behind its own [`AgentServer`](https://github.com/imsid/mashpy/blob/main/src/mash/runtime/server.py), in its own process in a pool deploy (`mash host serve`), and the host reaches it with an [`AgentClient`](https://github.com/imsid/mashpy/blob/main/src/mash/runtime/client.py). The walkthrough has two views: a pool deploy, where the user application posts events to the host and each event runs as a request on the host's companion, and code that holds an `AgentClient` for one server directly. Both end at the same `AgentRuntime` methods.
 
 ## Following a request
 
@@ -23,7 +23,7 @@ Pick a view and an operation, then step through the hops. The lanes show which r
 
 <div data-mash-viz="h2a-flow"><noscript>This walkthrough needs JavaScript.</noscript></div>
 
-In a pool deploy the API routes live under `/api/v1` and wrap responses in `{"data": ...}`. `session_id` is required on every submit route. A submit returns as soon as the request's loop has started; [The Durable Agent Loop](durable-agent-loop.md) picks up from there.
+In a pool deploy the API routes live under `/api/v1` and wrap responses in `{"data": ...}`. Every event names its session, host, app and policy. A post returns as soon as the event is queued or its request's loop has started; [The Durable Agent Loop](durable-agent-loop.md) picks up from there.
 
 ## Stored events and wire events
 
@@ -33,4 +33,4 @@ Select a row to see the frame it produces. Below the table, the sample stream pl
 
 <div data-mash-viz="h2a-events"><noscript>This walkthrough needs JavaScript.</noscript></div>
 
-`request.completed`, `request.error`, and `request.cancelled` are terminal, and the pool's events route closes the stream after any of them. The runtime decides terminality from the `runtime_request` row that the store updates in the same transaction as the lifecycle event, so a stream that ends has always delivered its terminal frame.
+`request.completed`, `request.error`, and `request.cancelled` are terminal, and the event's stream route closes the stream after any of them. The runtime decides terminality from the `runtime_request` row that the store updates in the same transaction as the lifecycle event, so a stream that ends has always delivered its terminal frame.

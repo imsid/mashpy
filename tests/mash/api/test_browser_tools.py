@@ -16,7 +16,7 @@ from mash.runtime import AgentRuntime, HostBuilder
 from mash.runtime.engine.steps import start_browser_handoff
 from mash.sandbox.manager import SandboxManager
 from mash.testing.browsers import FakePage, LocalBrowserProvider
-from mash.testing.runtime_fixtures import build_spec, build_tool_calling_spec, metadata
+from mash.testing.runtime_fixtures import DEFAULT_POLICY, TEST_IDENTITY, build_spec, build_tool_calling_spec, metadata
 from mash.testing.sandboxes import LocalSandboxProvider
 from mash.tools.browser import browser_tool_names
 
@@ -48,20 +48,34 @@ class BrowserToolsEndToEndTests(unittest.IsolatedAsyncioTestCase):
             interactions: list[dict[str, Any]] = []
             try:
                 client = pool.get_client("billing")
-                request_id = await client.post_request("go", session_id="s-1", user_id="u-1")
+                request_id = await client.post_request("go", session_id="s-1", **TEST_IDENTITY)
                 events = []
                 async for event in client.stream_response(request_id, timeout=20):
                     events.append(event)
                     if event["event"] == "request.interaction.create":
                         payload = event["data"]
+                        # The interaction carries no link: one is minted when
+                        # someone asks, as the events API does.
+                        handoff = pool.get_browsers().mint_link(
+                            "p-1", request_id, payload["interaction_id"]
+                        )
+                        relay = await pool._agent_provider._ensure_relay()
+                        url = f"{relay}/s/{handoff.token}/browser/"
                         async with httpx.AsyncClient() as http:
-                            view = await http.get(payload["url"], follow_redirects=False)
-                        interactions.append({**payload, "view_status": view.status_code})
+                            view = await http.get(url, follow_redirects=False)
+                        interactions.append(
+                            {**payload, "view_status": view.status_code, "link": url}
+                        )
                         await client.post_interaction(
                             request_id,
                             interaction_id=payload["interaction_id"],
                             response=answer,
                         )
+                    if event["event"] == "request.completed" and interactions:
+                        # Closing the interaction revoked the link.
+                        async with httpx.AsyncClient() as http:
+                            after = await http.get(interactions[-1]["link"], follow_redirects=False)
+                        interactions[-1]["view_status_after"] = after.status_code
             finally:
                 await pool.close()
                 await provider.close()
@@ -75,14 +89,14 @@ class BrowserToolsEndToEndTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("<web-content>", text)
         self.assertIn("PG&E account", text)
-        self.assertEqual(list(provider.browsers), ["u-1"])
+        self.assertEqual(list(provider.browsers), ["p-1"])
 
     async def test_the_sites_hold_for_the_model(self) -> None:
         text, _, _ = await self._run("browser_navigate", {"url": "https://evil.io/"})
 
         self.assertIn("https://evil.io is outside the sites", text)
 
-    async def test_handoff_pauses_on_a_browser_interaction_with_a_live_link(self) -> None:
+    async def test_handoff_pauses_on_a_browser_interaction_whose_links_are_minted_on_demand(self) -> None:
         text, interactions, _ = await self._run(
             "browser_handoff", {"reason": "Sign in to pge.com"}
         )
@@ -91,9 +105,11 @@ class BrowserToolsEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(interaction["type"], "browser")
         self.assertEqual(interaction["prompt"], "Sign in to pge.com")
         self.assertEqual(interaction["schema"], {"type": "enum", "options": ["done", "cancel"]})
-        self.assertRegex(interaction["url"], r"^http://127\.0\.0\.1:\d+/s/[^/]+/browser/$")
-        self.assertIsInstance(interaction["expires_at"], int)
+        self.assertNotIn("url", interaction)
+        # No timeout of its own: the policy's cap.
+        self.assertEqual(interaction["timeout_seconds"], 86400)
         self.assertEqual(interaction["view_status"], 307)
+        self.assertEqual(interaction["view_status_after"], 404)
         self.assertTrue(text.startswith("The user is done in the browser. The page now:"))
 
     async def test_a_cancelled_handoff_tells_the_model(self) -> None:
@@ -125,6 +141,48 @@ class BrowserToolRegistrationTests(unittest.IsolatedAsyncioTestCase):
         for name in browser_tool_names():
             self.assertIn(name, runtime.agent.tools)
         self.assertNotIn("browser_evaluate", runtime.agent.tools)
+
+    def _turn_tools(self, runtime, policy):
+        return runtime.build_turn_agent(
+            session_id="s-1", trace_id="t-1", app_id="app-1", policy=policy
+        ).tools
+
+    async def test_the_policy_narrows_a_turns_sandbox_and_browser_tools(self) -> None:
+        from mash.tools.sandbox import SANDBOX_TOOL_NAMES
+
+        spec = build_spec(agent_id="billing")
+        spec.browser_sites = lambda: ["https://*.pge.com"]
+        runtime = await self._runtime(spec)
+        runtime.enable_sandbox_tools(host_api_url="http://host", token="t")
+        runtime.enable_browser_tools(host_api_url="http://host", token="t")
+        names = runtime.agent.tools.list_tools()
+
+        full = self._turn_tools(runtime, DEFAULT_POLICY)
+        # The base agent's tools, then the ones bound to the request.
+        self.assertEqual(full.list_tools()[: len(names)], names)
+        self.assertIn("https://*.pge.com", full.get("browser_navigate").description)
+
+        dry = self._turn_tools(runtime, {**DEFAULT_POLICY, "sandbox": False})
+        for name in (*SANDBOX_TOOL_NAMES, "browser_save", "browser_upload"):
+            self.assertNotIn(name, dry)
+        self.assertIn("browser_navigate", dry)
+
+        narrow = self._turn_tools(runtime, {**DEFAULT_POLICY, "browser_sites": ["https://m.pge.com"]})
+        description = narrow.get("browser_navigate").description
+        self.assertIn("https://m.pge.com", description)
+        self.assertNotIn("*.pge.com", description)
+        # The listed copy keeps its place in the tool list.
+        self.assertEqual(narrow.list_tools()[: len(names)], names)
+
+        for sites in ([], ["https://evil.io"]):
+            closed = self._turn_tools(runtime, {**DEFAULT_POLICY, "browser_sites": sites})
+            for name in browser_tool_names():
+                self.assertNotIn(name, closed)
+            self.assertIn("run_code", closed)
+
+        # The base agent's tools are untouched.
+        self.assertEqual(runtime.agent.tools.list_tools(), names)
+        self.assertNotIn("m.pge.com", runtime.agent.tools.get("browser_navigate").description)
 
     async def test_a_spec_with_its_own_browser_tool_fails(self) -> None:
         from mash.tools.base import FunctionTool, ToolResult

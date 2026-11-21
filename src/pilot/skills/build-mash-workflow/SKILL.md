@@ -89,7 +89,7 @@ slate; there is no cross-run state.
 Step execution is at-least-once: a step the host died in runs again when the
 run continues. Pure transforms rerun safely. A step with external effects must
 dedupe on a stable key. `StepContext` carries `run_id`, `step_id`,
-`workflow_input`, `attempt`, and the run's `user_id` (e.g.
+`workflow_input`, `attempt`, and the run's `app_id`, `policy_id` and `policy` (e.g.
 `f"{ctx.run_id}:{ctx.step_id}:{ctx.attempt}"`). `attempt` stays the same after
 a crash and goes up when a failed step is resumed.
 The framework never invents a key.
@@ -122,10 +122,11 @@ Over the API:
 
 ```bash
 # start a run (dedup_key optional: a second trigger while a run is active is rejected;
-# user_id is required when a step uses an agent, and agent steps act for that user)
+# app_id and policy_id are required when a step uses an agent; agent steps
+# run under that policy)
 curl -X POST http://127.0.0.1:8000/api/v1/workflow/changelog/run \
   -H "Content-Type: application/json" \
-  -d '{"input": {"repo_url": "https://github.com/acme/app"}, "user_id": "u-1"}'
+  -d '{"input": {"repo_url": "https://github.com/acme/app"}, "app_id": "my-app", "policy_id": "dev"}'
 # -> {"run_id": "..."}
 
 # inspect and resume

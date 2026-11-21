@@ -2,14 +2,16 @@
 
 Every call into a browser goes through ``BrowserManager``: tool calls, file
 moves, the live view, site data, and workflow code's CDP connection. It shares
-the sandboxes' lifecycle (``mash.sandbox.containers``): a user's browser starts
+the sandboxes' lifecycle (``mash.sandbox.containers``): a policy's browser starts
 on first use and stops after ``idle_seconds`` without one.
 
-A handoff gives the user a live view of their browser while a request waits
-for them to sign in. ``start_handoff`` mints a view token for the request
-(``tokens.py``) and remembers it; ``end_handoff`` forgets it, so the link stops
-working as soon as the user is done, or when it expires. A live view already
-connected closes then too (``wait_ended``).
+A handoff gives the user a live view of the policy's browser while a request waits
+for them to sign in. The wait can be long, so a link is minted each time
+someone asks for one: ``mint_link`` makes a view token for the request
+(``tokens.py``), valid ``handoff_seconds``, and remembers it under the
+interaction; ``end_handoff`` forgets every token of the request, so its links
+stop working as soon as the interaction closes, or each when it expires. A
+live view already connected closes then too (``wait_ended``).
 """
 
 from __future__ import annotations
@@ -45,16 +47,18 @@ class BrowserCapacityError(RuntimeError):
 
 @dataclass(frozen=True)
 class Handoff:
-    user_id: str
+    policy_id: str
     request_id: str
     token: str
     expires_at: int
+    # The browser interaction the link was minted for; "" for an operator's.
+    interaction_id: str = ""
     # Set when the handoff ends, to close the live views connected to it.
     ended: asyncio.Event = field(default_factory=asyncio.Event, compare=False, repr=False)
 
 
 class BrowserManager(ContainerManager):
-    """Reaches users' browsers through a ``DockerBrowserProvider``."""
+    """Reaches policies' browsers through a ``DockerBrowserProvider``."""
 
     kind = "browser"
     kinds = "browsers"
@@ -82,7 +86,7 @@ class BrowserManager(ContainerManager):
 
     async def call(
         self,
-        user_id: str,
+        policy_id: str,
         *,
         request_id: str,
         tool: str,
@@ -101,11 +105,11 @@ class BrowserManager(ContainerManager):
                 )
             return _json_or_raise(response, endpoint)
 
-        return await self._use(user_id, forward)
+        return await self._use(policy_id, forward)
 
     async def upload(
         self,
-        user_id: str,
+        policy_id: str,
         *,
         request_id: str,
         name: str,
@@ -132,9 +136,9 @@ class BrowserManager(ContainerManager):
                 )
             return _json_or_raise(response, endpoint)
 
-        return await self._use(user_id, forward)
+        return await self._use(policy_id, forward)
 
-    async def download(self, user_id: str, download_id: str) -> httpx.Response:
+    async def download(self, policy_id: str, download_id: str) -> httpx.Response:
         """``GET /downloads/<id>``; the daemon's response as is."""
         url = daemon_path("downloads", download_id)
 
@@ -142,18 +146,18 @@ class BrowserManager(ContainerManager):
             async with httpx.AsyncClient(timeout=_FILE_TIMEOUT_SECONDS) as client:
                 return await client.get(f"{endpoint.base_url}{url}", headers=bearer(endpoint))
 
-        return await self._use(user_id, forward)
+        return await self._use(policy_id, forward)
 
-    async def front(self, user_id: str, request_id: str) -> None:
+    async def front(self, policy_id: str, request_id: str) -> None:
         url = daemon_path("requests", request_id, "front")
 
         async def forward(endpoint: BrowserEndpoint) -> None:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 await client.post(f"{endpoint.base_url}{url}", headers=bearer(endpoint))
 
-        await self._use(user_id, forward)
+        await self._use(policy_id, forward)
 
-    async def sites(self, user_id: str) -> list[dict[str, Any]]:
+    async def sites(self, policy_id: str) -> list[dict[str, Any]]:
         url = daemon_path("sites")
 
         async def forward(endpoint: BrowserEndpoint) -> list[dict[str, Any]]:
@@ -161,9 +165,9 @@ class BrowserManager(ContainerManager):
                 response = await client.get(f"{endpoint.base_url}{url}", headers=bearer(endpoint))
             return list(_json_or_raise(response, endpoint).get("sites") or [])
 
-        return await self._use(user_id, forward)
+        return await self._use(policy_id, forward)
 
-    async def clear_site(self, user_id: str, domain: str) -> dict[str, Any]:
+    async def clear_site(self, policy_id: str, domain: str) -> dict[str, Any]:
         url = daemon_path("sites", domain)
 
         async def forward(endpoint: BrowserEndpoint) -> dict[str, Any]:
@@ -173,10 +177,10 @@ class BrowserManager(ContainerManager):
                 )
             return _json_or_raise(response, endpoint)
 
-        return await self._use(user_id, forward)
+        return await self._use(policy_id, forward)
 
     async def view(
-        self, user_id: str, *, path: str, query: str = ""
+        self, policy_id: str, *, path: str, query: str = ""
     ) -> httpx.Response:
         """A file of the live view's client, from the daemon's ``/view/``."""
         url = daemon_path("view", tail=path, query=query)
@@ -185,21 +189,25 @@ class BrowserManager(ContainerManager):
             async with httpx.AsyncClient(timeout=30.0) as client:
                 return await client.get(f"{endpoint.base_url}{url}", headers=bearer(endpoint))
 
-        return await self._use(user_id, forward)
+        return await self._use(policy_id, forward)
 
-    async def delete_profile(self, user_id: str) -> None:
-        """Stop the user's browser and delete its volume."""
-        async with self._user_locks[user_id]:
-            await self._stop_locked(user_id)
-            await self.provider.delete(user_id)
+    async def delete_profile(self, policy_id: str) -> None:
+        """Stop the policy's browser and delete its volume."""
+        await self.delete(policy_id)
 
-    def start_handoff(self, user_id: str, request_id: str) -> Handoff:
+    def mint_link(self, policy_id: str, request_id: str, interaction_id: str) -> Handoff:
+        """A new live-view token for an open browser interaction of ``request_id``.
+
+        Each call mints another; the earlier ones keep working until they
+        expire or the handoff ends.
+        """
         expires_at = int(self._wall_clock()) + self.handoff_seconds
         handoff = Handoff(
-            user_id=user_id,
+            policy_id=policy_id,
             request_id=request_id,
-            token=make_view_token(self._host_secret, user_id, request_id, expires_at),
+            token=make_view_token(self._host_secret, policy_id, request_id, expires_at),
             expires_at=expires_at,
+            interaction_id=interaction_id,
         )
         self._handoffs[handoff.token] = handoff
         return handoff
@@ -227,20 +235,20 @@ class BrowserManager(ContainerManager):
         if claims is None:
             self._handoffs.pop(token, None)
             return None
-        user_id, request_id, expires_at = claims
+        policy_id, request_id, expires_at = claims
         handoff = self._handoffs.get(token)
         if handoff is None and request_id == "":
-            handoff = Handoff(user_id=user_id, request_id="", token=token, expires_at=expires_at)
+            handoff = Handoff(policy_id=policy_id, request_id="", token=token, expires_at=expires_at)
         if handoff is None:
             return None
-        self.touch(handoff.user_id)
+        self.touch(handoff.policy_id)
         return handoff
 
 
 def _json_or_raise(response: httpx.Response, endpoint: BrowserEndpoint) -> dict[str, Any]:
     if response.status_code != 200:
         raise BrowserUnavailableError(
-            f"browser for '{endpoint.user_id}' returned {response.status_code}: {response.text}"
+            f"browser for '{endpoint.policy_id}' returned {response.status_code}: {response.text}"
         )
     return response.json()
 

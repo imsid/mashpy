@@ -379,13 +379,6 @@ def _project_into(
                     severity=SEVERITY_ERROR,
                 )
             current_step = None
-        elif kind == RuntimeEventType.REQUEST_RESUMED.value:
-            root.end_time = None
-            root.status = STATUS_UNSET
-            root.status_message = None
-            builder.log(kind, at, root, trace_hex, attributes)
-        elif kind == RuntimeEventType.REQUEST_MODE_CHANGED.value:
-            builder.log(kind, at, root, trace_hex, attributes)
     return root
 
 

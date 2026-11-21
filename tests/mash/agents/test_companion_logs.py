@@ -21,7 +21,7 @@ from mash.core.llm import LLMProvider
 from mash.core.llm.types import LLMContentBlock, LLMResponse, LLMTokenUsage
 from mash.logging import bound_session_id
 from mash.runtime import Host, HostBuilder
-from mash.testing.runtime_fixtures import build_spec, metadata
+from mash.testing.runtime_fixtures import TEST_IDENTITY, build_spec, metadata
 
 
 def _response(text: str = "", calls: list[ToolCall] | None = None) -> LLMResponse:
@@ -61,8 +61,8 @@ class _Router(LLMProvider):
         )
         return _response(calls=[call])
 
-    def set_event_logger(self, logger, app_id: str) -> None:
-        del logger, app_id
+    def set_event_logger(self, logger, agent_id: str) -> None:
+        del logger, agent_id
 
 
 class _Recording:
@@ -116,7 +116,7 @@ class CompanionLogToolTests(unittest.IsolatedAsyncioTestCase):
 
     async def _child(self, host_id: str, primary: str, message: str, session_id: str) -> dict:
         accepted = await self.pool.submit_host_request(
-            host_id, message=message, session_id=session_id, user_id="u-1"
+            host_id, message=message, session_id=session_id, app_id="app-1", policy_id="p-1"
         )
         async for event in self.pool.get_client(primary).stream_response(accepted["request_id"], timeout=10):
             if event.get("event") in {"request.completed", "request.error"}:
@@ -129,7 +129,7 @@ class CompanionLogToolTests(unittest.IsolatedAsyncioTestCase):
     async def _direct(self, agent_id: str, message: str, session_id: str) -> dict:
         """A request the user sent the agent directly: no parent."""
         client = self.pool.get_client(agent_id)
-        request_id = await client.post_request(message, session_id=session_id, user_id="u-1")
+        request_id = await client.post_request(message, session_id=session_id, **TEST_IDENTITY)
         async for event in client.stream_response(request_id, timeout=10):
             if event.get("event") in {"request.completed", "request.error"}:
                 break
@@ -238,12 +238,12 @@ class CompanionLogToolTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(args[0], "builder")
                 self.assertTrue(kwargs["session_id"])
             elif name == "get_request_id_for_trace":
-                self.assertEqual(kwargs["app_id"], "builder")
+                self.assertEqual(kwargs["agent_id"], "builder")
             elif name == "list_events":
                 self.assertEqual(args[0], "builder")
                 self.assertTrue(kwargs["trace_id"])
             elif name == "get_turns":
-                self.assertEqual((kwargs["app_id"], bool(kwargs["session_id"])), ("builder", True))
+                self.assertEqual((kwargs["agent_id"], bool(kwargs["session_id"])), ("builder", True))
             elif name == "get_turn":
                 self.assertEqual(args[1], "builder")
 

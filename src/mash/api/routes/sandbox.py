@@ -1,20 +1,20 @@
-"""Sandbox relay and links: how agents and users reach a user's sandbox.
+"""Sandbox relay and links: how agents and users reach a policy's sandbox.
 
 The relay is for agent processes. Each call carries the calling agent's token
 and the id of the request it serves. The host looks up the request, checks it
-belongs to the caller, and acts in the sandbox of the user the request acts
-for, in the caller's folder. The agent never names a user.
+belongs to the caller, and acts in the sandbox of the policy the request runs
+under, in the caller's folder. The agent never names a policy.
 
 - ``POST /sandbox/exec`` takes ``{request_id, command, timeout, stdin?, env?}``
   and runs the command. The command sees ``MASH_FILES_URL`` and
-  ``MASH_PORTS_URL``, the user's links to the caller's folder and to the
+  ``MASH_PORTS_URL``, the links to the caller's folder and to the
   sandbox's ports, and the caller's own ``MASH_*`` variables in ``env``.
 - ``PUT /sandbox/files?request_id=&path=`` writes the body to a file in the
   caller's folder; ``GET`` with the same query reads one.
 
 Links are for users. ``/s/<link token>/files/<agent_id>/<path>`` serves a file
 from an agent's folder and ``/s/<link token>/ports/<n>/<path>`` forwards HTTP
-to a server on port ``n`` in the sandbox. The link token names the user
+to a server on port ``n`` in the sandbox. The link token names the policy
 (``mash.sandbox.tokens``), so these routes take no API key. Responses carry a
 ``sandbox`` Content-Security-Policy, so a page the model wrote cannot act as
 the host's origin.
@@ -39,7 +39,7 @@ from mash.sandbox.daemon import (
 )
 from mash.sandbox.manager import SandboxCapacityError
 from mash.sandbox.provider import SandboxUnavailableError
-from mash.sandbox.tokens import derive_link_token, user_for_link_token
+from mash.sandbox.tokens import derive_link_token, policy_for_link_token
 from mash.tools.sandbox import RESERVED_SANDBOX_ENV, SANDBOX_ENV_NAME
 
 from .common import AppRuntimeState, state_from_request
@@ -59,22 +59,22 @@ _FORWARDED_HEADERS = ("accept", "accept-language", "content-type", "user-agent")
 class _Caller:
     state: AppRuntimeState
     agent_id: str
-    user_id: str
+    policy_id: str
 
 
-def link_base(public_url: str, secret: str, user_id: str) -> str:
-    """The base of every link into ``user_id``'s sandbox."""
-    return f"{public_url.rstrip('/')}/s/{derive_link_token(secret, user_id)}"
+def link_base(public_url: str, secret: str, policy_id: str) -> str:
+    """The base of every link into ``policy_id``'s sandbox."""
+    return f"{public_url.rstrip('/')}/s/{derive_link_token(secret, policy_id)}"
 
 
-def link_env(public_url: str, secret: str, user_id: str, agent_id: str) -> dict[str, str]:
-    """The link variables a command of ``agent_id`` for ``user_id`` sees."""
-    base = link_base(public_url, secret, user_id)
+def link_env(public_url: str, secret: str, policy_id: str, agent_id: str) -> dict[str, str]:
+    """The link variables a command of ``agent_id`` for ``policy_id`` sees."""
+    base = link_base(public_url, secret, policy_id)
     return {FILES_URL_ENV: f"{base}/files/{agent_id}", PORTS_URL_ENV: f"{base}/ports"}
 
 
 async def _caller(request: Request, request_id: object) -> _Caller | JSONResponse:
-    """Who is calling, for which user; or the error response."""
+    """Who is calling, under which policy; or the error response."""
     state = state_from_request(request)
     if not state.host_secret:
         return h2a_error(503, "SANDBOX_UNAVAILABLE", "host secret is not configured")
@@ -93,9 +93,13 @@ async def _caller(request: Request, request_id: object) -> _Caller | JSONRespons
         return h2a_error(404, "REQUEST_NOT_FOUND", "Request not found")
     if identity.agent_id != caller:
         return h2a_error(403, "FORBIDDEN", f"request does not belong to agent '{caller}'")
-    if identity.user_id is None:
-        return h2a_error(403, "FORBIDDEN", "request acts for no user")
-    return _Caller(state=state, agent_id=caller, user_id=identity.user_id)
+    if identity.policy_id is None:
+        return h2a_error(403, "FORBIDDEN", "request runs under no policy")
+    if not (identity.policy or {}).get("sandbox", True):
+        return h2a_error(
+            403, "FORBIDDEN", f"policy '{identity.policy_id}' gives requests no sandbox"
+        )
+    return _Caller(state=state, agent_id=caller, policy_id=identity.policy_id)
 
 
 def _sandbox_error(exc: Exception) -> JSONResponse:
@@ -153,14 +157,14 @@ def build_sandbox_router() -> APIRouter:
         state = caller.state
         try:
             result = await state.pool.get_sandboxes().exec(
-                caller.user_id,
+                caller.policy_id,
                 agent_id=caller.agent_id,
                 command=command,
                 timeout=float(timeout),
                 stdin=stdin,
                 env=env
                 | link_env(
-                    state.public_url, state.host_secret, caller.user_id, caller.agent_id
+                    state.public_url, state.host_secret, caller.policy_id, caller.agent_id
                 ),
             )
         except (SandboxCapacityError, SandboxUnavailableError) as exc:
@@ -181,14 +185,14 @@ def build_sandbox_router() -> APIRouter:
         try:
             if request.method == "PUT":
                 response = await sandboxes.write_file(
-                    caller.user_id,
+                    caller.policy_id,
                     agent_id=caller.agent_id,
                     path=path,
                     data=await request.body(),
                 )
             else:
                 response = await sandboxes.read_file(
-                    caller.user_id, agent_id=caller.agent_id, path=path
+                    caller.policy_id, agent_id=caller.agent_id, path=path
                 )
         except UnsafePathError as exc:
             return h2a_error(400, "INVALID_REQUEST", str(exc))
@@ -204,21 +208,21 @@ def build_sandbox_router() -> APIRouter:
 def build_link_router() -> APIRouter:
     router = APIRouter(prefix="/s/{token}")
 
-    def _user(request: Request, token: str) -> str | Response:
+    def _policy(request: Request, token: str) -> str | Response:
         state = state_from_request(request)
         sandboxes = state.pool.get_sandboxes()
         if not state.host_secret or sandboxes is None:
             return _link_error(404, "this host has no sandboxes")
-        user_id = user_for_link_token(state.host_secret, token)
-        if user_id is None:
+        policy_id = policy_for_link_token(state.host_secret, token)
+        if policy_id is None:
             return _link_error(404, "no such link")
-        return user_id
+        return policy_id
 
     @router.get("/files/{agent_id}/{path:path}")
     async def file_link(request: Request, token: str, agent_id: str, path: str) -> Response:
-        user_id = _user(request, token)
-        if isinstance(user_id, Response):
-            return user_id
+        policy_id = _policy(request, token)
+        if isinstance(policy_id, Response):
+            return policy_id
         if not path or path.endswith("/"):
             path = f"{path}index.html"
         resolved = resolve_workspace_path(path)
@@ -226,7 +230,7 @@ def build_link_router() -> APIRouter:
             return _link_error(404, "no such file")
         try:
             streamed = await state_from_request(request).pool.get_sandboxes().stream_file(
-                user_id, agent_id=agent_id, path=resolved
+                policy_id, agent_id=agent_id, path=resolved
             )
         except UnsafePathError:
             return _link_error(404, "no such file")
@@ -252,9 +256,9 @@ def build_link_router() -> APIRouter:
 
     @router.api_route("/ports/{port}/{path:path}", methods=_PROXY_METHODS)
     async def port_link(request: Request, token: str, port: int, path: str) -> Response:
-        user_id = _user(request, token)
-        if isinstance(user_id, Response):
-            return user_id
+        policy_id = _policy(request, token)
+        if isinstance(policy_id, Response):
+            return policy_id
         headers = {
             name: request.headers[name]
             for name in _FORWARDED_HEADERS
@@ -263,7 +267,7 @@ def build_link_router() -> APIRouter:
         has_body = "content-length" in request.headers or "transfer-encoding" in request.headers
         try:
             streamed = await state_from_request(request).pool.get_sandboxes().stream_proxy(
-                user_id,
+                policy_id,
                 port=port,
                 method=request.method,
                 path=path,

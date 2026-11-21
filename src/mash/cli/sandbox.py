@@ -1,7 +1,7 @@
-"""``mash sandbox``: serve and manage per-user sandboxes.
+"""``mash sandbox``: serve and manage per-policy sandboxes.
 
 ``serve`` runs inside a sandbox. ``ls``, ``shell`` and ``stop`` run on the
-Docker host: they find sandboxes by their ``mash.sandbox.user`` label, so no
+Docker host: they find sandboxes by their ``mash.sandbox.policy`` label, so no
 host connection is needed. ``--namespace`` (or ``MASH_SANDBOX_NAMESPACE``)
 picks a deployment's sandboxes.
 """
@@ -27,7 +27,7 @@ from mash.sandbox.agent_users import UID_MAP
 from mash.sandbox.docker_engine import DockerEngine, DockerEngineError
 from mash.sandbox.provider import (
     NAMESPACE_LABEL,
-    USER_LABEL,
+    POLICY_LABEL,
     resolve_namespace,
     sandbox_name,
     start_sandbox,
@@ -40,7 +40,7 @@ ADMIN_HISTORY = f"{WORKSPACES_ROOT}/.admin_history"
 
 
 def add_sandbox_parser(subparsers) -> None:
-    sandbox = subparsers.add_parser("sandbox", help="Serve and manage per-user sandboxes")
+    sandbox = subparsers.add_parser("sandbox", help="Serve and manage per-policy sandboxes")
     sandbox_subparsers = sandbox.add_subparsers(dest="sandbox_command")
     sandbox.set_defaults(handler=lambda _: (sandbox.print_help(), 0)[1])
 
@@ -61,9 +61,9 @@ def add_sandbox_parser(subparsers) -> None:
     ls.set_defaults(handler=_run_ls)
 
     shell = sandbox_subparsers.add_parser(
-        "shell", help="Open a shell in a user's sandbox, starting it if stopped"
+        "shell", help="Open a shell in a policy's sandbox, starting it if stopped"
     )
-    shell.add_argument("user_id")
+    shell.add_argument("policy_id")
     shell.add_argument(
         "--agent", default=None, help="Run as this agent's uid, in its folder"
     )
@@ -72,9 +72,9 @@ def add_sandbox_parser(subparsers) -> None:
     shell.set_defaults(handler=_run_shell)
 
     stop = sandbox_subparsers.add_parser(
-        "stop", help="Stop a user's sandbox; its next use starts it again"
+        "stop", help="Stop a policy's sandbox; its next use starts it again"
     )
-    stop.add_argument("user_id")
+    stop.add_argument("policy_id")
     _add_namespace_argument(stop)
     stop.set_defaults(handler=_run_stop)
 
@@ -114,14 +114,14 @@ async def _list_rows(namespace: str) -> list[list[str]]:
     try:
         rows: list[list[str]] = []
         containers = await engine.list_containers(
-            labels=[USER_LABEL, f"{NAMESPACE_LABEL}={namespace}"]
+            labels=[POLICY_LABEL, f"{NAMESPACE_LABEL}={namespace}"]
         )
-        for summary in sorted(containers, key=lambda c: c["Labels"][USER_LABEL]):
+        for summary in sorted(containers, key=lambda c: c["Labels"][POLICY_LABEL]):
             details: dict[str, Any] = await engine.inspect_container(summary["Id"]) or {}
             state = details.get("State") or {}
             rows.append(
                 [
-                    summary["Labels"][USER_LABEL],
+                    summary["Labels"][POLICY_LABEL],
                     str(state.get("Status") or summary.get("State") or ""),
                     _uptime(str(state.get("StartedAt") or ""), bool(state.get("Running"))),
                     str(details.get("Name") or "").lstrip("/"),
@@ -142,14 +142,14 @@ def _run_ls(args) -> int:
     if not rows:
         renderer.info("No sandboxes.")
         return 0
-    renderer.table(["User", "Status", "Uptime", "Container and volume"], rows)
+    renderer.table(["Policy", "Status", "Uptime", "Container and volume"], rows)
     return 0
 
 
-async def _start(user_id: str, namespace: str) -> None:
+async def _start(policy_id: str, namespace: str) -> None:
     engine = DockerEngine()
     try:
-        await start_sandbox(engine, user_id, namespace=namespace)
+        await start_sandbox(engine, policy_id, namespace=namespace)
     finally:
         await engine.close()
 
@@ -164,8 +164,8 @@ def _run_shell(args) -> int:
         return 1
     try:
         namespace = resolve_namespace(args.namespace)
-        name = sandbox_name(args.user_id, namespace)
-        asyncio.run(_start(args.user_id, namespace))
+        name = sandbox_name(args.policy_id, namespace)
+        asyncio.run(_start(args.policy_id, namespace))
     except (DockerEngineError, ValueError) as exc:
         renderer.error(str(exc))
         return 1
@@ -221,17 +221,17 @@ def _shell_argv(name: str, agent_id: str | None, *, uid: int | None) -> list[str
 def _run_stop(args) -> int:
     renderer = RichRenderer()
 
-    async def _stop(user_id: str, namespace: str) -> None:
+    async def _stop(policy_id: str, namespace: str) -> None:
         engine = DockerEngine()
         try:
-            await stop_sandbox(engine, user_id, namespace=namespace)
+            await stop_sandbox(engine, policy_id, namespace=namespace)
         finally:
             await engine.close()
 
     try:
         namespace = resolve_namespace(args.namespace)
-        name = sandbox_name(args.user_id, namespace)
-        asyncio.run(_stop(args.user_id, namespace))
+        name = sandbox_name(args.policy_id, namespace)
+        asyncio.run(_stop(args.policy_id, namespace))
     except (DockerEngineError, ValueError) as exc:
         renderer.error(str(exc))
         return 1

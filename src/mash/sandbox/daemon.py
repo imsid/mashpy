@@ -1,6 +1,6 @@
-"""The sandbox daemon: runs one user's code inside their sandbox.
+"""The sandbox daemon: runs one policy's code inside its sandbox.
 
-``mash sandbox serve`` runs this app in each user's sandbox as root.
+``mash sandbox serve`` runs this app in each policy's sandbox as root.
 Everything it does in a workspace it does as the calling agent's own uid, in
 its folder ``<workspaces>/<agent_id>``, creating both on first use
 (``agent_users.py``):
@@ -13,7 +13,7 @@ its folder ``<workspaces>/<agent_id>``, creating both on first use
   sandbox.
 
 Every route but ``/health`` requires ``Authorization: Bearer <token>``, the
-user's sandbox token (``mash.sandbox.tokens``). The host is the only caller.
+policy's sandbox token (``mash.sandbox.tokens``). The host is the only caller.
 """
 
 from __future__ import annotations
@@ -304,7 +304,7 @@ class _BearerAuthMiddleware:
 
 
 class SandboxDaemon:
-    """The app of one user's sandbox: ``/health``, ``/exec``, ``/files``, ``/ports``."""
+    """The app of one policy's sandbox: ``/health``, ``/exec``, ``/files``, ``/ports``."""
 
     def __init__(
         self,

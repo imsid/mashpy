@@ -79,7 +79,7 @@ class LLMProvider(ABC):
         """Send a normalized request to the provider."""
 
     @abstractmethod
-    def set_event_logger(self, logger: EventLogger, app_id: str) -> None:
+    def set_event_logger(self, logger: EventLogger, agent_id: str) -> None:
         """Set the event logger the provider writes ``chat.delta`` chunks to.
 
         The runtime calls this once, when the agent process starts. One
@@ -108,7 +108,7 @@ class BaseLLMProvider(LLMProvider):
     def __init__(
         self,
         *,
-        app_id: str,
+        agent_id: str,
         model: str,
         event_logger: Optional[EventLogger] = None,
     ) -> None:
@@ -116,16 +116,16 @@ class BaseLLMProvider(LLMProvider):
         if not cleaned_model:
             raise ValueError("model is required")
         self._event_logger = event_logger
-        self._app_id = app_id
+        self._agent_id = agent_id
         self._model = cleaned_model
 
     @property
     def model(self) -> str:
         return self._model
 
-    def set_event_logger(self, logger: EventLogger, app_id: str) -> None:
+    def set_event_logger(self, logger: EventLogger, agent_id: str) -> None:
         self._event_logger = logger
-        self._app_id = app_id
+        self._agent_id = agent_id
 
     def _request_betas(self, request: LLMRequest) -> Optional[List[str]]:
         betas = request.provider_options.get("betas")
@@ -159,7 +159,7 @@ class BaseLLMProvider(LLMProvider):
         await self._event_logger.emit(
             LLMEvent(
                 event_type="chat.delta",
-                app_id=self._app_id,
+                agent_id=self._agent_id,
                 session_id=get_session_id(),
                 provider=self.provider_name,
                 model=request.model,
@@ -175,6 +175,6 @@ class BaseLLMProvider(LLMProvider):
         log.warning(
             "llm request error [%s/%s]: %s",
             self.provider_name,
-            self._app_id,
+            self._agent_id,
             error,
         )

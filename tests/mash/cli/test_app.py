@@ -17,9 +17,11 @@ def _clean_env(tmp_path, monkeypatch) -> None:
     for name in (
         "MASH_API_BASE_URL",
         "MASH_API_KEY",
-        "MASH_USER_ID",
+        "MASH_APP_ID",
+        "MASH_POLICY_ID",
         "FUDGE_API_BASE_URL",
-        "FUDGE_USER_ID",
+        "FUDGE_APP_ID",
+        "FUDGE_POLICY_ID",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -35,14 +37,15 @@ def _main(app: App, argv: list[str], saved: CLIConfig | None = None):
     return code, shell, made
 
 
-def test_an_app_opens_its_repl_on_its_own_target_user_and_look() -> None:
+def test_an_app_opens_its_repl_on_its_own_target_identity_and_look() -> None:
     hello = Command(name="hello", help="Say hello", handler=lambda ctx, args: None)
     lines = {"search": lambda args: "searching"}
     app = App(
         name="fudge",
         default_host="fudge",
         default_base_url="http://127.0.0.1:8001",
-        default_user=lambda: "sam",
+        default_app=lambda: "fudge-app",
+        default_policy="fudge-policy",
         theme={"accent": "green"},
         commands=[hello],
         tool_lines=lines,
@@ -52,10 +55,11 @@ def test_an_app_opens_its_repl_on_its_own_target_user_and_look() -> None:
     assert code == 0
     assert made.call_args.args == ("http://127.0.0.1:8001",)
     target = shell.call_args.args[1]
-    assert (target.host_id, target.agent_id, target.user_id) == (
+    assert (target.host_id, target.agent_id, target.app_id, target.policy_id) == (
         "fudge",
         "companion",
-        "sam",
+        "fudge-app",
+        "fudge-policy",
     )
     assert shell.call_args.kwargs == {
         "debug": False,
@@ -71,33 +75,49 @@ def test_an_app_opens_its_repl_on_its_own_target_user_and_look() -> None:
 
 def test_a_connection_saved_for_another_deployment_is_not_used() -> None:
     app = App(
-        name="fudge", default_agent="fudge", default_base_url="http://127.0.0.1:8001"
+        name="fudge", default_host="fudge", default_base_url="http://127.0.0.1:8001"
     )
     other = CLIConfig(
-        api_base_url="http://127.0.0.1:8000", api_key="k", host_id="h", user_id="u-1"
+        api_base_url="http://127.0.0.1:8000",
+        api_key="k",
+        host_id="h",
+        app_id="app-1",
+        policy_id="p-1",
     )
     code, shell, made = _main(app, ["repl"], other)
-    assert code == 1  # no user: the saved one belongs to the other deployment
+    assert code == 1  # no app or policy: the saved ones belong to the other deployment
     assert made.call_args.kwargs == {"api_key": None}
     same = CLIConfig(
-        api_base_url="http://127.0.0.1:8001/", api_key="k", host_id="h", user_id="u-1"
+        api_base_url="http://127.0.0.1:8001/",
+        api_key="k",
+        host_id="h",
+        app_id="app-1",
+        policy_id="p-1",
     )
     code, shell, made = _main(app, ["repl"], same)
     assert code == 0
     assert made.call_args.kwargs == {"api_key": "k"}
     target = shell.call_args.args[1]
-    assert (target.agent_id, target.host_id, target.user_id) == ("fudge", None, "u-1")
+    assert (target.agent_id, target.host_id, target.app_id, target.policy_id) == (
+        "companion",
+        "fudge",
+        "app-1",
+        "p-1",
+    )
 
 
 def test_the_apps_environment_prefix_wins_over_mash(monkeypatch) -> None:
-    app = App(name="fudge", default_agent="fudge", env_prefix="FUDGE")
+    app = App(name="fudge", default_host="fudge", env_prefix="FUDGE")
     monkeypatch.setenv("MASH_API_BASE_URL", "http://mash:8000")
     monkeypatch.setenv("FUDGE_API_BASE_URL", "http://fudge:8001")
-    monkeypatch.setenv("MASH_USER_ID", "u-mash")
+    monkeypatch.setenv("MASH_APP_ID", "app-mash")
+    monkeypatch.setenv("MASH_POLICY_ID", "p-mash")
+    monkeypatch.setenv("FUDGE_POLICY_ID", "p-fudge")
     code, shell, made = _main(app, ["repl"])
     assert code == 0
     assert made.call_args.args == ("http://fudge:8001",)
-    assert shell.call_args.args[1].user_id == "u-mash"
+    target = shell.call_args.args[1]
+    assert (target.app_id, target.policy_id) == ("app-mash", "p-fudge")
 
 
 def test_an_app_has_no_operator_commands_and_mash_does(capsys) -> None:
@@ -113,77 +133,92 @@ def test_an_app_has_no_operator_commands_and_mash_does(capsys) -> None:
     assert cli_main.build_parser(app).prog == "fudge"
 
 
-def test_an_app_takes_one_default_target() -> None:
-    with pytest.raises(ValueError, match="not both"):
-        App(name="fudge", default_host="a", default_agent="b")
-
-
 def test_an_app_without_a_default_target_still_opens_the_repl() -> None:
     app = App(
-        name="fudge", default_base_url="http://localhost:8001", default_user="sam"
+        name="fudge",
+        default_base_url="http://localhost:8001",
+        default_app="sam",
+        default_policy="p-1",
     )
-    with patch.object(cli_main, "_resolve_target", return_value=("only-agent", None)):
+    with patch.object(cli_main, "_resolve_host", return_value="only-host"):
         code, shell, _ = _main(app, [])
     assert code == 0
-    assert shell.call_args.args[1].agent_id == "only-agent"
+    assert shell.call_args.args[1].host_id == "only-host"
 
 
 @pytest.mark.parametrize("override", ["flag", "env"])
 def test_a_url_override_does_not_reuse_another_deployments_credentials(
     override, monkeypatch
 ) -> None:
-    app = App(name="fudge", default_agent="fudge", default_user="sam")
+    app = App(name="fudge", default_host="fudge", default_app="sam", default_policy="p-1")
     args = ["repl"]
     if override == "flag":
         args += ["--api-base-url", "http://new:8000"]
     else:
         monkeypatch.setenv("MASH_API_BASE_URL", "http://new:8000")
     saved = CLIConfig(
-        api_base_url="http://old:8000", api_key="old-key", user_id="old-user"
+        api_base_url="http://old:8000", api_key="old-key", app_id="old-app", policy_id="old-p"
     )
     code, shell, made = _main(app, args, saved)
     assert code == 0
     assert made.call_args.kwargs == {"api_key": None}
-    assert shell.call_args.args[1].user_id == "sam"
+    assert (shell.call_args.args[1].app_id, shell.call_args.args[1].policy_id) == ("sam", "p-1")
 
 
-def test_connect_uses_the_apps_user_and_does_not_copy_a_foreign_user() -> None:
+def test_connect_uses_the_apps_identity_and_does_not_copy_a_foreign_one() -> None:
     app = App(
-        name="fudge", default_base_url="http://new:8000", default_user=lambda: "sam"
+        name="fudge",
+        default_base_url="http://new:8000",
+        default_app=lambda: "sam",
+        default_policy="p-1",
     )
     saved = CLIConfig(
-        api_base_url="http://old:8000", api_key="old-key", user_id="old-user"
+        api_base_url="http://old:8000", api_key="old-key", app_id="old-app", policy_id="old-p"
     )
     with patch.object(cli_main, "save_config") as save:
         code, _, _ = _main(app, ["connect"], saved)
     assert code == 0
     config = save.call_args.args[0]
-    assert (config.api_base_url, config.api_key, config.user_id) == (
+    assert (config.api_base_url, config.api_key, config.app_id, config.policy_id) == (
         "http://new:8000",
         None,
         "sam",
+        "p-1",
     )
 
 
 def test_explicit_flags_override_app_defaults_and_environment(monkeypatch) -> None:
-    monkeypatch.setenv("FUDGE_USER_ID", "env-user")
+    monkeypatch.setenv("FUDGE_APP_ID", "env-app")
+    monkeypatch.setenv("FUDGE_POLICY_ID", "env-policy")
     monkeypatch.setenv("FUDGE_API_KEY", "env-key")
     app = App(
         name="fudge",
         default_host="fudge",
         default_base_url="http://default:8000",
-        default_user="default-user",
+        default_app="default-app",
+        default_policy="default-policy",
         env_prefix="FUDGE",
     )
     code, shell, made = _main(
         app,
-        ["repl", "--agent", "other", "--user-id", "flag-user", "--api-key", "flag-key"],
+        [
+            "repl",
+            "--host",
+            "other",
+            "--app-id",
+            "flag-app",
+            "--policy-id",
+            "flag-policy",
+            "--api-key",
+            "flag-key",
+        ],
     )
     assert code == 0
     assert made.call_args.kwargs == {"api_key": "flag-key"}
     target = shell.call_args.args[1]
-    assert (target.agent_id, target.host_id, target.user_id) == (
+    assert (target.agent_id, target.host_id, target.app_id, target.policy_id) == (
+        "companion",
         "other",
-        None,
-        "flag-user",
+        "flag-app",
+        "flag-policy",
     )

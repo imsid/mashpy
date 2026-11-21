@@ -18,38 +18,44 @@ class StepContext:
     Every field is stable across retries of the same logical step, so a step
     with external effects can build its own idempotency key (e.g.
     ``f"{ctx.run_id}:{ctx.step_id}"``). The framework never invents one.
-    ``user_id`` is the user the run acts for; a step that submits agent
-    requests submits them for this user. ``browser()`` opens that user's
-    browser.
+    ``app_id`` is the app the run acts for and ``policy_id`` the policy it
+    runs under, with ``policy`` the snapshot the run took at start; a step
+    that submits agent requests submits them for this app under this policy.
+    ``browser()`` opens the policy's browser.
     """
 
     run_id: str
     step_id: str
     workflow_input: dict[str, Any]
     attempt: int = 1
-    user_id: str | None = None
+    app_id: str | None = None
+    policy_id: str | None = None
+    policy: dict[str, Any] | None = None
     # The host's BrowserManager, when it has browsers.
     browsers: Any = field(default=None, repr=False, compare=False)
 
     @contextlib.asynccontextmanager
     async def browser(self) -> AsyncIterator[Any]:
-        """A Playwright ``BrowserContext`` in the run user's browser.
+        """A Playwright ``BrowserContext`` in the run policy's browser.
 
-        It is the user's profile, signed in wherever the user is. Pages the
+        It is the policy's profile, signed in wherever someone signed in under
+        the policy. A policy whose ``browser_sites`` is ``[]`` allows none. Pages the
         block opens close when it ends, and the connection drops; the browser
         keeps running. Needs Playwright (``pip install 'mashpy[browser]'``).
         """
         if self.browsers is None:
             raise RuntimeError("this host has no browsers")
-        if not self.user_id:
-            raise RuntimeError("ctx.browser() needs a run that acts for a user")
+        if not self.policy_id:
+            raise RuntimeError("ctx.browser() needs a run under a policy")
+        if (self.policy or {}).get("browser_sites") == []:
+            raise RuntimeError(f"policy '{self.policy_id}' allows no browser sites")
         try:
             from playwright.async_api import async_playwright
         except ImportError as exc:
             raise RuntimeError(
                 "ctx.browser() needs Playwright: pip install 'mashpy[browser]'"
             ) from exc
-        async with self.browsers.hold(self.user_id) as endpoint:
+        async with self.browsers.hold(self.policy_id) as endpoint:
             url = endpoint.base_url.replace("http://", "ws://", 1) + "/cdp"
             async with async_playwright() as playwright:
                 browser = await playwright.chromium.connect_over_cdp(
@@ -210,7 +216,7 @@ class WorkflowSpec:
 
     @property
     def uses_agents(self) -> bool:
-        """Whether a run submits agent requests, and so needs a ``user_id``."""
+        """Whether a run submits agent requests, and so needs an app and a policy."""
         return any(
             isinstance(step, AgentStep) or (isinstance(step, CodeStep) and step.agent_ids)
             for step in self.steps

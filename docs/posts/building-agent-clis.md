@@ -12,8 +12,9 @@ tags:
 
 A Mash app ships its own client by configuring `App`. It uses the same live
 REPL, request streaming, session picker and one-shot commands as `mash`.
-Deploy your pool first and define a host with `HostBuilder.host(...)` or
-`mash compose --host my-app --agents my-agent,docs-copilot`.
+Deploy your pool first, define a host with `HostBuilder.host(...)` or
+`mash compose --host my-app --agents my-agent,docs-copilot`, and create the
+policy its events run under with `mash policy put my-app --file policy.json`.
 
 ## Define the client
 
@@ -24,7 +25,7 @@ from mash.cli import App, Command
 
 
 def hello(ctx, args):
-    ctx.renderer.info(f"Hello, {ctx.user_id}!")
+    ctx.renderer.info(f"Hello from {ctx.app_id}!")
 
 
 app = App(
@@ -32,7 +33,8 @@ app = App(
     default_host="my-app",
     default_base_url="http://127.0.0.1:8000",
     env_prefix="MY_APP",
-    default_user=getpass.getuser,
+    default_app="my-app",
+    default_policy=lambda: f"my-app-{getpass.getuser()}",
     commands=[Command(name="hello", help="Say hello", handler=hello, group="App")],
     theme={"accent": "green"},
     tool_lines={"search_docs": lambda args: f"Searching docs for {args.get('query', '')}"},
@@ -43,10 +45,11 @@ def main() -> int:
     return app.main()
 ```
 
-Use `default_agent="my-agent"` instead of `default_host` to talk directly to
-one agent. The app's target can be overridden with `--host` or `--agent`.
-The host and its composition belong to the deployment; opening the client
-does not change them.
+Every message is an event posted to the host, and every event names an app
+and a policy. Here each operating-system user gets a policy of their own, so
+each has their own sandbox and browser profile. `--host` overrides the app's
+target. The host and its composition belong to the deployment; opening the
+client does not change them.
 
 Register the executable in `pyproject.toml`:
 
@@ -66,17 +69,18 @@ my-app workflow run export --input '{"table": "bills"}'
 my-app status
 ```
 
-## Connection and user
+## Connection, app and policy
 
-Flags override environment variables. `MY_APP_API_BASE_URL`, `MY_APP_API_KEY`
-and `MY_APP_USER_ID` take precedence over the corresponding `MASH_` variables.
-The default URL is used next, then the connection saved by `connect`. Saved
-credentials and users are used only for the same deployment URL. The user
-falls back to `default_user`, which can be a string or a callable.
+Flags override environment variables. `MY_APP_API_BASE_URL`, `MY_APP_API_KEY`,
+`MY_APP_APP_ID` and `MY_APP_POLICY_ID` take precedence over the corresponding
+`MASH_` variables. The default URL is used next, then the connection saved by
+`connect`. A saved key, app and policy are used only for the same deployment
+URL. The app and policy fall back to `default_app` and `default_policy`, each
+a string or a callable. The policy must already exist on the deployment.
 
 ```bash
-my-app connect --user-id sam
-my-app repl --user-id sam --agent docs-copilot
+my-app connect --app-id my-app --policy-id my-app-sam
+my-app repl --policy-id my-app-sam --host my-app
 ```
 
 The app name appears in its header and names its history file under

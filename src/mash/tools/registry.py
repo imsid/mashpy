@@ -29,6 +29,16 @@ class ToolRegistry:
 
         self._tools[tool.name] = tool
 
+    def replace(self, tool: Tool) -> None:
+        """Put ``tool`` in place of the registered tool with its name.
+
+        Raises:
+            KeyError: If no tool with that name is registered.
+        """
+        if tool.name not in self._tools:
+            raise KeyError(tool.name)
+        self._tools[tool.name] = tool
+
     def unregister(self, name: str) -> None:
         """Unregister a tool by name.
 

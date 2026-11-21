@@ -103,9 +103,8 @@ class _AgentAccum:
     def observe_terminal(self, event: RuntimeEvent) -> None:
         """Keep the latest terminal event for this agent.
 
-        An agent can reach a terminal state more than once in a session — one
-        per request, and a cancelled request that is resumed then completes
-        adds another to the same request. ``compute_row_metrics`` accepts
+        An agent can reach a terminal state more than once in a session, one
+        per request. ``compute_row_metrics`` accepts
         events in any order, so latest is decided by timestamp rather than by
         position in the list.
         """

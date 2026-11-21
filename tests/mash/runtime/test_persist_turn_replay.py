@@ -22,11 +22,11 @@ class PersistTurnReplayTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         _, memory_store = build_test_stores()
         self.store = memory_store
-        self.runtime = SimpleNamespace(store=memory_store, app_id="agent-a")
+        self.runtime = SimpleNamespace(store=memory_store, agent_id="agent-a")
         await memory_store.save_turn(
             trace_id="earlier",
             session_id="s-1",
-            app_id="agent-a",
+            agent_id="agent-a",
             user_message="hi",
             agent_response="hello",
             signals={},
@@ -47,7 +47,7 @@ class PersistTurnReplayTests(unittest.IsolatedAsyncioTestCase):
         payload = await self._persist()
 
         self.assertEqual(payload["session_total_tokens"], 142)
-        turns = await self.store.get_turns(session_id="s-1", app_id="agent-a")
+        turns = await self.store.get_turns(session_id="s-1", agent_id="agent-a")
         self.assertEqual([t["trace_id"] for t in turns][-1], "tr-1")
 
     async def test_replayed_persist_reuses_stored_turn(self) -> None:
@@ -55,7 +55,7 @@ class PersistTurnReplayTests(unittest.IsolatedAsyncioTestCase):
         replayed = await self._persist()
 
         self.assertEqual(replayed["session_total_tokens"], first["session_total_tokens"])
-        turns = await self.store.get_turns(session_id="s-1", app_id="agent-a")
+        turns = await self.store.get_turns(session_id="s-1", agent_id="agent-a")
         self.assertEqual(sum(1 for t in turns if t["trace_id"] == "tr-1"), 1)
 
 

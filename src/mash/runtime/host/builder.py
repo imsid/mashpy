@@ -63,9 +63,9 @@ class HostBuilder:
         return self
 
     def enable_cortex(self, *, profile_max_chars: int | None = None) -> "HostBuilder":
-        """Turn on Cortex, per-user memory shared by every agent in the pool.
+        """Turn on Cortex, per-app memory shared by every agent in the pool.
 
-        Agents get the request user's profile in their context and the
+        Agents get the request app's profile in their context and the
         read-only ``search_cortex`` tool. The pool also gets ``cortex-agent``
         and the on-demand ``cortex-build`` workflow.
         """

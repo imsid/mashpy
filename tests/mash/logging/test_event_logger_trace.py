@@ -38,7 +38,7 @@ class _CollectingStore:
 def _llm_event(*, trace_id: str | None, session_id: str = "session-1") -> LLMEvent:
     return LLMEvent(
         event_type="chat.delta",
-        app_id="agent-1",
+        agent_id="agent-1",
         session_id=session_id,
         provider="test",
         model="test-model",
@@ -162,7 +162,7 @@ class AgentSessionBindingTests(unittest.TestCase):
             llm=DeterministicLLMProvider(response_text="ok"),
             tools=ToolRegistry(),
             skills=SkillRegistry(),
-            config=AgentConfig(app_id="binding-app", system_prompt="test"),
+            config=AgentConfig(agent_id="binding-app", system_prompt="test"),
         )
         agent.set_event_logger(EventLogger(_CollectingStore()), "session-bound")
 
@@ -186,7 +186,7 @@ class ChatDeltaDedupeTests(unittest.IsolatedAsyncioTestCase):
         def delta(text: str, index: int) -> LLMEvent:
             return LLMEvent(
                 event_type="chat.delta",
-                app_id="agent-1",
+                agent_id="agent-1",
                 session_id="s-1",
                 provider="test",
                 model="m",
@@ -211,7 +211,7 @@ class ChatDeltaDedupeTests(unittest.IsolatedAsyncioTestCase):
         store = _CollectingStore()
         await EventLogger(store).emit(
             LLMEvent(
-                event_type="chat.delta", app_id="a", session_id=None, provider="p",
+                event_type="chat.delta", agent_id="a", session_id=None, provider="p",
                 model="m", trace_id="t", dedupe_key="chat.delta.0.0",
             )
         )
@@ -238,7 +238,7 @@ class _StreamingProvider(BaseLLMProvider):
 class SharedProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_concurrent_requests_stamp_chunks_from_their_own_context(self) -> None:
         store = _CollectingStore()
-        provider = _StreamingProvider(app_id="agent-1", model="test-model")
+        provider = _StreamingProvider(agent_id="agent-1", model="test-model")
         provider.set_event_logger(EventLogger(store), "agent-1")
         request = LLMRequest(
             model="test-model", system="", messages=[], tools=[], max_tokens=10

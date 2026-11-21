@@ -14,16 +14,17 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from .engine import InteractionClosedError, InvalidInteractionResponseError
-from .errors import RequestStaleError, RequestTerminalError, SessionUserMismatchError
+from .errors import SessionPolicyMismatchError
 from .events import PostgresRuntimeStore
 from ..otel.context import normalize_trace_context
 from .requests import (
     RequestIdConflictError,
     parent_request_metadata,
-    validate_mode,
+    validate_app_id,
+    validate_policy_snapshot,
     validate_request_id,
-    validate_user_id,
 )
+from ..policies import validate_policy_id
 from .service import AgentRuntime
 from .structured_output import serialize_structured_output
 
@@ -63,7 +64,7 @@ class AgentServer:
 
     def __init__(self, runtime: AgentRuntime, *, token: str | None = None) -> None:
         self.runtime = runtime
-        self.agent_id = runtime.app_id
+        self.agent_id = runtime.agent_id
         self._ready_event = asyncio.Event()
         self._startup_error: BaseException | None = None
 
@@ -120,23 +121,8 @@ class AgentServer:
                     methods=["GET"],
                 ),
                 Route(
-                    "/agent/{agent_id:str}/request/{request_id:str}/resume",
-                    self.resume_request,
-                    methods=["POST"],
-                ),
-                Route(
                     "/agent/{agent_id:str}/request/{request_id:str}/cancel",
                     self.cancel_request,
-                    methods=["POST"],
-                ),
-                Route(
-                    "/agent/{agent_id:str}/request/{request_id:str}/rerun",
-                    self.rerun_request,
-                    methods=["POST"],
-                ),
-                Route(
-                    "/agent/{agent_id:str}/request/{request_id:str}/mode",
-                    self.set_request_mode,
                     methods=["POST"],
                 ),
             ],
@@ -188,7 +174,7 @@ class AgentServer:
         """Liveness only: no database call, so the host's polls stay cheap."""
         del request
         return JSONResponse(
-            {"status": "ok", "agent_id": self.agent_id, "app_id": self.runtime.app_id}
+            {"status": "ok", "agent_id": self.agent_id}
         )
 
     async def submit_request(self, request: Request) -> Response:
@@ -242,17 +228,16 @@ class AgentServer:
             except ValueError as exc:
                 return _json_error(400, "INVALID_PARENT", str(exc))
 
-        mode = payload.get("mode", "fg")
+        app_id = payload.get("app_id")
+        policy_id = payload.get("policy_id")
+        policy = payload.get("policy")
+        for name, value in (("app_id", app_id), ("policy_id", policy_id), ("policy", policy)):
+            if value is None:
+                return _json_error(400, "INVALID_REQUEST", f"{name} is required")
         try:
-            validate_mode(mode)
-        except ValueError as exc:
-            return _json_error(400, "INVALID_REQUEST", str(exc))
-
-        user_id = payload.get("user_id")
-        if user_id is None:
-            return _json_error(400, "INVALID_REQUEST", "user_id is required")
-        try:
-            validate_user_id(user_id)
+            validate_app_id(app_id)
+            validate_policy_id(policy_id)
+            validate_policy_snapshot(policy)
         except ValueError as exc:
             return _json_error(400, "INVALID_REQUEST", str(exc))
 
@@ -284,15 +269,16 @@ class AgentServer:
                 metadata=metadata,
                 request_id=request_id,
                 parent=parent,
-                user_id=user_id,
-                mode=mode,
+                app_id=app_id,
+                policy_id=policy_id,
+                policy=policy,
                 traceparent=traceparent,
                 tracestate=tracestate,
             )
         except RequestIdConflictError as exc:
             return _json_error(409, "REQUEST_ID_CONFLICT", str(exc))
-        except SessionUserMismatchError as exc:
-            return _json_error(409, "SESSION_USER_MISMATCH", str(exc))
+        except SessionPolicyMismatchError as exc:
+            return _json_error(409, "SESSION_POLICY_MISMATCH", str(exc))
         return JSONResponse(accepted, status_code=202)
 
     async def compact_session(self, request: Request) -> Response:
@@ -339,7 +325,7 @@ class AgentServer:
         """The path's request id when the request is this agent's, else a 404.
 
         Every route that acts on one request starts here. A request accepted
-        for another agent is not found, rather than run, resumed, cancelled or
+        for another agent is not found, rather than read, cancelled or
         answered under this agent's prompt and tools.
         """
         agent_id = request.path_params.get("agent_id", "").strip()
@@ -386,37 +372,8 @@ class AgentServer:
     async def get_request_status(self, request: Request) -> Response:
         return await self._control(request, self.runtime.get_request_status)
 
-    async def resume_request(self, request: Request) -> Response:
-        return await self._control(request, self.runtime.resume_request)
-
     async def cancel_request(self, request: Request) -> Response:
         return await self._control(request, self.runtime.cancel_request)
-
-    async def rerun_request(self, request: Request) -> Response:
-        return await self._control(request, self.runtime.rerun_request)
-
-    async def set_request_mode(self, request: Request) -> Response:
-        request_id = await self._own_request(request)
-        if isinstance(request_id, Response):
-            return request_id
-        try:
-            payload = await request.json()
-        except json.JSONDecodeError:
-            return _json_error(400, "INVALID_JSON", "Request body must be valid JSON")
-        if not isinstance(payload, dict):
-            return _json_error(400, "INVALID_REQUEST", "Request body must be an object")
-        mode = payload.get("mode")
-        try:
-            validate_mode(mode)
-        except ValueError as exc:
-            return _json_error(400, "INVALID_REQUEST", str(exc))
-        try:
-            result = await self.runtime.set_request_mode(request_id, mode)
-        except KeyError:
-            return _json_error(404, "REQUEST_NOT_FOUND", "Request not found")
-        except RequestTerminalError as exc:
-            return _json_error(409, "REQUEST_TERMINAL", str(exc))
-        return JSONResponse(result)
 
     async def _control(self, request: Request, operation) -> Response:
         request_id = await self._own_request(request)
@@ -425,11 +382,6 @@ class AgentServer:
 
         try:
             result = await operation(request_id)
-        except RequestStaleError as exc:
-            return _json_error(409, "REQUEST_STALE", str(exc))
-        except SessionUserMismatchError as exc:
-            # A rerun submits again, onto a session that moved to another user.
-            return _json_error(409, "SESSION_USER_MISMATCH", str(exc))
         except KeyError:
             return _json_error(404, "REQUEST_NOT_FOUND", "Request not found")
         return JSONResponse(result)

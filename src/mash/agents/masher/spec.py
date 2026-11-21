@@ -100,21 +100,21 @@ def _build_eval_llm(*, agent_id: str, prefix: str, label: str) -> LLMProvider:
     kind = _select_eval_agent_provider_kind()
     if kind == "gemini":
         return GeminiProvider(
-            app_id=agent_id,
+            agent_id=agent_id,
             model=_model_override(
                 prefix, "GEMINI", os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
             ),
         )
     if kind == "openai":
         return OpenAIProvider(
-            app_id=agent_id,
+            agent_id=agent_id,
             model=_model_override(
                 prefix, "OPENAI", os.getenv("OPENAI_MODEL", "gpt-5-mini")
             ),
         )
     if kind == "anthropic":
         return AnthropicProvider(
-            app_id=agent_id,
+            agent_id=agent_id,
             model=_model_override(
                 prefix,
                 "ANTHROPIC",
@@ -131,7 +131,7 @@ def _build_eval_llm(*, agent_id: str, prefix: str, label: str) -> LLMProvider:
                 "EVAL_AGENT_OSS_MODEL to name the served model."
             )
         return OSSCompatibleProvider(
-            app_id=agent_id,
+            agent_id=agent_id,
             model=oss_model,
             base_url=os.getenv("OSS_BASE_URL", "").strip(),
             api_key=os.getenv("OSS_API_KEY", "").strip() or None,
@@ -173,7 +173,7 @@ class EvalAgentSpec(AgentSpec):
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
-            app_id=EVAL_AGENT_ID,
+            agent_id=EVAL_AGENT_ID,
             system_prompt=_GENERATOR_PROMPT,
             max_steps=20,
         )
@@ -203,7 +203,7 @@ class EvalJudgeAgentSpec(AgentSpec):
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
-            app_id=EVAL_JUDGE_AGENT_ID,
+            agent_id=EVAL_JUDGE_AGENT_ID,
             system_prompt=_JUDGE_PROMPT,
             max_steps=4,
         )

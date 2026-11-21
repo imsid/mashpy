@@ -8,6 +8,7 @@ from starlette.testclient import TestClient
 
 from mash.runtime.requests import RequestIdConflictError
 from mash.runtime.server import AgentServer
+from mash.testing.runtime_fixtures import DEFAULT_POLICY, TEST_IDENTITY
 
 
 class _Store:
@@ -16,7 +17,7 @@ class _Store:
 
 
 class _Runtime:
-    app_id = "agent-a"
+    agent_id = "agent-a"
 
     def __init__(self) -> None:
         self.runtime_store = _Store()
@@ -37,7 +38,7 @@ class _Runtime:
         return self.known.get(request_id)
 
     def describe(self) -> dict:
-        return {"agent_id": self.app_id, "tools": [{"name": "bash"}], "skills": []}
+        return {"agent_id": self.agent_id, "tools": [{"name": "bash"}], "skills": []}
 
     async def compact_session(self, **kwargs) -> tuple:
         self.compactions.append(kwargs)
@@ -47,7 +48,7 @@ class _Runtime:
         self.submissions.append(kwargs)
         return {
             "request_id": "req-1",
-            "agent_id": self.app_id,
+            "agent_id": self.agent_id,
             "session_id": kwargs["session_id"],
             "status": "accepted",
         }
@@ -69,7 +70,7 @@ class AgentServerSubmitTests(unittest.TestCase):
         self.client.__exit__(None, None, None)
 
     def _post(self, body: dict):
-        return self.client.post("/agent/agent-a/request", json={"user_id": "u-1", **body})
+        return self.client.post("/agent/agent-a/request", json={**TEST_IDENTITY, **body})
 
     def test_forwards_structured_output_and_metadata(self) -> None:
         resp = self._post(
@@ -106,51 +107,59 @@ class AgentServerSubmitTests(unittest.TestCase):
         self.assertIsNone(submission["host_snapshot"])
         self.assertIsNone(submission["parent"])
 
-    def test_forwards_user_id(self) -> None:
-        resp = self._post({"message": "plan it", "session_id": "s-1", "user_id": "u@acme.io"})
-
-        self.assertEqual(resp.status_code, 202)
-        self.assertEqual(self.runtime.submissions[0]["user_id"], "u@acme.io")
-
-    def test_mode_defaults_to_fg_and_forwards_bg(self) -> None:
-        self._post({"message": "plan it", "session_id": "s-1"})
-        self._post({"message": "plan it", "session_id": "s-1", "mode": "bg"})
-
-        self.assertEqual(
-            [submission["mode"] for submission in self.runtime.submissions], ["fg", "bg"]
+    def test_forwards_the_app_policy_and_snapshot(self) -> None:
+        policy = {"sandbox": False, "browser_sites": [], "wait_max_seconds": None}
+        resp = self._post(
+            {
+                "message": "plan it",
+                "session_id": "s-1",
+                "app_id": "slack@acme",
+                "policy_id": "acme-ws",
+                "policy": policy,
+            }
         )
 
-    def test_invalid_mode_returns_400(self) -> None:
-        for mode in ("later", "", None, 1):
-            with self.subTest(mode=mode):
-                resp = self._post({"message": "plan it", "session_id": "s-1", "mode": mode})
+        self.assertEqual(resp.status_code, 202)
+        [submission] = self.runtime.submissions
+        self.assertEqual(
+            (submission["app_id"], submission["policy_id"], submission["policy"]),
+            ("slack@acme", "acme-ws", policy),
+        )
+
+    def test_an_invalid_app_policy_id_or_policy_returns_400(self) -> None:
+        for override in (
+            {"app_id": ""},
+            {"app_id": "has space"},
+            {"app_id": 42},
+            {"policy_id": "x" * 256},
+            {"policy": "open"},
+            {"policy": {**DEFAULT_POLICY, "wait_max_seconds": 5}},
+            {"policy": {**DEFAULT_POLICY, "memory": "app"}},
+        ):
+            with self.subTest(override=override):
+                resp = self._post({"message": "plan it", "session_id": "s-1", **override})
+                self.assertEqual(resp.status_code, 400)
+        self.assertEqual(self.runtime.submissions, [])
+
+    def test_a_missing_app_policy_id_or_policy_returns_400(self) -> None:
+        for missing in ("app_id", "policy_id", "policy"):
+            body = {**TEST_IDENTITY, "message": "plan it", "session_id": "s-1"}
+            del body[missing]
+            with self.subTest(missing=missing):
+                resp = self.client.post("/agent/agent-a/request", json=body)
                 self.assertEqual(resp.status_code, 400)
                 self.assertEqual(resp.json()["error"]["code"], "INVALID_REQUEST")
+                self.assertIn(missing, resp.json()["error"]["message"])
         self.assertEqual(self.runtime.submissions, [])
 
-    def test_invalid_user_id_returns_400(self) -> None:
-        for user_id in ("", "has space", 42, "x" * 256):
-            resp = self._post({"message": "plan it", "session_id": "s-1", "user_id": user_id})
-            self.assertEqual(resp.status_code, 400, user_id)
-        self.assertEqual(self.runtime.submissions, [])
-
-    def test_missing_user_id_returns_400(self) -> None:
-        resp = self.client.post(
-            "/agent/agent-a/request", json={"message": "plan it", "session_id": "s-1"}
-        )
-
-        self.assertEqual(resp.status_code, 400)
-        self.assertEqual(resp.json()["error"]["code"], "INVALID_REQUEST")
-        self.assertEqual(self.runtime.submissions, [])
-
-    def test_workflow_parent_carries_the_run_user(self) -> None:
+    def test_a_workflow_parent_carries_the_runs_app_and_policy(self) -> None:
         parent = {"kind": "workflow", "workflow_id": "wf", "run_id": "r", "task_id": "t"}
         resp = self._post(
-            {"message": "step", "session_id": "s-1", "user_id": "u-7", "parent": parent}
+            {"message": "step", "session_id": "s-1", "app_id": "app-7", "parent": parent}
         )
 
         self.assertEqual(resp.status_code, 202)
-        self.assertEqual(self.runtime.submissions[0]["user_id"], "u-7")
+        self.assertEqual(self.runtime.submissions[0]["app_id"], "app-7")
 
     def test_forwards_request_id_context_host_and_parent(self) -> None:
         host = {"host_id": "assistant", "primary": "concierge", "subagents": ["agent-a"]}
@@ -288,7 +297,7 @@ class AgentServerAuthTests(unittest.TestCase):
     def test_valid_token_is_accepted(self) -> None:
         resp = self.client.post(
             "/agent/agent-a/request",
-            json={"message": "plan it", "session_id": "s-1", "user_id": "u-1"},
+            json={"message": "plan it", "session_id": "s-1", **TEST_IDENTITY},
             headers={"Authorization": "Bearer tok-1"},
         )
 

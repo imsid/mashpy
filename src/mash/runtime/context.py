@@ -29,12 +29,12 @@ async def get_history_turns(
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
     return await sessions.history_turns(
-        self.store, app_id=self.app_id, session_id=session_id, limit=limit
+        self.store, agent_id=self.agent_id, session_id=session_id, limit=limit
     )
 
 
 async def list_sessions(self: "AgentRuntime", *, limit: int) -> list[dict[str, Any]]:
-    return await sessions.list_sessions(self.store, app_id=self.app_id, limit=limit)
+    return await sessions.list_sessions(self.store, agent_id=self.agent_id, limit=limit)
 
 
 async def get_session_signals(
@@ -44,7 +44,7 @@ async def get_session_signals(
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
     return await sessions.session_signals(
-        self.store, app_id=self.app_id, session_id=session_id, limit=limit
+        self.store, agent_id=self.agent_id, session_id=session_id, limit=limit
     )
 
 
@@ -56,7 +56,7 @@ async def get_session_total_tokens(
     if not session_id_value:
         raise ValueError("session_id is required")
     return await sessions.session_total_tokens(
-        self.store, app_id=self.app_id, session_id=session_id_value
+        self.store, agent_id=self.agent_id, session_id=session_id_value
     )
 
 
@@ -74,7 +74,7 @@ async def compact_session(
     return await compact_conversation(
         store=self.store,
         llm=self.agent.llm,
-        app_id=self.app_id,
+        agent_id=self.agent_id,
         session_id=session_id_value,
         max_tokens=self.agent.config.max_tokens,
         temperature=self.agent.config.compaction_temperature,
@@ -101,7 +101,7 @@ async def build_context_with_history(
         # part of the user's conversation, so the store leaves them out.
         turns_to_include = await self.store.get_replay_turns(
             session_id=session_id,
-            app_id=self.app_id,
+            agent_id=self.agent_id,
             turns=self.agent.config.conversation_history_turns,
         )
         # A reply's ledger goes before the user message that follows it. In

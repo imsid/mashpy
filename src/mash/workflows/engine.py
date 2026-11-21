@@ -68,7 +68,9 @@ class WorkflowExecutionContext:
     run_id: str
     workflow_input: dict[str, Any]
     session_id: str | None = None
-    user_id: str | None = None
+    app_id: str | None = None
+    policy_id: str | None = None
+    policy: dict[str, Any] | None = None
 
 
 def _store(pool: "Pool") -> WorkflowStore:
@@ -183,7 +185,9 @@ async def _run_code_step(
         step_id=step.step_id,
         workflow_input=dict(ctx.workflow_input),
         attempt=attempt,
-        user_id=ctx.user_id,
+        app_id=ctx.app_id,
+        policy_id=ctx.policy_id,
+        policy=dict(ctx.policy) if ctx.policy is not None else None,
         browsers=getattr(ctx.pool, "get_browsers", lambda: None)(),
     )
 
@@ -322,7 +326,9 @@ class ForwardPipelineStrategy:
                         workflow_run_id=run_id,
                         task_id=step.step_id,
                         session_id=session_id,
-                        user_id=ctx.user_id,  # type: ignore[arg-type]
+                        app_id=ctx.app_id,  # type: ignore[arg-type]
+                        policy_id=ctx.policy_id,  # type: ignore[arg-type]
+                        policy=ctx.policy,  # type: ignore[arg-type]
                         attempt=attempt,
                     )
 
@@ -419,7 +425,9 @@ class WorkflowRunner:
             run_id=run.run_id,
             workflow_input=dict(run.workflow_input or {}),
             session_id=run.session_id,
-            user_id=run.user_id,
+            app_id=run.app_id,
+            policy_id=run.policy_id,
+            policy=run.policy,
         )
         task = asyncio.create_task(self._run(ctx), name=f"mash-workflow-{run.run_id}")
         self._tasks[run.run_id] = task

@@ -160,8 +160,8 @@ export const api = {
     request(`/hosts/${encodeURIComponent(hostId)}/snapshot`),
   defineHost: (hostId, body) =>
     request(`/hosts/${encodeURIComponent(hostId)}`, { method: 'PUT', body }),
-  submitHostRequest: (hostId, body) =>
-    request(`/hosts/${encodeURIComponent(hostId)}/request`, { method: 'POST', body }),
+  postEvent: (sessionId, body) =>
+    request(`/sessions/${encodeURIComponent(sessionId)}/events`, { method: 'POST', body }),
 
   // --- Logs / telemetry ---
   listSessionRollups: (params) => request('/telemetry/sessions', { params }),
@@ -171,27 +171,12 @@ export const api = {
   usage: (params) => request('/telemetry/usage', { params }),
   listCommandEvents: (params) => request('/telemetry/command-events', { params }),
 
-  // --- Trace actions ---
+  // --- Trace status ---
   // A trace is one request, so the server resolves the request id from the
-  // trace and these never carry one.
+  // trace and this never carries one.
   traceRequestStatus: (agentId, traceId) =>
     request(
       `/agent/${encodeURIComponent(agentId)}/trace/${encodeURIComponent(traceId)}/status`,
-    ),
-  cancelTraceRequest: (agentId, traceId) =>
-    request(
-      `/agent/${encodeURIComponent(agentId)}/trace/${encodeURIComponent(traceId)}/cancel`,
-      { method: 'POST' },
-    ),
-  resumeTraceRequest: (agentId, traceId) =>
-    request(
-      `/agent/${encodeURIComponent(agentId)}/trace/${encodeURIComponent(traceId)}/resume`,
-      { method: 'POST' },
-    ),
-  rerunTraceRequest: (agentId, traceId) =>
-    request(
-      `/agent/${encodeURIComponent(agentId)}/trace/${encodeURIComponent(traceId)}/rerun`,
-      { method: 'POST' },
     ),
 
   // --- Sessions ---

@@ -17,7 +17,7 @@ def _args(**overrides: object) -> Namespace:
 @pytest.fixture
 def saved(monkeypatch: pytest.MonkeyPatch):
     def _save(url: str, key: str | None) -> None:
-        config = CLIConfig(api_base_url=url, api_key=key, host_id=None, user_id="me")
+        config = CLIConfig(api_base_url=url, api_key=key, host_id=None, app_id="me", policy_id="p-1")
         monkeypatch.setattr(cli, "load_config", lambda: config)
 
     monkeypatch.delenv("MASH_API_KEY", raising=False)

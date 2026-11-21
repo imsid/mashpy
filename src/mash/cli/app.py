@@ -15,9 +15,11 @@ An app that runs on Mash ships its own command with a few lines::
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from dotenv import find_dotenv, load_dotenv
@@ -45,16 +47,17 @@ class App:
     # The program name, the REPL's header line and the input history file.
     name: str
     description: str = ""
-    # The target when no --host or --agent is given. At most one of the two.
+    # The host when no --host is given.
     default_host: str | None = None
-    default_agent: str | None = None
     # The deployment when no flag or environment variable names one.
     default_base_url: str | None = None
-    # "FUDGE" reads FUDGE_API_BASE_URL, FUDGE_API_KEY and FUDGE_USER_ID
-    # before the MASH_ ones.
+    # "FUDGE" reads FUDGE_API_BASE_URL, FUDGE_API_KEY, FUDGE_APP_ID and
+    # FUDGE_POLICY_ID before the MASH_ ones.
     env_prefix: str | None = None
-    # The user when no flag, variable or saved connection names one.
-    default_user: str | Callable[[], str] | None = None
+    # The app and the policy when no flag, variable or saved connection names
+    # one: requests and workflow runs act for the app under the policy.
+    default_app: str | Callable[[], str] | None = None
+    default_policy: str | Callable[[], str] | None = None
     # Style names to colors, over ``render.DEFAULT_THEME``.
     theme: Mapping[str, str] | None = None
     # Slash commands added to the REPL's own.
@@ -70,8 +73,6 @@ class App:
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ValueError("an App needs a name")
-        if self.default_host and self.default_agent:
-            raise ValueError("an App takes default_host or default_agent, not both")
 
     def env(self, name: str) -> str | None:
         """``<PREFIX>_<name>`` when the app has a prefix and it is set, else ``MASH_<name>``."""
@@ -82,15 +83,23 @@ class App:
                 return value
         return None
 
-    def user(self) -> str | None:
-        """The app's default user."""
-        user = self.default_user() if callable(self.default_user) else self.default_user
-        return (user or "").strip() or None
+    def app_id(self) -> str | None:
+        """The app id requests act for by default."""
+        return _resolved(self.default_app)
+
+    def policy_id(self) -> str | None:
+        """The policy requests run under by default."""
+        return _resolved(self.default_policy)
+
 
     def main(self, argv: Sequence[str] | None = None) -> int:
         """Run the app's command line; returns the exit status."""
         return main(argv, app=self)
 
+
+def _resolved(value: str | Callable[[], str] | None) -> str | None:
+    text = value() if callable(value) else value
+    return (text or "").strip() or None
 
 # The `mash` command line: every command, and the saved connection alone.
 MASH = App(name="mash", operator_commands=True)
@@ -131,29 +140,49 @@ def _connection(
     return base_url, api_key, saved
 
 
+def _identity(
+    args: argparse.Namespace, app: App, saved: CLIConfig | None
+) -> tuple[str | None, str | None]:
+    """The app and policy: a flag, then the environment, the saved connection, the App."""
+    app_id = (
+        getattr(args, "app_id", None)
+        or app.env("APP_ID")
+        or (saved.app_id if saved else None)
+        or app.app_id()
+    )
+    policy_id = (
+        getattr(args, "policy_id", None)
+        or app.env("POLICY_ID")
+        or (saved.policy_id if saved else None)
+        or app.policy_id()
+    )
+    return app_id, policy_id
+
+
+def _require_identity(app: App, app_id: str | None, policy_id: str | None) -> tuple[str, str]:
+    if not app_id or not policy_id:
+        raise ValueError(
+            "an app id and a policy id are required. Use --app-id and --policy-id, "
+            f"or `{app.name} connect --app-id <app> --policy-id <policy>`."
+        )
+    return app_id, policy_id
+
+
 def _resolve_connection(
     args: argparse.Namespace, app: App
-) -> tuple[str, str | None, str | None, str | None, str | None]:
+) -> tuple[str, str | None, str | None, str | None, str | None, str | None]:
     base_url, api_key, saved = _connection(args, app)
     agent_id = getattr(args, "agent", None)
     host_id = getattr(args, "host_id", None)
-    if not agent_id and not host_id:
-        # The app's own target, else the host `compose` pinned.
-        if app.default_host or app.default_agent:
-            agent_id, host_id = app.default_agent, app.default_host
-        elif saved:
-            host_id = saved.host_id
-    user_id = (
-        getattr(args, "user_id", None)
-        or app.env("USER_ID")
-        or (saved.user_id if saved else None)
-        or app.user()
-    )
+    if not host_id:
+        # The app's own host, else the host `compose` pinned.
+        host_id = app.default_host or (saved.host_id if saved else None)
+    app_id, policy_id = _identity(args, app, saved)
     if not base_url:
         raise ValueError(
             f"API base URL is required. Use --api-base-url or `{app.name} connect`."
         )
-    return base_url, api_key, agent_id, host_id, user_id
+    return base_url, api_key, agent_id, host_id, app_id, policy_id
 
 
 def _build_repl(
@@ -211,6 +240,19 @@ def _run_workflow_command(
     assert command is not None
     command.handler(repl.context, words)
     return 1 if failed else 0
+
+
+def _resolve_host(client: MashHostClient, host_id: str | None) -> str:
+    """The host to post events to: the one given, or the deployment's only one."""
+    if host_id:
+        client.get_host(host_id)
+        return host_id
+    hosts = (client.health().get("deployment") or {}).get("hosts") or []
+    if len(hosts) == 1 and isinstance(hosts[0], dict) and hosts[0].get("host_id"):
+        return str(hosts[0]["host_id"])
+    raise ValueError(
+        "a host is required: use --host, or `mash compose` to define one and target it"
+    )
 
 
 def _resolve_target(
@@ -358,8 +400,12 @@ def _run_connect(args: argparse.Namespace, app: App) -> int:
         client.close()
 
     _, _, saved = _connection(args, app)
-    user_id = args.user_id or app.env("USER_ID") or (saved.user_id if saved else None) or app.user()
-    path = save_config(CLIConfig(api_base_url=base_url, api_key=api_key, user_id=user_id))
+    app_id, policy_id = _identity(args, app, saved)
+    path = save_config(
+        CLIConfig(
+            api_base_url=base_url, api_key=api_key, app_id=app_id, policy_id=policy_id
+        )
+    )
     print(f"Saved connection to {path}")
     return 0
 
@@ -392,10 +438,41 @@ def _run_compose(args: argparse.Namespace, app: App) -> int:
             api_base_url=base_url,
             api_key=api_key,
             host_id=args.host_id,
-            user_id=saved.user_id if saved else None,
+            app_id=saved.app_id if saved else None,
+            policy_id=saved.policy_id if saved else None,
         )
     )
     print(f"Saved connection to {path}")
+    return 0
+
+
+def _run_policy(args: argparse.Namespace, app: App) -> int:
+    """``policy put <id> --file <path>``, ``get <id>`` and ``rm <id>``."""
+    renderer = RichRenderer(theme=app.theme)
+    connection = _resolve_saved_connection(args, renderer, app)
+    if connection is None:
+        return 1
+    base_url, api_key = connection
+    client = MashHostClient(base_url, api_key=api_key)
+    try:
+        if args.policy_command == "put":
+            text = sys.stdin.read() if args.file == "-" else Path(args.file).read_text(encoding="utf-8")
+            document = json.loads(text)
+            if not isinstance(document, dict):
+                raise ValueError("the policy file must hold a JSON object")
+            policy = client.put_policy(args.policy_id, document)
+        elif args.policy_command == "rm":
+            client.delete_policy(args.policy_id)
+            renderer.info(f"Policy {args.policy_id} deleted, with its sandbox and browser.")
+            return 0
+        else:
+            policy = client.get_policy(args.policy_id)
+    except Exception as exc:
+        renderer.error(str(exc))
+        return 1
+    finally:
+        client.close()
+    print(json.dumps(policy, indent=2))
     return 0
 
 
@@ -425,9 +502,14 @@ def build_parser(app: App = MASH) -> argparse.ArgumentParser:
     )
     connect.add_argument("--api-key", default=None, help="Optional bearer API key")
     connect.add_argument(
-        "--user-id",
+        "--app-id",
         default=None,
-        help="User that requests and workflow runs act for (falls back to saved config)",
+        help="App that requests and workflow runs act for (falls back to saved config)",
+    )
+    connect.add_argument(
+        "--policy-id",
+        default=None,
+        help="Policy that requests and workflow runs run under (falls back to saved config)",
     )
 
     compose = (
@@ -454,14 +536,22 @@ def build_parser(app: App = MASH) -> argparse.ArgumentParser:
         help="Comma-separated workflow ids",
     )
 
-    common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--api-base-url", default=None, help="Mash host base URL")
-    common.add_argument("--api-key", default=None, help="Bearer API key")
-    common.add_argument("--agent", default=None, help="Target agent id (bare-agent targeting)")
-    common.add_argument("--host", dest="host_id", default=None, help="Target host id")
-    common.add_argument(
-        "--user-id", default=None, help="User to act for (overrides the saved connection's)"
+    # Every command's connection and identity; `on_host` (repl, run) talks
+    # to a host, the others may also name an agent to read.
+    on_host = argparse.ArgumentParser(add_help=False)
+    on_host.add_argument("--api-base-url", default=None, help="Mash host base URL")
+    on_host.add_argument("--api-key", default=None, help="Bearer API key")
+    on_host.add_argument("--host", dest="host_id", default=None, help="Target host id")
+    on_host.add_argument(
+        "--app-id", default=None, help="App to act for (overrides the saved connection's)"
     )
+    on_host.add_argument(
+        "--policy-id",
+        default=None,
+        help="Policy to run under (overrides the saved connection's)",
+    )
+    common = argparse.ArgumentParser(add_help=False, parents=[on_host])
+    common.add_argument("--agent", default=None, help="Agent whose sessions to read")
 
     subparsers.add_parser("status", parents=[common], help="Show deployment status")
     subparsers.add_parser(
@@ -479,7 +569,7 @@ def build_parser(app: App = MASH) -> argparse.ArgumentParser:
     history.add_argument("--session-id", required=True, help="Remote session id")
     history.add_argument("--limit", type=int, default=None, help="Optional turn limit")
 
-    repl = subparsers.add_parser("repl", parents=[common], help="Start an interactive remote REPL")
+    repl = subparsers.add_parser("repl", parents=[on_host], help="Start an interactive remote REPL")
     session = repl.add_mutually_exclusive_group()
     session.add_argument("--session-id", default=None, help="Remote session id")
     session.add_argument(
@@ -501,7 +591,7 @@ def build_parser(app: App = MASH) -> argparse.ArgumentParser:
 
     run = subparsers.add_parser(
         "run",
-        parents=[common],
+        parents=[on_host],
         help="Submit one request, print its answer and exit",
         description=(
             "Submit one request, print its answer on stdout and exit. Exit status: "
@@ -560,6 +650,27 @@ def build_parser(app: App = MASH) -> argparse.ArgumentParser:
     agent_subparsers = agent.add_subparsers(dest="agent_command")
     add_agent_serve_parser(agent_subparsers)
 
+    policy = subparsers.add_parser(
+        "policy", help="Create, replace, read and delete the deployment's policies"
+    )
+    policy.add_argument("--api-base-url", default=None, help="Mash host base URL")
+    policy.add_argument("--api-key", default=None, help="Bearer API key")
+    policy.set_defaults(handler=lambda args: _run_policy(args, app))
+    policy_subparsers = policy.add_subparsers(dest="policy_command", required=True)
+    policy_put = policy_subparsers.add_parser(
+        "put", help="Create a policy, or replace the whole of an existing one"
+    )
+    policy_put.add_argument("policy_id")
+    policy_put.add_argument(
+        "--file", required=True, help="The policy as a JSON object, or - to read stdin"
+    )
+    policy_get = policy_subparsers.add_parser("get", help="Print a policy")
+    policy_get.add_argument("policy_id")
+    policy_rm = policy_subparsers.add_parser(
+        "rm", help="Delete a policy with its sandbox and browser profile"
+    )
+    policy_rm.add_argument("policy_id")
+
     add_sandbox_parser(subparsers)
     add_browser_parser(subparsers)
     return parser
@@ -613,9 +724,14 @@ def main(argv: Sequence[str] | None = None, *, app: App = MASH) -> int:
 
     renderer = RichRenderer(theme=app.theme)
     try:
-        base_url, api_key, configured_agent, configured_host, user_id = _resolve_connection(
-            args, app
-        )
+        (
+            base_url,
+            api_key,
+            configured_agent,
+            configured_host,
+            app_id,
+            policy_id,
+        ) = _resolve_connection(args, app)
     except ValueError as exc:
         renderer.error(str(exc))
         return 1
@@ -688,11 +804,15 @@ def main(argv: Sequence[str] | None = None, *, app: App = MASH) -> int:
             renderer.table(["Host", "Agents", "Workflows"], rows)
             return 0
 
-        agent_id, target_host_id = _resolve_target(
-            client,
-            getattr(args, "agent", None) or configured_agent,
-            getattr(args, "host_id", None) or configured_host,
-        )
+        if args.command in ("repl", "run"):
+            # Both talk to a host; each resolves its own below.
+            agent_id, target_host_id = COMPANION_AGENT_ID, None
+        else:
+            agent_id, target_host_id = _resolve_target(
+                client,
+                getattr(args, "agent", None) or configured_agent,
+                getattr(args, "host_id", None) or configured_host,
+            )
 
         if args.command == "sessions":
             sessions_payload = client.list_sessions(agent_id)
@@ -719,21 +839,19 @@ def main(argv: Sequence[str] | None = None, *, app: App = MASH) -> int:
             return 0
 
         if args.command == "run":
-            if not user_id:
-                raise ValueError(
-                    f"a user id is required. Use --user-id or `{app.name} connect --user-id`."
-                )
+            app_id, policy_id = _require_identity(app, app_id, policy_id)
+            host_id = _resolve_host(client, configured_host)
             message = read_message(args.message, sys.stdin)
             session_id = args.session_id
             if args.continue_session:
-                earlier = client.list_sessions(agent_id, user_id=user_id, limit=1)
+                earlier = client.list_sessions(COMPANION_AGENT_ID, app_id=app_id, limit=1)
                 session_id = str(earlier[0]["session_id"]) if earlier else None
             return run_once(
                 client,
-                agent_id=agent_id,
-                host_id=target_host_id,
+                host_id=host_id,
                 session_id=session_id or Repl.new_session_id(),
-                user_id=user_id,
+                app_id=app_id,
+                policy_id=policy_id,
                 message=message,
                 json_output=args.json_output,
                 theme=app.theme,
@@ -748,21 +866,22 @@ def main(argv: Sequence[str] | None = None, *, app: App = MASH) -> int:
                     api_base_url=base_url,
                     agent_id=agent_id,
                     session_id=Repl.new_session_id(),
-                    user_id=user_id or "",
-                    host_id=target_host_id,
+                    app_id=app_id or "",
+                    policy_id=policy_id or "",
+                    host_id=target_host_id or "",
                 ),
                 app,
             )
 
         if args.command == "repl":
-            if not user_id:
-                raise ValueError(
-                    f"a user id is required. Use --user-id or `{app.name} connect --user-id`."
-                )
+            app_id, policy_id = _require_identity(app, app_id, policy_id)
+            host_id = _resolve_host(client, configured_host)
             session_id, title = args.session_id, ""
             if args.continue_session or args.resume:
                 earlier = client.list_sessions(
-                    agent_id, user_id=user_id, limit=1 if args.continue_session else PICKER_LIMIT
+                    COMPANION_AGENT_ID,
+                    app_id=app_id,
+                    limit=1 if args.continue_session else PICKER_LIMIT,
                 )
                 picked = None
                 if not earlier:
@@ -778,10 +897,10 @@ def main(argv: Sequence[str] | None = None, *, app: App = MASH) -> int:
                     session_id, title = str(picked["session_id"]), session_title(picked)
             target = Target(
                 api_base_url=base_url,
-                agent_id=agent_id,
                 session_id=session_id or Repl.new_session_id(),
-                user_id=user_id,
-                host_id=target_host_id,
+                app_id=app_id,
+                policy_id=policy_id,
+                host_id=host_id,
                 resumed=bool(session_id),
                 title=title,
             )

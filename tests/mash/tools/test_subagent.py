@@ -71,7 +71,6 @@ class _Client:
         request_id: Optional[str] = None,
         host: Optional[Dict[str, Any]] = None,
         parent: Optional[Dict[str, Any]] = None,
-        mode: Optional[str] = None,
     ) -> str:
         children = self._children
         if self.agent_id in children.fail_submit_for:
@@ -89,7 +88,6 @@ class _Client:
                 "request_id": request_id,
                 "host": host,
                 "parent": parent,
-                "mode": mode,
             }
         )
         if request_id not in children.started:
@@ -258,7 +256,6 @@ class RunSubAgentsToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call["message"], "find papers")
         # A child without a session_id starts a session named after itself.
         self.assertEqual(call["session_id"], child_id)
-        self.assertEqual(call["mode"], "bg")
         self.assertEqual(call["host"]["host_id"], "assistant")
         self.assertEqual(
             call["parent"],
@@ -636,10 +633,10 @@ class RunSubAgentsToolTests(unittest.IsolatedAsyncioTestCase):
         from mash.tools.registry import ToolRegistry
 
         access = SimpleNamespace(get_client=lambda agent_id: None)
-        runtime = SimpleNamespace(app_id="companion", get_host_access=lambda: access)
+        runtime = SimpleNamespace(agent_id="companion", get_host_access=lambda: access)
         for config, expected in (
-            (AgentConfig(app_id="companion", system_prompt="p"), 3600),
-            (AgentConfig(app_id="companion", system_prompt="p", subagent_timeout_seconds=7200), 7200),
+            (AgentConfig(agent_id="companion", system_prompt="p"), 3600),
+            (AgentConfig(agent_id="companion", system_prompt="p", subagent_timeout_seconds=7200), 7200),
         ):
             agent = SimpleNamespace(tools=ToolRegistry(), config=config)
             configure_run_subagents(
@@ -652,7 +649,7 @@ class RunSubAgentsToolTests(unittest.IsolatedAsyncioTestCase):
         from mash.core.config import AgentConfig
 
         with self.assertRaises(ValueError):
-            AgentConfig(app_id="a", system_prompt="p", subagent_timeout_seconds=0)
+            AgentConfig(agent_id="a", system_prompt="p", subagent_timeout_seconds=0)
 
     def test_the_schema_states_the_limits(self) -> None:
         properties = self.tool.parameters["properties"]

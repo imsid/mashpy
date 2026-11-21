@@ -36,7 +36,7 @@ class _LLM(LLMProvider):
     async def send(self, request: LLMRequest) -> LLMResponse:
         raise NotImplementedError
 
-    def set_event_logger(self, logger, app_id: str) -> None:
+    def set_event_logger(self, logger, agent_id: str) -> None:
         return None
 
 
@@ -63,7 +63,7 @@ class _Spec(AgentSpec):
         return _LLM()
 
     def build_agent_config(self) -> AgentConfig:
-        return AgentConfig(app_id="mcp-test", system_prompt="test")
+        return AgentConfig(agent_id="mcp-test", system_prompt="test")
 
     def build_mcp_servers(self) -> list[MCPServerConfig]:
         return self._servers
@@ -118,7 +118,7 @@ class MCPBlockingTests(unittest.IsolatedAsyncioTestCase):
         return runtime
 
     def _turn_agent(self, runtime: AgentRuntime):
-        return runtime.build_turn_agent(session_id="s-1", trace_id="t-1", user_id="u-1")
+        return runtime.build_turn_agent(session_id="s-1", trace_id="t-1", app_id="app-1")
 
     async def test_slow_tool_call_lets_other_coroutines_run(self) -> None:
         with FakeMCPServer() as server:

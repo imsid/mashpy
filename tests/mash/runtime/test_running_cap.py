@@ -21,7 +21,7 @@ from mash.runtime.engine.engine import (
 )
 from mash.runtime.engine.loop import RequestCancelled, RequestRun
 from mash.runtime.events import RuntimeEvent, RuntimeEventType
-from mash.testing.runtime_fixtures import ToolCallingAgentSpec
+from mash.testing.runtime_fixtures import TEST_IDENTITY, ToolCallingAgentSpec
 from mash.tools.ask_user import AskUserTool
 from mash.tools.base import ToolResult
 from mash.tools.registry import ToolRegistry
@@ -118,7 +118,7 @@ class RunningCapTests(unittest.IsolatedAsyncioTestCase):
         self.fail(f"{request_id} never reached {event_type}")
 
     async def _submit(self, runtime: AgentRuntime, session_id: str) -> str:
-        accepted = await runtime.submit_request(message="go", session_id=session_id, user_id="u-1")
+        accepted = await runtime.submit_request(message="go", session_id=session_id, **TEST_IDENTITY)
         return str(accepted["request_id"])
 
     async def test_a_request_waits_for_a_slot(self) -> None:

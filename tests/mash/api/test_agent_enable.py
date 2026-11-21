@@ -70,7 +70,7 @@ def test_disable_is_refused_while_a_host_or_workflow_names_the_agent() -> None:
         assert _agents(client)["research"]["enabled"] is True
 
 
-def test_a_disabled_agent_takes_no_requests_until_enabled() -> None:
+def test_a_disabled_agent_joins_no_host_until_enabled() -> None:
     with _client() as client:
         disabled = client.post("/api/v1/agent/solo/disable")
         assert disabled.status_code == 200
@@ -81,20 +81,17 @@ def test_a_disabled_agent_takes_no_requests_until_enabled() -> None:
             "status": "disabled",
         }
 
-        body = {"message": "hi", "session_id": "s-1", "user_id": "u-1"}
-        submitted = client.post("/api/v1/agent/solo/request", json=body)
-        assert submitted.status_code == 409
-        assert submitted.json()["error"]["code"] == "AGENT_DISABLED"
         assert client.get("/api/v1/agent/solo").json()["data"] == {
             "agent": disabled.json()["data"]["agent"]
         }
+        # Requests reach an agent through a host, which cannot name it now.
         host = client.put("/api/v1/hosts/solo-host", json={"agents": ["solo"]})
         assert host.status_code == 400
 
         enabled = client.post("/api/v1/agent/solo/enable")
         assert enabled.json()["data"]["agent"]["status"] == "running"
-        submitted = client.post("/api/v1/agent/solo/request", json=body)
-        assert submitted.status_code == 200
+        host = client.put("/api/v1/hosts/solo-host", json={"agents": ["solo"]})
+        assert host.status_code == 200
 
 
 def test_unknown_agent_is_404() -> None:

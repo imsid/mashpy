@@ -135,7 +135,6 @@ class _FakeRuntimeStore:
         agent_id = "pilot" if request_id.endswith("-child") else "companion"
         return [
             RuntimeEvent(
-                app_id=agent_id,
                 agent_id=agent_id,
                 request_id=request_id,
                 event_type="mash.step.end",

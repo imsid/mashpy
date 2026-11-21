@@ -88,7 +88,6 @@ class RequestRollupTests(unittest.IsolatedAsyncioTestCase):
         request_id = f"{self.tag}-{request}"
         return await self.store.append_event(
             RuntimeEvent(
-                app_id=self._agent(agent),
                 agent_id=self._agent(agent),
                 request_id=request_id,
                 session_id=f"{self.tag}-{session}",

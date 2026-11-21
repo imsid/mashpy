@@ -23,11 +23,13 @@ from mash.workflows import (
     WorkflowRegistry,
     WorkflowService,
     WorkflowSpec,
-    WorkflowUserRequiredError,
+    WorkflowIdentityRequiredError,
 )
 from conftest import _TestWorkflowStore
 from mash.workflows.engine import WorkflowRunner
 from mash.workflows.runs import make_run_id, workflow_run_id_prefix
+from mash.policies import PolicyNotFoundError
+from mash.testing.runtime_fixtures import DEFAULT_POLICY
 
 
 def _agent_step(step_id: str, agent_id: str) -> AgentStep:
@@ -60,6 +62,11 @@ class _FakeHost:
 
     def get_workflow_store(self) -> Any:
         return self._store
+
+    async def read_policy(self, policy_id: str) -> dict[str, Any]:
+        if policy_id != "p-1":
+            raise PolicyNotFoundError(policy_id)
+        return {**DEFAULT_POLICY, "sandbox": False}
 
 
 class WorkflowRegistryTests(unittest.TestCase):
@@ -159,7 +166,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         run = await service.run_workflow(
-            "wf", dedup_key="manual", workflow_input={"n": 1}, user_id="u-1"
+            "wf", dedup_key="manual", workflow_input={"n": 1}, app_id="app-1", policy_id="p-1"
         )
 
         self.assertEqual(run.status, "queued")
@@ -168,14 +175,18 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored.status, "queued")
         self.assertEqual(stored.dedup_key, "manual")
         self.assertEqual(stored.workflow_input, {"n": 1})
-        self.assertEqual(stored.user_id, "u-1")
+        # The run takes the policy as it stands at start.
+        self.assertEqual(
+            (stored.app_id, stored.policy_id, stored.policy),
+            ("app-1", "p-1", {**DEFAULT_POLICY, "sandbox": False}),
+        )
         self.assertEqual([r.run_id for r in self.started], [run.run_id])
 
     async def test_queued_run_is_readable_and_streamable_at_once(self) -> None:
         service, _ = self._stored_service(
             WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")])
         )
-        run = await service.run_workflow("wf", user_id="u-1")
+        run = await service.run_workflow("wf", app_id="app-1", policy_id="p-1")
 
         fetched = await service.get_run("wf", run.run_id)
         events = await service.stream_run_events("wf", run.run_id)
@@ -187,7 +198,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         service, store = self._stored_service(
             WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")])
         )
-        run = await service.run_workflow("wf", user_id="u-1")
+        run = await service.run_workflow("wf", app_id="app-1", policy_id="p-1")
         events = await service.stream_run_events("wf", run.run_id)
 
         async def _progress() -> None:
@@ -221,7 +232,7 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         service, _ = self._stored_service(
             WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")])
         )
-        run = await service.run_workflow("wf", user_id="u-1")
+        run = await service.run_workflow("wf", app_id="app-1", policy_id="p-1")
         events = await service.stream_run_events("wf", run.run_id, keepalive_seconds=0.05)
 
         first = await asyncio.wait_for(events.__anext__(), timeout=2.0)
@@ -229,17 +240,29 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(first.comment, "keep-alive")
 
-    async def test_run_of_a_workflow_with_agents_requires_a_user(self) -> None:
+    async def test_run_of_a_workflow_with_agents_requires_an_app_and_a_policy(self) -> None:
         service, _ = self._stored_service(
             WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")])
         )
-        with self.assertRaises(WorkflowUserRequiredError):
-            await service.run_workflow("wf")
+        for identity in ({}, {"app_id": "app-1"}, {"policy_id": "p-1"}):
+            with self.assertRaises(WorkflowIdentityRequiredError):
+                await service.run_workflow("wf", **identity)
         with self.assertRaises(ValueError):
-            await service.run_workflow("wf", user_id="has space")
+            await service.run_workflow("wf", app_id="has space", policy_id="p-1")
+        with self.assertRaises(PolicyNotFoundError):
+            await service.run_workflow("wf", app_id="app-1", policy_id="nope")
         self.assertEqual(self.started, [])
 
-    async def test_code_only_workflow_runs_without_a_user(self) -> None:
+    async def test_a_given_snapshot_is_kept_rather_than_read(self) -> None:
+        service, store = self._stored_service(
+            WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")])
+        )
+        run = await service.run_workflow(
+            "wf", app_id="app-1", policy_id="p-1", policy=DEFAULT_POLICY
+        )
+        self.assertEqual((await store.get_run(run.run_id)).policy, DEFAULT_POLICY)
+
+    async def test_code_only_workflow_runs_without_an_app_or_a_policy(self) -> None:
         service, _ = self._stored_service(
             WorkflowSpec(
                 workflow_id="wf",
@@ -247,7 +270,8 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         run = await service.run_workflow("wf", workflow_input={"count": 1})
-        self.assertIsNone(run.user_id)
+        self.assertIsNone(run.app_id)
+        self.assertIsNone(run.policy_id)
 
     async def test_run_workflow_rejects_non_object_input(self) -> None:
         service, _ = self._stored_service(
@@ -282,14 +306,14 @@ class WorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         service, store = self._stored_service(
             WorkflowSpec(workflow_id="wf", steps=[_agent_step("s1", "worker")])
         )
-        first = await service.run_workflow("wf", dedup_key="manual", user_id="u-1")
+        first = await service.run_workflow("wf", dedup_key="manual", app_id="app-1", policy_id="p-1")
 
         with self.assertRaises(DuplicateWorkflowRunError) as raised:
-            await service.run_workflow("wf", dedup_key="manual", user_id="u-1")
+            await service.run_workflow("wf", dedup_key="manual", app_id="app-1", policy_id="p-1")
         self.assertEqual(raised.exception.existing_run.run_id, first.run_id)
 
         await store.finish_run(first.run_id, status="completed", finished_at=2.0)
-        second = await service.run_workflow("wf", dedup_key="manual", user_id="u-1")
+        second = await service.run_workflow("wf", dedup_key="manual", app_id="app-1", policy_id="p-1")
         self.assertNotEqual(second.run_id, first.run_id)
 
     async def test_run_unknown_to_the_store_is_not_found(self) -> None:

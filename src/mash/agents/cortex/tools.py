@@ -1,7 +1,7 @@
 """Cortex reads in an agent's process: the profile block and ``search_cortex``.
 
-Both are scoped to the request's ``user_id``, taken from the request and never
-from the model's arguments. A request without a user gets neither.
+Both are scoped to the request's ``app_id``, taken from the request and never
+from the model's arguments. A request without an app gets neither.
 """
 
 from __future__ import annotations
@@ -19,15 +19,15 @@ _TRUNCATION_MARKER = "\n[profile truncated]"
 
 
 def profile_block(profile: str, max_chars: int) -> str:
-    """The system prompt block for a user's profile, or '' when it is empty."""
+    """The system prompt block for an app's profile, or '' when it is empty."""
     text = str(profile or "").strip()
     if not text:
         return ""
     if len(text) > max_chars:
         text = text[:max_chars].rstrip() + _TRUNCATION_MARKER
     return (
-        "ABOUT THIS USER\n"
-        "What you know about the user from earlier conversations. Use "
+        "APP MEMORY\n"
+        "What you know from earlier conversations in this app. Use "
         f"{SEARCH_CORTEX_TOOL_NAME} for details.\n\n{text}"
     )
 
@@ -45,11 +45,11 @@ class CortexReader:
     async def close(self) -> None:
         await self.store.close()
 
-    async def profile_block(self, user_id: str) -> str:
-        profile = await self.store.get_profile(user_id)
+    async def profile_block(self, app_id: str) -> str:
+        profile = await self.store.get_profile(app_id)
         return profile_block(profile or "", self.settings.profile_max_chars)
 
-    def search_tool(self, user_id: str) -> Tool:
+    def search_tool(self, app_id: str) -> Tool:
         store = self.store
 
         async def execute(args: dict[str, Any]) -> ToolResult:
@@ -60,7 +60,7 @@ class CortexReader:
                 limit = int(args.get("limit", 10))
             except (TypeError, ValueError):
                 return ToolResult.error("limit must be an integer")
-            entries = await store.search_entries(user_id, query, limit=max(1, limit))
+            entries = await store.search_entries(app_id, query, limit=max(1, limit))
             payload = {
                 "query": query.strip(),
                 "entries": [
@@ -78,7 +78,7 @@ class CortexReader:
         return FunctionTool(
             name=SEARCH_CORTEX_TOOL_NAME,
             description=(
-                "Search what you know about the user from earlier conversations: "
+                "Search what you know from earlier conversations in this app: "
                 "preferences, accounts, ongoing work and standing instructions. "
                 "Returns matching entries with their topic and content."
             ),

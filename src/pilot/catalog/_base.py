@@ -34,7 +34,7 @@ def build_guide_llm(agent_id: str) -> LLMProvider:
     if not os.getenv("GEMINI_API_KEY", "").strip():
         raise RuntimeError(f"Agent {agent_id!r} requires GEMINI_API_KEY.")
     return GeminiProvider(
-        app_id=agent_id,
+        agent_id=agent_id,
         model=os.getenv("PILOT_GUIDE_MODEL", DEFAULT_GUIDE_MODEL),
     )
 
@@ -48,7 +48,7 @@ def build_default_llm(agent_id: str) -> LLMProvider:
     if not api_key:
         raise RuntimeError(f"Agent {agent_id!r} requires OPENROUTER_API_KEY.")
     return GemmaProvider(
-        app_id=agent_id,
+        agent_id=agent_id,
         model=os.getenv("PILOT_OPEN_MODEL", DEFAULT_OPEN_MODEL),
         base_url=OPENROUTER_BASE_URL,
         api_key=api_key,

@@ -74,7 +74,7 @@ class _RegistryShell:
 
     def __init__(self) -> None:
         self.command_registry = CommandRegistry(
-            app_id="cli-docs", event_logger=None, session_id="cli-docs"
+            agent_id="cli-docs", event_logger=None, session_id="cli-docs"
         )
 
 

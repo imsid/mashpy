@@ -15,7 +15,7 @@ class DeltaEventSpineTests(unittest.TestCase):
         # 1. Provider-emitted delta event (as BaseLLMProvider._emit_response_delta builds it).
         event = LLMEvent(
             event_type="chat.delta",
-            app_id="pilot",
+            agent_id="pilot",
             session_id="s1",
             provider="anthropic",
             model="claude-sonnet-4-6",
@@ -36,7 +36,7 @@ class DeltaEventSpineTests(unittest.TestCase):
 
         # 4. CLI hydration produces a RuntimeEvent whose payload carries the
         #    LLMEvent's wrapped {"payload": {text, index}} chunk.
-        hydrated = runtime_event_from_stream_payload(data, app_id="pilot")
+        hydrated = runtime_event_from_stream_payload(data, agent_id="pilot")
         self.assertIsNotNone(hydrated)
         assert hydrated is not None
         self.assertEqual(hydrated.event_type, "chat.delta")

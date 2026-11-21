@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import unittest
@@ -188,6 +189,10 @@ class _FakeDaemon:
         if parts[0] == "volumes":
             if method == "GET":
                 return httpx.Response(200 if parts[1] in self.volumes else 404, json={})
+            if method == "DELETE":
+                if self.volumes.pop(parts[1], None) is None:
+                    return httpx.Response(404, json={"message": "no such volume"})
+                return httpx.Response(204)
             self.volumes[body["Name"]] = body["Labels"]
             return httpx.Response(201, json={})
         if parts[0] == "networks":
@@ -245,6 +250,15 @@ class _FakeDaemon:
         return httpx.Response(500, json={"message": f"unhandled {method} {path}"})
 
 
+class SandboxNameTests(unittest.TestCase):
+    def test_a_policy_never_gets_the_name_of_a_sandbox_made_per_user(self) -> None:
+        # Before sandboxes were per policy, the key hashed the bare user id.
+        per_user = hashlib.sha256(b"p-1").hexdigest()[:16]
+        self.assertNotEqual(sandbox_key("p-1"), per_user)
+        self.assertEqual(sandbox_key("p-1"), sandbox_key("p-1"))
+        self.assertNotEqual(sandbox_key("p-1"), sandbox_key("p-2"))
+
+
 class DockerSandboxProviderTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.daemon = _FakeDaemon()
@@ -265,13 +279,13 @@ class DockerSandboxProviderTests(unittest.IsolatedAsyncioTestCase):
         return DockerSandboxProvider(**kwargs)
 
     async def test_creates_volume_network_and_container_for_the_user(self) -> None:
-        endpoint = await self._provider().ensure("u@acme.io")
+        endpoint = await self._provider().ensure("acme-ws")
 
-        name = f"mash-sandbox-{sandbox_key('u@acme.io')}"
-        self.assertEqual(sandbox_name("u@acme.io"), name)
+        name = f"mash-sandbox-{sandbox_key('acme-ws')}"
+        self.assertEqual(sandbox_name("acme-ws"), name)
         self.assertEqual(
             self.daemon.volumes,
-            {name: {"mash.sandbox.user": "u@acme.io", "mash.namespace": "mash"}},
+            {name: {"mash.sandbox.policy": "acme-ws", "mash.namespace": "mash"}},
         )
         self.assertIn(name, self.daemon.networks)
         container = self.daemon.containers[name]
@@ -288,27 +302,27 @@ class DockerSandboxProviderTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(create["NetworkingConfig"], {"EndpointsConfig": {name: {}}})
         self.assertEqual(create["HostConfig"]["NetworkMode"], name)
-        self.assertEqual(endpoint.token, derive_sandbox_token("secret", "u@acme.io"))
+        self.assertEqual(endpoint.token, derive_sandbox_token("secret", "acme-ws"))
         [binding] = create["HostConfig"]["PortBindings"]["9000/tcp"]
         self.assertEqual(binding["HostIp"], "127.0.0.1")
         self.assertEqual(endpoint.base_url, f"http://127.0.0.1:{binding['HostPort']}")
 
     async def test_the_sandbox_gets_no_host_environment(self) -> None:
-        await self._provider().ensure("u-1")
+        await self._provider().ensure("p-1")
 
         [container] = self.daemon.containers.values()
         self.assertEqual(
             container["_create"]["Env"],
-            [f"MASH_SANDBOX_TOKEN={derive_sandbox_token('secret', 'u-1')}"],
+            [f"MASH_SANDBOX_TOKEN={derive_sandbox_token('secret', 'p-1')}"],
         )
 
     async def test_existing_container_is_started_not_recreated(self) -> None:
         provider = self._provider()
-        await provider.ensure("u-1")
-        await provider.stop("u-1")
+        await provider.ensure("p-1")
+        await provider.stop("p-1")
         creates = [call for call in self.daemon.calls if call[1] == "/containers/create"]
 
-        await provider.ensure("u-1")
+        await provider.ensure("p-1")
 
         self.assertEqual(len(creates), 1)
         self.assertEqual(
@@ -318,11 +332,11 @@ class DockerSandboxProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(container["State"]["Running"])
 
     async def test_a_container_made_from_another_image_is_replaced(self) -> None:
-        await self._provider(image="mash-app:old").ensure("u-1")
+        await self._provider(image="mash-app:old").ensure("p-1")
         [name] = self.daemon.containers
         volumes = dict(self.daemon.volumes)
 
-        await self._provider().ensure("u-1")
+        await self._provider().ensure("p-1")
 
         self.assertIn(("DELETE", f"/containers/{name}"), self.daemon.calls)
         container = self.daemon.containers[name]
@@ -332,14 +346,14 @@ class DockerSandboxProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_list_reports_this_namespaces_sandboxes(self) -> None:
         provider = self._provider()
-        await provider.ensure("u-1")
-        await provider.ensure("u-2")
-        await provider.stop("u-2")
-        await self._provider(namespace="other").ensure("u-3")
+        await provider.ensure("p-1")
+        await provider.ensure("p-2")
+        await provider.stop("p-2")
+        await self._provider(namespace="other").ensure("p-3")
 
-        listed = {info.user_id: info.running for info in await provider.list()}
+        listed = {info.policy_id: info.running for info in await provider.list()}
 
-        self.assertEqual(listed, {"u-1": True, "u-2": False})
+        self.assertEqual(listed, {"p-1": True, "p-2": False})
 
     def _in_container_provider(self, **overrides: Any) -> DockerSandboxProvider:
         self.daemon.add_container(
@@ -350,30 +364,30 @@ class DockerSandboxProviderTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(gethostname.stop)
         return self._provider(in_container=True, **overrides)
 
-    async def test_in_a_container_it_joins_the_users_network_and_uses_names(self) -> None:
+    async def test_in_a_container_it_joins_the_policys_network_and_uses_names(self) -> None:
         provider = self._in_container_provider(namespace="acme")
-        endpoint = await provider.ensure("u-1")
+        endpoint = await provider.ensure("p-1")
 
-        name = f"acme-sandbox-{sandbox_key('u-1')}"
+        name = f"acme-sandbox-{sandbox_key('p-1')}"
         self.assertEqual(endpoint.base_url, f"http://{name}:9000")
         self.assertEqual(self.daemon.attached(name), {name, "host-ctr"})
         create = self.daemon.containers[name]["_create"]
         self.assertEqual(create["Image"], "mash-app:dev")
         self.assertNotIn("PortBindings", create["HostConfig"])
 
-    # Per-user networks.
+    # Per-policy networks.
 
-    async def test_each_user_gets_a_network_of_their_own(self) -> None:
+    async def test_each_policy_gets_a_network_of_their_own(self) -> None:
         provider = self._provider()
-        await provider.ensure("u-1")
-        await provider.ensure("u-2")
+        await provider.ensure("p-1")
+        await provider.ensure("p-2")
 
-        one, two = sandbox_name("u-1"), sandbox_name("u-2")
+        one, two = sandbox_name("p-1"), sandbox_name("p-2")
         self.assertEqual(self.daemon.attached(one), {one})
         self.assertEqual(self.daemon.attached(two), {two})
         self.assertEqual(
             self.daemon.networks[one]["Labels"],
-            {"mash.sandbox.user": "u-1", "mash.namespace": "mash"},
+            {"mash.sandbox.policy": "p-1", "mash.namespace": "mash"},
         )
         subnets = [
             ipaddress.ip_network(self.daemon.networks[name]["IPAM"]["Config"][0]["Subnet"])
@@ -385,23 +399,38 @@ class DockerSandboxProviderTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(subnet.subnet_of(pool))
         self.assertFalse(subnets[0].overlaps(subnets[1]))
 
-    async def test_in_a_container_the_host_joins_every_users_network(self) -> None:
+    async def test_in_a_container_the_host_joins_every_policys_network(self) -> None:
         provider = self._in_container_provider()
-        await provider.ensure("u-1")
-        await provider.ensure("u-2")
+        await provider.ensure("p-1")
+        await provider.ensure("p-2")
 
-        for user in ("u-1", "u-2"):
+        for user in ("p-1", "p-2"):
             name = sandbox_name(user)
             self.assertEqual(self.daemon.attached(name), {name, "host-ctr"})
 
-    async def test_stop_removes_the_users_network(self) -> None:
+    async def test_delete_removes_the_container_network_and_volume(self) -> None:
         provider = self._in_container_provider()
-        await provider.ensure("u-1")
-        await provider.ensure("u-2")
+        await provider.ensure("p-1")
+        await provider.ensure("p-2")
 
-        await provider.stop("u-1")
+        await provider.delete("p-1")
+        await provider.delete("p-1")  # already gone: nothing to do
 
-        one, two = sandbox_name("u-1"), sandbox_name("u-2")
+        one, two = sandbox_name("p-1"), sandbox_name("p-2")
+        self.assertNotIn(one, self.daemon.containers)
+        self.assertNotIn(one, self.daemon.networks)
+        self.assertNotIn(one, self.daemon.volumes)
+        self.assertIn(two, self.daemon.containers)
+        self.assertIn(two, self.daemon.volumes)
+
+    async def test_stop_removes_the_policys_network(self) -> None:
+        provider = self._in_container_provider()
+        await provider.ensure("p-1")
+        await provider.ensure("p-2")
+
+        await provider.stop("p-1")
+
+        one, two = sandbox_name("p-1"), sandbox_name("p-2")
         self.assertNotIn(one, self.daemon.networks)
         self.assertEqual(self.daemon.containers[one]["NetworkSettings"]["Networks"], {})
         self.assertNotIn(one, self.daemon.containers["host-ctr"]["NetworkSettings"]["Networks"])
@@ -411,51 +440,51 @@ class DockerSandboxProviderTests(unittest.IsolatedAsyncioTestCase):
         # The host is down when `mash sandbox stop` runs. Left attached, its
         # container could not start once the network is gone.
         provider = self._in_container_provider()
-        await provider.ensure("u-1")
+        await provider.ensure("p-1")
         self.daemon.containers["host-ctr"]["State"]["Running"] = False
 
-        await stop_sandbox(self.engine, "u-1", namespace="mash")
+        await stop_sandbox(self.engine, "p-1", namespace="mash")
 
-        self.assertNotIn(sandbox_name("u-1"), self.daemon.networks)
+        self.assertNotIn(sandbox_name("p-1"), self.daemon.networks)
         self.assertEqual(self.daemon.containers["host-ctr"]["NetworkSettings"]["Networks"], {})
 
     async def test_stop_is_idempotent(self) -> None:
         provider = self._in_container_provider()
-        await provider.ensure("u-1")
-        await provider.stop("u-1")
+        await provider.ensure("p-1")
+        await provider.stop("p-1")
 
-        await provider.stop("u-1")
+        await provider.stop("p-1")
         await provider.stop("never-started")
 
-        self.assertNotIn(sandbox_name("u-1"), self.daemon.networks)
+        self.assertNotIn(sandbox_name("p-1"), self.daemon.networks)
 
     async def test_a_stopped_sandbox_starts_again_on_a_new_network(self) -> None:
         provider = self._in_container_provider()
-        await provider.ensure("u-1")
-        await provider.stop("u-1")
+        await provider.ensure("p-1")
+        await provider.stop("p-1")
 
-        endpoint = await provider.ensure("u-1")
+        endpoint = await provider.ensure("p-1")
 
-        name = sandbox_name("u-1")
+        name = sandbox_name("p-1")
         self.assertTrue(self.daemon.containers[name]["State"]["Running"])
         self.assertEqual(self.daemon.attached(name), {name, "host-ctr"})
         self.assertEqual(endpoint.base_url, f"http://{name}:9000")
 
     async def test_a_container_on_the_shared_network_is_replaced(self) -> None:
-        name = sandbox_name("u-1")
+        name = sandbox_name("p-1")
         self.daemon.add_network("mash-sandboxes", subnet="172.30.0.0/16")
         self.daemon.add_container(
             name,
             running=True,
             config={
                 "Image": "mash-app:dev",
-                "Labels": {"mash.sandbox.user": "u-1", "mash.namespace": "mash"},
+                "Labels": {"mash.sandbox.policy": "p-1", "mash.namespace": "mash"},
                 "HostConfig": {"PortBindings": {"9000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "1"}]}},
                 "NetworkingConfig": {"EndpointsConfig": {"mash-sandboxes": {}}},
             },
         )
 
-        await self._provider().ensure("u-1")
+        await self._provider().ensure("p-1")
 
         self.assertIn(("DELETE", f"/containers/{name}"), self.daemon.calls)
         self.assertEqual(self.daemon.attached("mash-sandboxes"), set())
@@ -464,54 +493,54 @@ class DockerSandboxProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_running_sandbox_that_lost_its_network_is_attached_again(self) -> None:
         # E.g. started by hand after a stop removed its network.
         provider = self._in_container_provider()
-        await provider.ensure("u-1")
-        await provider.stop("u-1")
-        name = sandbox_name("u-1")
+        await provider.ensure("p-1")
+        await provider.stop("p-1")
+        name = sandbox_name("p-1")
         self.daemon.containers[name]["State"]["Running"] = True
 
-        await provider.ensure("u-1")
+        await provider.ensure("p-1")
 
         self.assertEqual(self.daemon.attached(name), {name, "host-ctr"})
 
     async def test_prepare_removes_networks_left_by_stopped_sandboxes(self) -> None:
         provider = self._in_container_provider()
-        await provider.ensure("u-1")
-        await provider.ensure("u-2")
+        await provider.ensure("p-1")
+        await provider.ensure("p-2")
         # The host died between stopping u-1's container and removing its network.
-        self.daemon.containers[sandbox_name("u-1")]["State"]["Running"] = False
+        self.daemon.containers[sandbox_name("p-1")]["State"]["Running"] = False
         self.daemon.add_network(
             sandbox_name("gone"),
             subnet="10.213.9.0/28",
-            labels={"mash.sandbox.user": "gone", "mash.namespace": "mash"},
+            labels={"mash.sandbox.policy": "gone", "mash.namespace": "mash"},
         )
 
         await self._provider(in_container=True).prepare()
 
-        self.assertNotIn(sandbox_name("u-1"), self.daemon.networks)
+        self.assertNotIn(sandbox_name("p-1"), self.daemon.networks)
         self.assertNotIn(sandbox_name("gone"), self.daemon.networks)
-        self.assertIn(sandbox_name("u-2"), self.daemon.networks)
+        self.assertIn(sandbox_name("p-2"), self.daemon.networks)
 
     async def test_subnets_in_use_are_skipped(self) -> None:
         self.daemon.add_network("someone-else", subnet="10.213.0.0/24")
         self.daemon.hidden_subnets.append("10.213.1.0/28")
 
-        await self._provider().ensure("u-1")
+        await self._provider().ensure("p-1")
 
-        subnet = self.daemon.networks[sandbox_name("u-1")]["IPAM"]["Config"][0]["Subnet"]
+        subnet = self.daemon.networks[sandbox_name("p-1")]["IPAM"]["Config"][0]["Subnet"]
         self.assertEqual(subnet, "10.213.1.16/28")
 
     async def test_mash_sandbox_subnets_sets_the_range(self) -> None:
         provider = self._provider(environ={"MASH_SANDBOX_SUBNETS": "10.99.0.0/27"})
-        await provider.ensure("u-1")
-        await provider.ensure("u-2")
+        await provider.ensure("p-1")
+        await provider.ensure("p-2")
 
         subnets = {
             self.daemon.networks[sandbox_name(user)]["IPAM"]["Config"][0]["Subnet"]
-            for user in ("u-1", "u-2")
+            for user in ("p-1", "p-2")
         }
         self.assertEqual(subnets, {"10.99.0.0/28", "10.99.0.16/28"})
         with self.assertRaises(SandboxUnavailableError):
-            await provider.ensure("u-3")
+            await provider.ensure("p-3")
 
     def test_subnet_range_validation(self) -> None:
         for value in ("not-a-net", "10.0.0.0/29", "fd00::/64"):
@@ -520,14 +549,14 @@ class DockerSandboxProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_cli_stop_and_start_follow_the_same_lifecycle(self) -> None:
         provider = self._in_container_provider()
-        await provider.ensure("u-1")
-        name = sandbox_name("u-1")
+        await provider.ensure("p-1")
+        name = sandbox_name("p-1")
 
-        await stop_sandbox(self.engine, "u-1", namespace="mash")
+        await stop_sandbox(self.engine, "p-1", namespace="mash")
         self.assertFalse(self.daemon.containers[name]["State"]["Running"])
         self.assertNotIn(name, self.daemon.networks)
 
-        await start_sandbox(self.engine, "u-1", namespace="mash", environ={})
+        await start_sandbox(self.engine, "p-1", namespace="mash", environ={})
         self.assertTrue(self.daemon.containers[name]["State"]["Running"])
         self.assertEqual(self.daemon.attached(name), {name})
 
@@ -536,7 +565,7 @@ class DockerSandboxProviderTests(unittest.IsolatedAsyncioTestCase):
             provider = self._provider(image=None)
         self.assertEqual(provider.image, "ghcr.io/imsid/mash-sandbox:9.8.7")
 
-        await provider.ensure("u-1")
+        await provider.ensure("p-1")
 
         self.assertEqual(
             self.daemon.pulls, [{"fromImage": "ghcr.io/imsid/mash-sandbox", "tag": "9.8.7"}]
@@ -546,7 +575,7 @@ class DockerSandboxProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_mash_sandbox_image_overrides_the_default(self) -> None:
         provider = self._provider(image=None, environ={"MASH_SANDBOX_IMAGE": "mash-app:dev"})
-        await provider.ensure("u-1")
+        await provider.ensure("p-1")
 
         self.assertEqual(self.daemon.pulls, [])
         [container] = self.daemon.containers.values()
@@ -556,7 +585,7 @@ class DockerSandboxProviderTests(unittest.IsolatedAsyncioTestCase):
         provider = self._provider(
             environ={"MASH_SANDBOX_MOUNTS": "/src/repo:/home/agent/mashpy:ro"}
         )
-        await provider.ensure("u-1")
+        await provider.ensure("p-1")
 
         [container] = self.daemon.containers.values()
         self.assertEqual(

@@ -13,7 +13,7 @@ from mash.otel.projection import project_request
 from mash.runtime import AgentRuntime
 from mash.runtime.events import RuntimeEventType
 from mash.runtime.requests import to_public_event
-from mash.testing.runtime_fixtures import ToolCallingAgentSpec
+from mash.testing.runtime_fixtures import TEST_IDENTITY, ToolCallingAgentSpec
 from mash.tools.base import FunctionTool, ToolResult
 from mash.tools.registry import ToolRegistry
 
@@ -54,7 +54,7 @@ class EventNameTests(unittest.IsolatedAsyncioTestCase):
 
     async def _run(self) -> list:
         accepted = await self.runtime.submit_request(
-            message="say hi", session_id="s-1", user_id="u-1", request_id="req-1"
+            message="say hi", session_id="s-1", **TEST_IDENTITY, request_id="req-1"
         )
         for _ in range(200):
             if await self.runtime_store.is_request_terminal(accepted["request_id"]):

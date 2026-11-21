@@ -42,9 +42,9 @@ def test_feed_selection_order_isolation_and_fresh_schema():
 
                 async def insert(agent, trace, summary, ts, event='chat.end'):
                     await conn.execute('''INSERT INTO runtime_event_log
-                        (app_id, agent_id, trace_id, session_id, event_type, payload, created_at)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s)''',
-                        (agent, agent, trace, 'session-' + agent, event, Jsonb({'thought_summary': summary}), ts))
+                        (agent_id, trace_id, session_id, event_type, payload, created_at)
+                        VALUES (%s,%s,%s,%s,%s,%s)''',
+                        (agent, trace, 'session-' + agent, event, Jsonb({'thought_summary': summary}), ts))
                 # 55 qualifying traces and many newer non-qualifying events.
                 for i in range(55):
                     await insert('pilot', 'trace-' + str(i), 'Original ' + str(i), i)

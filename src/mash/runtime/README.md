@@ -90,8 +90,8 @@ sequenceDiagram
     participant Agent as mash.core.Agent
     participant Memory as Memory Store
 
-    User->>API: POST /api/v1/agents/{agent_id}/requests
-    API->>Pool: get_client(agent_id)
+    User->>API: POST /api/v1/sessions/{session_id}/events
+    API->>Pool: EventService dequeues, get_client("companion")
     Pool-->>API: AgentClient
     API->>Client: post_request(...) / stream(...)
     Client->>Server: HTTP request + SSE stream
@@ -166,7 +166,7 @@ The `RuntimeStore` boundary is intentionally small:
 
 This is the replay/observation boundary. It should not know how a request is executed internally. It only records what happened.
 
-A request's lifecycle state is one such record, not an inference: the events that move a request between states carry a `lifecycle` marker, and the store projects it onto a `runtime_request` row in the same transaction as the event. `read_request_stream(...)` is what the streaming path uses — it returns a request's new events and its terminality together, with terminality scoped to the events it just returned, so a caller that stops on `done` has necessarily been handed the terminal event. The row also records the request's `agent_id` and `user_id` from its accepted event; the host's `/h2a` relay reads them to check a child request's parent and copy its user. The accepted event also writes `session_id`, `mode` (`fg` or `bg`), `started_by` (`user`, or the agent whose `RunSubAgents` call started the request), `started_at` and `parent_request_id`, and `mash.request.mode_changed` updates `mode` in the same transaction as its append. `list_session_requests(...)` and `list_child_requests(...)` read them. The table is a projection of the log, written in the same transaction as each lifecycle event. The feedback pair is the one part written by a person rather than the engine: `/feedback` in the REPL appends a `runtime_feedback` row with the host, agent, session, and request id, and `GET /api/v1/feedback` reads it back for app developers.
+A request's lifecycle state is one such record, not an inference: the events that move a request between states carry a `lifecycle` marker, and the store projects it onto a `runtime_request` row in the same transaction as the event. `read_request_stream(...)` is what the streaming path uses — it returns a request's new events and its terminality together, with terminality scoped to the events it just returned, so a caller that stops on `done` has necessarily been handed the terminal event. The row also records the request's `agent_id`, `app_id` and `policy_id` from its accepted event; the host's `/h2a` relay reads them to check a child request's parent and copy its app and policy. The accepted event also writes `session_id`, `started_by` (`user`, or the agent whose `RunSubAgents` call started the request), `started_at` and `parent_request_id`. `list_session_requests(...)` and `list_child_requests(...)` read them. The table is a projection of the log, written in the same transaction as each lifecycle event. The feedback pair is the one part written by a person rather than the engine: `/feedback` in the REPL appends a `runtime_feedback` row with the host, agent, session, and request id, and `GET /api/v1/feedback` reads it back for app developers.
 
 ### Runtime Durability
 
@@ -268,7 +268,9 @@ lifecycle.
 
 - **`Pool`** (on the host) opens one shared `PostgresRuntimeStore`, one shared
   `PostgresStore` and one `WorkflowStore` for the host's own reads: traces,
-  telemetry, sessions, feedback, and workflow runs. It runs no agent runtimes.
+  telemetry, sessions, feedback, and workflow runs. It also opens the
+  `PolicyStore` and the `EventStore` (`mash.policies`, `mash.sessions`) for
+  the policies, sessions and events tables. It runs no agent runtimes.
   Session reads cover agents that use the default `build_memory_store()`; an
   agent that overrides it keeps its store in its own process only.
   At startup it runs `SHOW max_connections` and logs a warning when the host
@@ -293,7 +295,7 @@ lifecycle.
   - runtime tool wiring
   - MCP tool wiring
   - web search tool wiring (reuses the MCP manager, registers plain tool names)
-  - `RunSubAgents` and `RunWorkflow` wiring for the companion on a host request the user started, over the host's agents and workflows; no other agent routes
+  - `RunSubAgents` and `RunWorkflow` wiring for the companion on a request that runs an event, over the host's agents and workflows; no other agent routes
 
 - [`context.py`](./context.py)
   - session history loading
@@ -320,7 +322,7 @@ lifecycle.
   - `AgentClient`: the H2A HTTP client for request submission, event streaming, interaction delivery, and control operations; `AgentUnavailableError` when the agent's server can't be reached. Event streams use an httpx client of their own with no connection cap and no read timeout; the other calls share a second client capped at 50 connections, so open streams never hold up a submit, a cancel or an answer
 
 - [`agent_process.py`](./agent_process.py)
-  - `build_agent_server(pool, agent_id, token=, host_api_url=, sandbox_tools=)`: the `AgentServer` behind `mash agent serve`; with `sandbox_tools` (the host sets `MASH_SANDBOX_ENABLED=1` when it has sandboxes) every turn agent gets `run_code` and `edit_file`, plus `sandbox_put` and `sandbox_get` when the spec's `sandbox_file_roots()` names folders (`mash.tools.sandbox`), and a spec with its own tool of one of those names fails to start. With `browser_tools` (the host sets `MASH_BROWSER_ENABLED=1` when it has browsers) an agent whose spec lists `browser_sites()` also gets the browser tools (`mash.tools.browser`), and the engine turns its `browser_handoff` calls into `browser` interactions carrying a live-view link. When the pool enables Cortex the runtime gets a `CortexReader` (`runtime.enable_cortex`): each request gets its user's profile block in `context.load` and `search_cortex`
+  - `build_agent_server(pool, agent_id, token=, host_api_url=, sandbox_tools=)`: the `AgentServer` behind `mash agent serve`; with `sandbox_tools` (the host sets `MASH_SANDBOX_ENABLED=1` when it has sandboxes) every turn agent gets `run_code` and `edit_file`, plus `sandbox_put` and `sandbox_get` when the spec's `sandbox_file_roots()` names folders (`mash.tools.sandbox`), and a spec with its own tool of one of those names fails to start. With `browser_tools` (the host sets `MASH_BROWSER_ENABLED=1` when it has browsers) an agent whose spec lists `browser_sites()` also gets the browser tools (`mash.tools.browser`), and the engine turns its `browser_handoff` calls into `browser` interactions; the app mints a live-view link for one on the event. The request's policy snapshot narrows both sets: `"sandbox": false` drops the sandbox tools with `browser_save` and `browser_upload`, and `browser_sites` is intersected with the spec's. When the pool enables Cortex the runtime gets a `CortexReader` (`runtime.enable_cortex`): each request gets its app's profile block in `context.load` and `search_cortex`
   - `HostRelay`: the runtime's host access in an agent process; the companion's clients for the host's agents, and its workflow client, point at the host's `/h2a` relay
   - `stop_with_parent()`: an agent process shuts down when the host whose pid is in `MASH_PARENT_PID` exits
 
@@ -353,8 +355,7 @@ lifecycle.
 - [`events/types.py`](./events/types.py)
   - runtime event schema and the event set: each name is the span it bounds
     (`invoke_agent.start`/`.end`, `chat.start`/`.delta`/`.end`, `execute_tool.start`/`.end`,
-    `mash.context_load.*`, `mash.step.end`, `mash.interaction.*`) or a log record name
-    (`mash.request.resumed`, `mash.request.mode_changed`)
+    `mash.context_load.*`, `mash.step.end`, `mash.interaction.*`)
   - every `.end` carries `status` (`ok`, `error`, `cancelled`); OpenTelemetry attributes
     live under `payload["attributes"]` with their GenAI convention names
 
@@ -380,6 +381,8 @@ lifecycle.
   - `Pool`
   - agent registrations, one `AgentClient` per enabled agent (from the configured `AgentProvider` at `start()`), the host (composition) registry, and the `SandboxManager` when the host has sandboxes. The pool runs no agent runtimes
   - `enable_agent` / `disable_agent`: start or stop one agent's process on a running pool. Disable raises `AgentInUseError` while a host or workflow names the agent; `get_client` raises `AgentDisabledError` for a disabled one. The enabled set is in memory
+  - the `EventService` (`mash.sessions.service`), started by `start_events()` once workflow recovery has run. It takes new events, dequeues each session's oldest queued event onto the companion with `submit_host_request(..., request_id=, policy=)`, and keeps one watcher per started event that follows the companion request's stream and copies its outcome onto the event. On start it watches every started event and dequeues every session with queued events; `define_host` dequeues the sessions waiting on that host
+  - `cancel_with_children(agent_id, request_id)`: cancels a request and its running `RunSubAgents` children
 
 - `host/builder.py`
   - `HostBuilder`
@@ -410,9 +413,9 @@ At a high level, one request flows like this:
    existing accepted payload instead (`AgentServer` answers `200`, not `202`).
    A `parent` object (`kind: "subagent"` or `"workflow"`) is mapped onto the
    request metadata keys the engine reads (`subagent_id`, `workflow_id`,
-   `workflow_run_id`, `task_id`). The submit's `mode` (`fg` by default) and a
-   `subagent` parent's `started_by` and `parent_request_id` go into the
-   accepted event's payload.
+   `workflow_run_id`, `task_id`). The submit's `app_id`, `policy_id` and
+   policy snapshot go into the request metadata, and a `subagent` parent's
+   `started_by` and `parent_request_id` into the accepted event's payload.
 3. `AgentRuntime` delegates execution start to the configured `RequestEngine`.
 4. The request engine runs the loop in `engine/loop.py` over the steps in `engine/steps.py`, checkpointing after each.
 5. Those steps load/build context, run think/tool phases, persist turns, and append `RuntimeEvent`s.
@@ -495,18 +498,21 @@ The structured payload appears alongside `text`:
 
 ### HTTP API
 
-`POST /api/v1/agent/{agent_id}/request` accepts an optional
-`structured_output` field on the body. The body must be a JSON-schema dict;
-Pydantic models are serialized client-side by
+An event (`POST /api/v1/sessions/{session_id}/events`) accepts an optional
+`structured_output` field, which becomes the companion request's schema. It
+must be a JSON-schema dict; Pydantic models are serialized client-side by
 [`src/mash/cli/client.py`](../cli/client.py) before being sent.
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/v1/agent/assistant/request \
+curl -X POST http://127.0.0.1:8000/api/v1/sessions/s1/events \
   -H "Authorization: Bearer $MASH_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
+    "event_id": "e-1",
+    "host_id": "assistant",
+    "app_id": "my-app",
+    "policy_id": "dev",
     "message": "summarize recent commits",
-    "session_id": "s1",
     "structured_output": {
       "title": "ChangelogOutput",
       "type": "object",
@@ -521,7 +527,8 @@ curl -X POST http://127.0.0.1:8000/api/v1/agent/assistant/request \
 ```
 
 An invalid `structured_output` payload returns `400
-INVALID_STRUCTURED_OUTPUT`.
+INVALID_STRUCTURED_OUTPUT`, and the event's `response` carries the
+`structured_output` the request returned.
 
 ### Per-task structured output
 
@@ -546,8 +553,11 @@ Interactions allow an agent to pause mid-execution and request information or ap
 
 1. During the request loop, after `plan_request_step`, if the action payload contains an `interaction` field, the loop opens an interaction.
 2. The loop emits a `mash.interaction.start` event (visible on SSE as `request.interaction.create`) and records the interaction's id and deadline in its checkpoint.
-3. The loop waits in process until the deadline.
-4. The host delivers the user's response via `post_interaction` on the client. The agent's server appends it as `mash.interaction.end` and wakes the loop.
+3. The loop waits in process until the deadline: the interaction type's
+   timeout, capped by the policy's `wait_max_seconds`. A browser handoff has
+   no timeout of its own and waits for the cap; with no cap it waits until
+   answered or cancelled.
+4. The app answers on the event; the host forwards the answer via `post_interaction` on the client. The agent's server appends it as `mash.interaction.end` and wakes the loop.
 5. The loop reads the answer and continues to tool execution.
 
 ### Durability
@@ -571,7 +581,7 @@ A recovered request opens the same id, and the create event is deduped on it.
 
 ### Relayed interactions
 
-A `RunSubAgents` child's interactions reach the user through the companion,
+A `RunSubAgents` child's interactions reach the app through the companion,
 without a model call. The loop binds a `ChildInteractionRelay` around the
 call, and the tool, which reads each child's stream, uses it:
 
@@ -580,15 +590,15 @@ call, and the tool, which reads each child's stream, uses it:
    `relayed_interaction_id(child_request_id, child_interaction_id)`, with
    `origin` set to the child's `agent_id`, `request_id`, `session_id`,
    `trace_id` and `interaction_id`.
-2. The user answers it on the calling request. A task in the tool waits for
+2. The app answers it on the calling request's event. A task in the tool waits for
    that answer and posts it to the child through
    `POST /h2a/agent/{agent_id}/request/{request_id}/interaction`.
 3. On the child's `request.interaction.ack`, the relay closes the calling
    request's copy with the same response and flags. The first answer stored
-   wins, so this is a no-op once the user has answered; after a child timeout
+   wins, so this is a no-op once the app has answered; after a child timeout
    or cancel it closes the copy the same way.
 
-The two event logs are the only state. A rerun call replays each child's
+The two event logs are the only state. A recovered call replays each child's
 stream and arrives at the same ids, so it reopens nothing, and forwards an
 answer that was stored but not yet sent. Cancel acks every open interaction of
 the request, the relayed ones included.
@@ -634,49 +644,26 @@ There are three layers of failure handling, each covering a different scenario:
 | Failure type | Handled by | Developer action |
 |---|---|---|
 | Transient error (rate limit, timeout, network) | `retry_transient()` — in-process, immediate, with backoff | None — automatic |
-| Retries exhausted or terminal error | `REQUEST_FAILED` emitted | Call `resume_request()` to continue from the failed step, or rerun it |
-| Cancelled | `REQUEST_CANCELLED` emitted | Call `resume_request()` to continue it |
+| Retries exhausted or terminal error | `REQUEST_FAILED` emitted; the event closes `failed` | Post the message again as a new event |
+| Cancelled | `REQUEST_CANCELLED` emitted; the event closes `cancelled` | Post the message again as a new event |
 | Step budget exhausted (`max_steps`) | `REQUEST_FAILED` with `error_code=max_steps_exhausted`, `stop_reason=max_steps` | Raise `max_steps` or narrow the task |
 | Process crash (OOM, kill, hardware) | The restarted process continues it from its checkpoint | None; after 10 recoveries it fails with `error_type=recovery_limit` |
 
 **Step-level retry** covers transient errors during normal operation. If retries exhaust or the error is non-retryable, the workflow emits `REQUEST_FAILED` with `error_code` and `retryable` fields from `classify_error()` so the developer knows what happened.
 
-**Developer-initiated resume** covers requests that stopped without finishing: a cancelled one, or a failed one. `resume_request(request_id)` records the request running and continues it from its checkpoint, so the failed step runs again and the steps before it do not.
-
 **Budget exhaustion is a failure, not a completion.** An agent that spends its whole `max_steps` budget without finishing raises `MaxStepsExhaustedError`, so the request fails before turn persistence, structured-output finalization, or `REQUEST_COMPLETED`. This keeps an unfinished turn from being finalized into a schema-valid but empty business result that a workflow would thread into its next step.
 
 **Process crash recovery** covers the case where an agent process dies mid-step (killed, OOM, hardware failure). No exception handler runs, so no `REQUEST_FAILED` is emitted, and the request stays `running` in `runtime_request`. The host restarts the process, and on startup its engine reads the agent's `running` requests and continues each from its checkpoint; the step that was running runs again. Only the agent's own process continues its requests, since recovery selects by `agent_id`. A host restart restarts every agent the same way, and a disabled agent's running requests continue when it is enabled. This is one query at startup; an idle process makes no others. Recovered requests take running slots like new ones, so at most `MASH_AGENT_MAX_RUNNING` continue at once.
 
-### Request Status, Cancel, Resume, and Rerun APIs
+### Request Status and Cancel
 
-`AgentRuntime` exposes five methods for inspecting and controlling a request:
+`AgentRuntime` exposes these for inspecting and controlling a request:
 
 - `get_request_status(request_id)` reads the request's status from `runtime_request`: `running`, `completed`, `failed` or `cancelled`. A `running` request whose stream has gone quiet after a crash continues when its agent's process restarts.
 
 - `cancel_request(request_id)` acks a pending interaction as cancelled, emits `REQUEST_CANCELLED`, and stops the loop at the next step boundary; the step in flight finishes and checkpoints. Idempotent on a request that is already terminal.
 
-- `resume_request(request_id)` continues a `cancelled` or `failed` request from its checkpoint: it emits `REQUEST_RESUMED`, which records the request running, then restarts the loop. Rejects with `RequestStaleError` when the session has accrued a newer replayable turn, since resume continues from the request's original context. Returns informational status if the request is already running or completed.
-
-- `set_request_mode(request_id, mode)` switches a running request between `fg` and `bg` by appending `mash.request.mode_changed`. It raises `RequestTerminalError` once the request is terminal. The mode tells clients whether the conversation waits on the request; it does not change how the request runs.
-
-- `rerun_request(request_id)` — submits a new request built from the original's `request.accepted` payload (message plus full request metadata, including the host snapshot), with `rerun_of` stamped into the metadata. New request id, new trace, and `context.load` runs fresh against the session's current history. Works regardless of the original's terminal state.
-
-These are also available through `AgentClient` and the HTTP API:
-
-- `GET /agent/{agent_id}/request/{request_id}/status`
-- `POST /agent/{agent_id}/request/{request_id}/cancel`
-- `POST /agent/{agent_id}/request/{request_id}/resume`
-- `POST /agent/{agent_id}/request/{request_id}/rerun`
-- `POST /agent/{agent_id}/request/{request_id}/mode` (`409 REQUEST_TERMINAL` once terminal)
-
-On the host, both cancel routes (by request and by trace) also cancel the request's running `RunSubAgents` children, each through its own agent. The request, parked in its `RunSubAgents` step, stops at the step boundary once they end. `GET /agent/{agent_id}/sessions/{session_id}/requests` lists a session's requests newest first, filtered by `mode`, `status` and `started_by`.
-
-Trace and request are one to one, so the admin UI addresses a request by the trace it is already showing; the same four operations are exposed keyed by trace id, with the request id resolved server-side:
-
-- `GET /agent/{agent_id}/trace/{trace_id}/status`
-- `POST /agent/{agent_id}/trace/{trace_id}/cancel`
-- `POST /agent/{agent_id}/trace/{trace_id}/resume`
-- `POST /agent/{agent_id}/trace/{trace_id}/rerun`
+On the host, `GET /api/v1/agent/{agent_id}/request/{request_id}/status` and `GET /api/v1/agent/{agent_id}/trace/{trace_id}/status` read a request's status. Cancelling goes through the event (`POST /api/v1/sessions/{session_id}/events/{event_id}/cancel`): `Pool.cancel_with_children` cancels the companion's request and its running `RunSubAgents` children, each through its own agent, skipping a child whose agent is disabled. The request, parked in its `RunSubAgents` step, stops at the step boundary once they end. `GET /api/v1/agent/{agent_id}/sessions/{session_id}/requests` lists a session's requests newest first, filtered by `status` and `started_by`.
 
 ## Important Interfaces
 
@@ -697,7 +684,7 @@ Questions that belong here:
 
 ### Request engine interface
 
-Use this when you need to change how durable work is started or resumed:
+Use this when you need to change how durable work is started or recovered:
 
 - `RequestEngine`
 - `RequestRun`
@@ -706,7 +693,7 @@ Questions that belong here:
 
 - How is a request started durably?
 - What does the checkpoint hold, and when is it saved?
-- How are recovery, cancel and resume handled?
+- How are recovery and cancel handled?
 
 ## Design Rules
 
@@ -752,7 +739,7 @@ unsupported providers use a no-op default. No agent configuration is required.
 The summaries remain in `chat.end`; answers and tool behavior
 are unchanged. No interpreter lifecycle is involved.
 
-`RuntimeStore.list_thought_traces(app_id=None, limit=50, trace_id=None)` reads the latest
+`RuntimeStore.list_thought_traces(agent_id=None, limit=50, trace_id=None)` reads the latest
 thought-bearing traces and all their nonempty summaries from one SQL snapshot.
 Agent/trace filtering and nonempty-string qualification precede the trace limit.
 Admin displays these words in full. The pool uses its existing shared event

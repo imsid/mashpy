@@ -37,7 +37,7 @@ class RuntimeStore(Protocol):
 
     async def list_events(
         self,
-        app_id: str,
+        agent_id: str,
         *,
         session_id: str | None = None,
         trace_id: str | None = None,
@@ -58,8 +58,8 @@ class RuntimeStore(Protocol):
         """The agent and user a request was accepted for, or None if unknown."""
         ...
 
-    async def get_other_session_user(self, session_id: str, user_id: str) -> str | None:
-        """A user other than ``user_id`` with a request on the session, or None."""
+    async def get_other_session_policy(self, session_id: str, policy_id: str) -> str | None:
+        """A policy other than ``policy_id`` with a request on the session, or None."""
         ...
 
     async def save_checkpoint(self, request_id: str, checkpoint: dict[str, Any]) -> None:
@@ -87,7 +87,7 @@ class RuntimeStore(Protocol):
         self,
         trace_id: str,
         *,
-        app_id: str | None = None,
+        agent_id: str | None = None,
     ) -> str | None: ...
 
     async def list_request_ends(
@@ -110,14 +110,13 @@ class RuntimeStore(Protocol):
         self,
         session_id: str,
         *,
-        mode: str | None = None,
         status: str | None = None,
         started_by: str | None = None,
     ) -> list[dict[str, Any]]:
         """A session's requests, newest first.
 
-        Each record has ``request_id``, ``agent_id``, ``user_id``,
-        ``session_id``, ``message``, ``mode``, ``status``, ``started_by``,
+        Each record has ``request_id``, ``agent_id``, ``app_id``, ``policy_id``,
+        ``session_id``, ``message``, ``status``, ``started_by``,
         ``parent_request_id`` and ``started_at``.
         """
         ...
@@ -135,7 +134,7 @@ class RuntimeStore(Protocol):
 
     async def list_feedback(
         self,
-        app_id: str,
+        agent_id: str,
         *,
         after: float,
         before: float | None = None,
@@ -147,13 +146,13 @@ class RuntimeStore(Protocol):
 
     async def get_latest_trace(
         self,
-        app_id: str,
+        agent_id: str,
         session_id: str,
     ) -> dict[str, Any] | None: ...
 
     async def list_recent_traces(
         self,
-        app_id: str | None = None,
+        agent_id: str | None = None,
         *,
         session_id: str | None = None,
         host_id: str | None = None,
@@ -162,7 +161,7 @@ class RuntimeStore(Protocol):
     ) -> list[dict[str, Any]]: ...
 
     async def list_thought_traces(
-        self, app_id: str | None = None, *, limit: int = 50, trace_id: str | None = None,
+        self, agent_id: str | None = None, *, limit: int = 50, trace_id: str | None = None,
     ) -> list[dict[str, Any]]: ...
 
     async def session_usage(self, session_id: str) -> dict[str, Any]:
@@ -181,7 +180,7 @@ class RuntimeStore(Protocol):
 
     async def aggregate_usage(
         self,
-        app_id: str,
+        agent_id: str,
         *,
         host_id: str | None = None,
         session_id: str | None = None,
@@ -192,7 +191,7 @@ class RuntimeStore(Protocol):
 
     async def count_tool_invocations(
         self,
-        app_id: str,
+        agent_id: str,
         *,
         from_ts: float | None = None,
         to_ts: float | None = None,
@@ -200,7 +199,7 @@ class RuntimeStore(Protocol):
 
     async def count_skill_invocations(
         self,
-        app_id: str,
+        agent_id: str,
         *,
         from_ts: float | None = None,
         to_ts: float | None = None,

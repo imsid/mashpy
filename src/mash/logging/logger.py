@@ -52,13 +52,12 @@ class EventLogger:
         payload = {
             key: value
             for key, value in raw.items()
-            if key not in {"event_type", "ts", "app_id", "session_id", "trace_id", "event_class"}
+            if key not in {"event_type", "ts", "agent_id", "session_id", "trace_id", "event_class"}
             and value is not None
         }
         request_id = get_request_id()
         return RuntimeEvent(
-            app_id=str(raw["app_id"]),
-            agent_id=str(raw["app_id"]),
+            agent_id=str(raw["agent_id"]),
             event_type=str(raw["event_type"]),
             request_id=request_id,
             host_id=get_host_id(),

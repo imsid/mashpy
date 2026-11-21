@@ -5,7 +5,7 @@ from __future__ import annotations
 import hmac
 import json
 from dataclasses import dataclass
-from typing import Any, Literal, Optional
+from typing import Any, Optional
 
 from fastapi import Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -16,7 +16,8 @@ from mash.runtime import Pool
 from mash.memory.store import MemoryStore
 from mash.runtime.client import AgentClientLike
 from mash.runtime.events import RuntimeStore
-from mash.runtime.requests import validate_user_id
+from mash.policies import validate_policy_id
+from mash.runtime.requests import validate_app_id
 
 # Cookie the admin SPA sets so its same-origin API calls authenticate without
 # an explicit Authorization header.
@@ -55,22 +56,6 @@ class AppRuntimeState:
     otel_exporter: Any = None
 
 
-RequestModeValue = Literal["fg", "bg"]
-
-
-class SubmitRequest(BaseModel):
-    message: str = Field(min_length=1)
-    session_id: str = Field(min_length=1)
-    user_id: str
-    structured_output: Optional[dict[str, Any]] = None
-    metadata: Optional[dict[str, Any]] = None
-    mode: RequestModeValue = "fg"
-
-
-class SetRequestModeRequest(BaseModel):
-    mode: RequestModeValue
-
-
 class DefineHostRequest(BaseModel):
     # A body in the old primary/subagents shape fails instead of defining an
     # empty host.
@@ -78,16 +63,6 @@ class DefineHostRequest(BaseModel):
 
     agents: list[str] = Field(default_factory=list)
     workflows: list[str] = Field(default_factory=list)
-
-
-class HostSubmitRequest(BaseModel):
-    message: str = Field(min_length=1)
-    session_id: str = Field(min_length=1)
-    user_id: str
-    structured_output: Optional[dict[str, Any]] = None
-    context: Optional[str] = None
-    metadata: Optional[dict[str, Any]] = None
-    mode: RequestModeValue = "fg"
 
 
 class CompactSessionRequest(BaseModel):
@@ -99,7 +74,8 @@ class RunWorkflowRequest(BaseModel):
     dedup_key: Optional[str] = None
     input: dict[str, Any] = Field(default_factory=dict)
     session_id: Optional[str] = None
-    user_id: Optional[str] = None
+    app_id: Optional[str] = None
+    policy_id: Optional[str] = None
 
 
 class CommandEventIngest(BaseModel):
@@ -147,13 +123,6 @@ def normalize_optional_text(value: Optional[str]) -> Optional[str]:
     return text or None
 
 
-def require_message(value: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        raise APIError(code="INVALID_REQUEST", message="message is required", status_code=400)
-    return text
-
-
 def require_session_id(value: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -161,11 +130,18 @@ def require_session_id(value: str) -> str:
     return text
 
 
-def require_user_id(value: str) -> str:
+def require_app_id(value: str) -> str:
     try:
-        return validate_user_id(value)
+        return validate_app_id(value)
     except ValueError as exc:
-        raise APIError(code="INVALID_USER_ID", message=str(exc), status_code=400) from exc
+        raise APIError(code="INVALID_APP_ID", message=str(exc), status_code=400) from exc
+
+
+def require_policy_id(value: str) -> str:
+    try:
+        return validate_policy_id(value)
+    except ValueError as exc:
+        raise APIError(code="INVALID_POLICY_ID", message=str(exc), status_code=400) from exc
 
 
 def require_trace_id(value: str) -> str:

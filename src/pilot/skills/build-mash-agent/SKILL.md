@@ -55,7 +55,7 @@ Create this file structure:
 Every Mash agent implements `AgentSpec`. Here is the minimal scaffold:
 
 ```python
-from mash import AgentMetadata, AgentSpec, HostBuilder
+from mash import AgentMetadata, AgentSpec, Host, HostBuilder
 from mash.core.config import AgentConfig
 from mash.core.llm import AnthropicProvider
 from mash.skills import SkillRegistry
@@ -75,11 +75,11 @@ class AssistantAgent(AgentSpec):
         return SkillRegistry()
 
     def build_llm(self):
-        return AnthropicProvider(app_id="assistant")
+        return AnthropicProvider(agent_id="assistant")
 
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
-            app_id="assistant",
+            agent_id="assistant",
             system_prompt="You are a helpful assistant.",
         )
 
@@ -96,6 +96,8 @@ def build_pool():
                 usage_guidance="Default agent for user requests.",
             ),
         )
+        # Messages reach agents through a host; this one holds the one agent.
+        .host(Host(host_id="assistant", agents=("assistant",)))
         .build()
     )
 ```
@@ -168,8 +170,8 @@ tools.register(AskUserTool())  # durable user questions (hosted runtime only)
 
 Do not register tools named `run_code`, `edit_file`, `sandbox_put` or `sandbox_get`. When
 the host has sandboxes (a reachable Docker daemon), every agent gets
-`run_code`, which runs Python, JavaScript or shell in the request user's
-sandbox in `/home/agent/workspaces/<agent_id>`, and `edit_file`, which changes
+`run_code`, which runs Python, JavaScript or shell in the sandbox of the
+request's policy, in `/home/agent/workspaces/<agent_id>`, and `edit_file`, which changes
 a text file there. `sandbox_put` and
 `sandbox_get` copy files between the agent's machine and that folder, and an
 agent gets them only when its spec returns folders from
@@ -211,15 +213,15 @@ additional wiring needed.
 from mash.core.llm import AnthropicProvider, OpenAIProvider, GeminiProvider
 
 # Pick one:
-llm = AnthropicProvider(app_id="my-agent")                          # Claude
-llm = AnthropicProvider(app_id="my-agent", model="claude-sonnet-4-6")
+llm = AnthropicProvider(agent_id="my-agent")                          # Claude
+llm = AnthropicProvider(agent_id="my-agent", model="claude-sonnet-4-6")
 
-llm = OpenAIProvider(app_id="my-agent")                             # GPT
-llm = OpenAIProvider(app_id="my-agent", model="gpt-5")              # reasoning model
+llm = OpenAIProvider(agent_id="my-agent")                             # GPT
+llm = OpenAIProvider(agent_id="my-agent", model="gpt-5")              # reasoning model
 
-llm = GeminiProvider(app_id="my-agent")                             # Gemini
-llm = GeminiProvider(app_id="my-agent", model="gemini-3.5-pro")
-llm = GeminiProvider(app_id="my-agent", web_search=True)            # Gemini + native grounding
+llm = GeminiProvider(agent_id="my-agent")                             # Gemini
+llm = GeminiProvider(agent_id="my-agent", model="gemini-3.5-pro")
+llm = GeminiProvider(agent_id="my-agent", web_search=True)            # Gemini + native grounding
 ```
 
 OpenAI `gpt-5*` are reasoning models: they ignore `temperature` (the provider
@@ -258,16 +260,16 @@ from mash.core.llm import (
 )
 
 # Self-hosted with Ollama on localhost (no key needed)
-llm = QwenProvider(app_id="my-agent", base_url="http://localhost:11434/v1")
+llm = QwenProvider(agent_id="my-agent", base_url="http://localhost:11434/v1")
 
 # Self-hosted with vLLM on a GPU box, explicit model
-llm = GemmaProvider(app_id="my-agent", model="google/gemma-4-27b-it",
+llm = GemmaProvider(agent_id="my-agent", model="google/gemma-4-27b-it",
                     base_url="http://gpu-box:8000/v1")
 
 # Hosted gateway with a key
 import os
 llm = OSSCompatibleProvider(
-    app_id="my-agent",
+    agent_id="my-agent",
     model="deepseek/deepseek-chat",
     base_url="https://openrouter.ai/api/v1",
     api_key=os.environ["OPENROUTER_API_KEY"],
@@ -281,12 +283,12 @@ engine needs none. Each preset's default model comes from `GEMMA_MODEL`,
 
 ## Step 4: Configure Agent Behavior
 
-`AgentConfig` carries every behavior knob. `app_id` and `system_prompt` are
+`AgentConfig` carries every behavior knob. `agent_id` and `system_prompt` are
 required; the rest have the defaults shown here.
 
 ```python
 AgentConfig(
-    app_id="my-agent",                    # required, must match get_agent_id()
+    agent_id="my-agent",                  # required, must match get_agent_id()
     system_prompt="You are ...",          # required, str or list of content blocks
     max_steps=30,                         # max tool-use loops per request
     max_tokens=4096,                      # LLM output token cap per response
@@ -338,12 +340,13 @@ class MyAgent(AgentSpec):
 # Start the host server
 mash host serve --host-app {project_name}.spec:build_pool --port 8000
 
-# Save the connection and the user requests act for
-# (validates the URL and key against /health)
-mash connect --api-base-url http://127.0.0.1:8000 --api-key secret --user-id u-1
+# Create a policy, then save the connection with the app and policy every
+# message runs under (connect validates the URL and key against /health)
+echo '{"sandbox": true}' | mash policy put dev --file - --api-base-url http://127.0.0.1:8000 --api-key secret
+mash connect --api-base-url http://127.0.0.1:8000 --api-key secret --app-id my-app --policy-id dev
 
-# Talk to the agent directly (bare mode, without the companion)
-mash repl --agent assistant
+# Talk to the agent through its host (build_pool defines one with only this agent)
+mash repl --host assistant
 ```
 
 Or run programmatically:
@@ -392,20 +395,22 @@ curl "http://127.0.0.1:8000/api/v1/feedback?agent_id=assistant&after=0&q=trace"
 
 To get typed JSON responses from agents:
 
-```python
-from pydantic import BaseModel
+Give an event a JSON schema in `structured_output`; the event's
+`response.structured_output` carries the typed result:
 
-class AnalysisResult(BaseModel):
-    summary: str
-    score: float
-
-response = await runtime.submit_request(
-    message="Analyze this data",
-    session_id="s1",
-    user_id="u-1",
-    structured_output=AnalysisResult,
-)
+```json
+{
+  "event_id": "e-1", "host_id": "assistant", "app_id": "my-app", "policy_id": "dev",
+  "message": "Analyze this data",
+  "structured_output": {
+    "type": "object",
+    "properties": {"summary": {"type": "string"}, "score": {"type": "number"}},
+    "required": ["summary", "score"]
+  }
+}
 ```
+
+In a workflow, an `AgentStep`'s `output` model sets the same schema.
 
 ## Environment Variables
 

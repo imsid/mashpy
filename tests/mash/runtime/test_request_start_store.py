@@ -1,4 +1,4 @@
-"""Request mode columns on runtime_request, against a real Postgres."""
+"""The start columns on runtime_request, against a real Postgres."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def _request_row(database_url: str, request_id: str) -> dict[str, Any]:
     with psycopg.connect(database_url, autocommit=True, row_factory=dict_row) as conn:
         row = conn.execute(
             """
-            SELECT status, session_id, mode, started_by, started_at,
+            SELECT status, session_id, started_by, started_at,
                    parent_request_id, updated_at
             FROM runtime_request WHERE request_id = %s
             """,
@@ -48,10 +48,10 @@ def _request_row(database_url: str, request_id: str) -> dict[str, Any]:
     return dict(row)
 
 
-class RequestModeStoreTests(unittest.IsolatedAsyncioTestCase):
+class RequestStartStoreTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.database_url = _database_url()
-        self.session_id = f"mode-session-{uuid.uuid4()}"
+        self.session_id = f"start-session-{uuid.uuid4()}"
         self.request_ids: list[str] = []
         self.store = PostgresRuntimeStore(self.database_url)
         await self.store.open()
@@ -76,13 +76,12 @@ class RequestModeStoreTests(unittest.IsolatedAsyncioTestCase):
         payload: dict[str, Any] | None = None,
         created_at: float,
         dedupe_key: str | None = None,
-        agent_id: str = "mode-agent",
+        agent_id: str = "start-agent",
     ) -> RuntimeEvent:
         if request_id not in self.request_ids:
             self.request_ids.append(request_id)
         return await self.store.append_event(
             RuntimeEvent(
-                app_id=agent_id,
                 agent_id=agent_id,
                 request_id=request_id,
                 session_id=self.session_id,
@@ -100,10 +99,9 @@ class RequestModeStoreTests(unittest.IsolatedAsyncioTestCase):
         *,
         created_at: float,
         message: str = "hello",
-        mode: str = "fg",
         started_by: str = "user",
         parent_request_id: str | None = None,
-        agent_id: str = "mode-agent",
+        agent_id: str = "start-agent",
     ) -> None:
         await self._append(
             request_id,
@@ -113,34 +111,31 @@ class RequestModeStoreTests(unittest.IsolatedAsyncioTestCase):
             agent_id=agent_id,
             payload={
                 "message": message,
-                "request_metadata": {"user_id": "u-1"},
-                "mode": mode,
+                "request_metadata": {"app_id": "app-1", "policy_id": "p-1"},
                 "started_by": started_by,
                 "parent_request_id": parent_request_id,
             },
         )
 
     async def test_accepted_writes_the_start_columns(self) -> None:
-        request_id = f"mode-{uuid.uuid4()}"
-        parent_id = f"mode-parent-{uuid.uuid4()}"
+        request_id = f"start-{uuid.uuid4()}"
+        parent_id = f"start-parent-{uuid.uuid4()}"
         await self._accept(
             request_id,
             created_at=100.0,
-            mode="bg",
             started_by="planner",
             parent_request_id=parent_id,
         )
 
         row = _request_row(self.database_url, request_id)
         self.assertEqual(row["session_id"], self.session_id)
-        self.assertEqual(row["mode"], "bg")
         self.assertEqual(row["started_by"], "planner")
         self.assertEqual(row["started_at"], 100.0)
         self.assertEqual(row["parent_request_id"], parent_id)
 
     async def test_a_later_lifecycle_event_leaves_the_start_columns(self) -> None:
-        request_id = f"mode-{uuid.uuid4()}"
-        await self._accept(request_id, created_at=100.0, mode="bg")
+        request_id = f"start-{uuid.uuid4()}"
+        await self._accept(request_id, created_at=100.0)
         await self._append(
             request_id,
             RuntimeEventType.INVOKE_AGENT_END.value,
@@ -150,54 +145,26 @@ class RequestModeStoreTests(unittest.IsolatedAsyncioTestCase):
 
         row = _request_row(self.database_url, request_id)
         self.assertEqual(row["status"], "completed")
-        self.assertEqual(row["mode"], "bg")
         self.assertEqual(row["started_by"], "user")
         self.assertEqual(row["started_at"], 100.0)
         self.assertEqual(row["session_id"], self.session_id)
         self.assertIsNone(row["parent_request_id"])
 
-    async def test_a_mode_event_changes_only_mode_and_updated_at(self) -> None:
-        request_id = f"mode-{uuid.uuid4()}"
-        await self._accept(request_id, created_at=100.0)
-        before = _request_row(self.database_url, request_id)
-
-        await self._append(
-            request_id,
-            RuntimeEventType.REQUEST_MODE_CHANGED.value,
-            payload={"mode": "bg"},
-            created_at=150.0,
-        )
-        after = _request_row(self.database_url, request_id)
-        self.assertEqual(after["mode"], "bg")
-        self.assertEqual(after["updated_at"], 150.0)
-        for column in ("status", "session_id", "started_by", "started_at", "parent_request_id"):
-            self.assertEqual(after[column], before[column], column)
-
-        # A request can switch any number of times; seq orders the switches.
-        await self._append(
-            request_id,
-            RuntimeEventType.REQUEST_MODE_CHANGED.value,
-            payload={"mode": "fg"},
-            created_at=160.0,
-        )
-        self.assertEqual(_request_row(self.database_url, request_id)["mode"], "fg")
-
     async def test_list_session_requests_filters_and_orders(self) -> None:
-        older = f"mode-{uuid.uuid4()}"
-        newer = f"mode-{uuid.uuid4()}"
-        child = f"mode-{uuid.uuid4()}"
-        foreground = f"mode-{uuid.uuid4()}"
-        await self._accept(older, created_at=100.0, mode="bg", message="older")
-        await self._accept(newer, created_at=300.0, mode="bg", message="newer")
+        older = f"start-{uuid.uuid4()}"
+        newer = f"start-{uuid.uuid4()}"
+        child = f"start-{uuid.uuid4()}"
+        latest = f"start-{uuid.uuid4()}"
+        await self._accept(older, created_at=100.0, message="older")
+        await self._accept(newer, created_at=300.0, message="newer")
         await self._accept(
             child,
             created_at=200.0,
-            mode="bg",
-            started_by="mode-agent",
+            started_by="start-agent",
             parent_request_id=newer,
             message="child",
         )
-        await self._accept(foreground, created_at=400.0, message="fg")
+        await self._accept(latest, created_at=400.0, message="latest")
         await self._append(
             older,
             RuntimeEventType.INVOKE_AGENT_END.value,
@@ -207,20 +174,16 @@ class RequestModeStoreTests(unittest.IsolatedAsyncioTestCase):
 
         everything = await self.store.list_session_requests(self.session_id)
         self.assertEqual(
-            [r["request_id"] for r in everything], [foreground, newer, child, older]
+            [r["request_id"] for r in everything], [latest, newer, child, older]
         )
-
-        background = await self.store.list_session_requests(self.session_id, mode="bg")
-        self.assertEqual([r["request_id"] for r in background], [newer, child, older])
         self.assertEqual(
-            background[0],
+            everything[1],
             {
                 "request_id": newer,
-                "agent_id": "mode-agent",
-                "user_id": "u-1",
+                "agent_id": "start-agent",
+                "app_id": "app-1", "policy_id": "p-1",
                 "session_id": self.session_id,
                 "message": "newer",
-                "mode": "bg",
                 "status": "running",
                 "started_by": "user",
                 "parent_request_id": None,
@@ -229,21 +192,20 @@ class RequestModeStoreTests(unittest.IsolatedAsyncioTestCase):
         )
 
         running_by_user = await self.store.list_session_requests(
-            self.session_id, mode="bg", status="running", started_by="user"
+            self.session_id, status="running", started_by="user"
         )
-        self.assertEqual([r["request_id"] for r in running_by_user], [newer])
+        self.assertEqual([r["request_id"] for r in running_by_user], [latest, newer])
 
     async def test_list_child_requests_filters_by_status(self) -> None:
-        parent = f"mode-{uuid.uuid4()}"
-        first = f"mode-{uuid.uuid4()}"
-        second = f"mode-{uuid.uuid4()}"
+        parent = f"start-{uuid.uuid4()}"
+        first = f"start-{uuid.uuid4()}"
+        second = f"start-{uuid.uuid4()}"
         await self._accept(parent, created_at=100.0)
         for created_at, child in ((110.0, first), (120.0, second)):
             await self._accept(
                 child,
                 created_at=created_at,
-                mode="bg",
-                started_by="mode-agent",
+                started_by="start-agent",
                 parent_request_id=parent,
             )
         await self._append(

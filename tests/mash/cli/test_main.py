@@ -62,6 +62,15 @@ def test_build_parser_accepts_compose_flags() -> None:
     assert args.agents == "email,calendar"
 
 
+def test_repl_and_run_talk_to_a_host_and_take_no_agent(capsys) -> None:
+    parser = build_parser()
+    for command in (["repl"], ["run", "hi"]):
+        with pytest.raises(SystemExit):
+            parser.parse_args([*command, "--agent", "primary"])
+        assert parser.parse_args([*command, "--host", "assistant"]).host_id == "assistant"
+    capsys.readouterr()
+
+
 def test_build_parser_rejects_targeting_flags_on_connect() -> None:
     parser = build_parser()
     with pytest.raises(SystemExit):
@@ -234,7 +243,8 @@ def test_compose_reuses_saved_connection(tmp_path) -> None:
     existing = CLIConfig(
         api_base_url="http://127.0.0.1:8000",
         api_key="k",
-        user_id="u-42",
+        app_id="app-42",
+        policy_id="p-1",
     )
     with patch.object(cli_main, "MashHostClient", return_value=fake_client), patch.object(
         cli_main, "save_config", fake_save_config
@@ -247,7 +257,7 @@ def test_compose_reuses_saved_connection(tmp_path) -> None:
     assert saved["config"].host_id == "assistant"
     assert saved["config"].api_base_url == "http://127.0.0.1:8000"
     assert saved["config"].api_key == "k"
-    assert saved["config"].user_id == "u-42"
+    assert (saved["config"].app_id, saved["config"].policy_id) == ("app-42", "p-1")
 
 
 def test_compose_no_longer_takes_a_primary() -> None:
@@ -258,7 +268,7 @@ def test_compose_no_longer_takes_a_primary() -> None:
         parser.parse_args(["compose", "--host", "assistant", "--subagents", "a"])
 
 
-def test_connect_saves_the_user_id(tmp_path) -> None:
+def test_connect_saves_the_app_and_policy(tmp_path) -> None:
     from unittest.mock import MagicMock, patch
 
     from mash.cli import app as cli_main
@@ -275,14 +285,22 @@ def test_connect_saves_the_user_id(tmp_path) -> None:
         cli_main, "save_config", fake_save_config
     ), patch.object(cli_main, "load_config", return_value=None):
         code = cli_main.main(
-            ["connect", "--api-base-url", "http://127.0.0.1:8000", "--user-id", "u-42"]
+            [
+                "connect",
+                "--api-base-url",
+                "http://127.0.0.1:8000",
+                "--app-id",
+                "app-42",
+                "--policy-id",
+                "p-1",
+            ]
         )
 
     assert code == 0
-    assert saved["config"].user_id == "u-42"
+    assert (saved["config"].app_id, saved["config"].policy_id) == ("app-42", "p-1")
 
 
-def test_repl_requires_a_user_id(capsys) -> None:
+def test_repl_requires_an_app_and_a_policy(capsys) -> None:
     from unittest.mock import MagicMock, patch
 
     from mash.cli import app as cli_main
@@ -294,12 +312,19 @@ def test_repl_requires_a_user_id(capsys) -> None:
     with patch.object(cli_main, "MashHostClient", return_value=fake_client), patch.object(
         cli_main, "load_config", return_value=existing
     ), patch.object(cli_main, "Repl", shell):
-        assert cli_main.main(["repl", "--agent", "primary"]) == 1
+        assert cli_main.main(["repl", "--host", "assistant"]) == 1
+        assert cli_main.main(["repl", "--host", "assistant", "--app-id", "app-42"]) == 1
         shell.assert_not_called()
-        assert cli_main.main(["repl", "--agent", "primary", "--user-id", "u-42"]) == 0
+        assert "an app id and a policy id are required" in capsys.readouterr().out
+        assert (
+            cli_main.main(
+                ["repl", "--host", "assistant", "--app-id", "app-42", "--policy-id", "p-1"]
+            )
+            == 0
+        )
 
     target = shell.call_args.args[1]
-    assert target.user_id == "u-42"
+    assert (target.app_id, target.policy_id) == ("app-42", "p-1")
 
 
 def test_repl_debug_is_off_by_default() -> None:
@@ -309,13 +334,13 @@ def test_repl_debug_is_off_by_default() -> None:
     from mash.cli.config import CLIConfig
 
     shell = MagicMock()
-    existing = CLIConfig(api_base_url="http://127.0.0.1:8000", user_id="u-42")
+    existing = CLIConfig(api_base_url="http://127.0.0.1:8000", app_id="app-42", policy_id="p-1")
     with patch.object(cli_main, "MashHostClient", return_value=MagicMock()), patch.object(
         cli_main, "load_config", return_value=existing
     ), patch.object(cli_main, "Repl", shell):
-        assert cli_main.main(["repl", "--agent", "primary"]) == 0
+        assert cli_main.main(["repl", "--host", "assistant"]) == 0
         assert shell.call_args.kwargs["debug"] is False
-        assert cli_main.main(["repl", "--agent", "primary", "--debug"]) == 0
+        assert cli_main.main(["repl", "--host", "assistant", "--debug"]) == 0
         assert shell.call_args.kwargs["debug"] is True
 
 
@@ -334,11 +359,11 @@ def _repl_target(argv: list[str], sessions: list[dict], picked=None):
         picker.return_value.run.side_effect = picked
     else:
         picker.return_value.run.return_value = picked
-    existing = CLIConfig(api_base_url="http://127.0.0.1:8000", user_id="u-42")
+    existing = CLIConfig(api_base_url="http://127.0.0.1:8000", app_id="app-42", policy_id="p-1")
     with patch.object(cli_main, "MashHostClient", return_value=client), patch.object(
         cli_main, "load_config", return_value=existing
     ), patch.object(cli_main, "Repl", shell), patch.object(cli_main, "menu", picker):
-        code = cli_main.main(["repl", "--agent", "primary", *argv])
+        code = cli_main.main(["repl", "--host", "assistant", *argv])
     target = shell.call_args.args[1] if shell.call_args else None
     return code, target, client, picker
 
@@ -351,10 +376,10 @@ _SESSIONS = [
 ]
 
 
-def test_repl_continue_goes_on_in_the_users_latest_session() -> None:
+def test_repl_continue_goes_on_in_the_apps_latest_session() -> None:
     code, target, client, picker = _repl_target(["--continue"], _SESSIONS[:1])
     assert code == 0
-    client.list_sessions.assert_called_once_with("primary", user_id="u-42", limit=1)
+    client.list_sessions.assert_called_once_with("companion", app_id="app-42", limit=1)
     assert (target.session_id, target.resumed, target.title) == (
         "s-new", True, "why was march high"
     )
@@ -364,7 +389,7 @@ def test_repl_continue_goes_on_in_the_users_latest_session() -> None:
 def test_repl_resume_opens_the_picker() -> None:
     code, target, client, picker = _repl_target(["--resume"], _SESSIONS, picked=_SESSIONS[1])
     assert code == 0
-    client.list_sessions.assert_called_once_with("primary", user_id="u-42", limit=20)
+    client.list_sessions.assert_called_once_with("companion", app_id="app-42", limit=20)
     options = picker.call_args.args[0]
     assert [value["session_id"] for value, _ in options] == ["s-new", "s-old"]
     assert (target.session_id, target.resumed, target.title) == ("s-old", True, "compare quotes")
@@ -435,7 +460,7 @@ def test_importing_the_library_reads_no_dotenv() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def _one_shot(argv: list[str], *, sessions: list[dict] | None = None, user_id: str | None = "u-42",
+def _one_shot(argv: list[str], *, sessions: list[dict] | None = None, identity: bool = True,
               stdin: str | None = None):
     """Run ``mash run`` with a fake client; return (exit code, run_once mock, client)."""
     import io
@@ -447,7 +472,10 @@ def _one_shot(argv: list[str], *, sessions: list[dict] | None = None, user_id: s
     client = MagicMock()
     client.list_sessions.return_value = sessions or []
     once = MagicMock(return_value=0)
-    existing = CLIConfig(api_base_url="http://127.0.0.1:8000", user_id=user_id)
+    existing = CLIConfig(
+        api_base_url="http://127.0.0.1:8000",
+        **({"app_id": "app-42", "policy_id": "p-1"} if identity else {}),
+    )
     patches = [
         patch.object(cli_main, "MashHostClient", return_value=client),
         patch.object(cli_main, "load_config", return_value=existing),
@@ -458,7 +486,7 @@ def _one_shot(argv: list[str], *, sessions: list[dict] | None = None, user_id: s
     for item in patches:
         item.start()
     try:
-        code = cli_main.main(["run", "--agent", "primary", *argv])
+        code = cli_main.main(["run", "--host", "assistant", *argv])
     finally:
         for item in reversed(patches):
             item.stop()
@@ -472,7 +500,7 @@ def test_run_submits_the_message_in_a_new_session() -> None:
     assert once.call_args.args == (client,)
     assert kwargs["session_id"]
     assert {key: value for key, value in kwargs.items() if key != "session_id"} == {
-        "agent_id": "primary", "host_id": None, "user_id": "u-42",
+        "host_id": "assistant", "app_id": "app-42", "policy_id": "p-1",
         "message": "why was march high", "json_output": False,
         "theme": None, "tool_lines": None,
     }
@@ -485,11 +513,11 @@ def test_run_returns_the_requests_exit_status() -> None:
     from mash.cli import app as cli_main
     from mash.cli.config import CLIConfig
 
-    existing = CLIConfig(api_base_url="http://127.0.0.1:8000", user_id="u-42")
+    existing = CLIConfig(api_base_url="http://127.0.0.1:8000", app_id="app-42", policy_id="p-1")
     with patch.object(cli_main, "MashHostClient", return_value=MagicMock()), patch.object(
         cli_main, "load_config", return_value=existing
     ), patch.object(cli_main, "run_once", MagicMock(return_value=2)):
-        assert cli_main.main(["run", "--agent", "primary", "deploy"]) == 2
+        assert cli_main.main(["run", "--host", "assistant", "deploy"]) == 2
 
 
 def test_run_reads_the_message_from_stdin_and_takes_json() -> None:
@@ -499,10 +527,10 @@ def test_run_reads_the_message_from_stdin_and_takes_json() -> None:
     assert once.call_args.kwargs["json_output"] is True
 
 
-def test_run_continue_goes_on_in_the_users_latest_session() -> None:
+def test_run_continue_goes_on_in_the_apps_latest_session() -> None:
     code, once, client = _one_shot(["--continue", "and april?"], sessions=_SESSIONS[:1])
     assert code == 0
-    client.list_sessions.assert_called_once_with("primary", user_id="u-42", limit=1)
+    client.list_sessions.assert_called_once_with("companion", app_id="app-42", limit=1)
     assert once.call_args.kwargs["session_id"] == "s-new"
 
 
@@ -516,10 +544,10 @@ def test_run_session_id_names_the_session_and_excludes_continue(capsys) -> None:
     capsys.readouterr()
 
 
-def test_run_requires_a_user_id_and_a_message(capsys) -> None:
-    code, once, _ = _one_shot(["hi"], user_id=None)
+def test_run_requires_an_app_a_policy_and_a_message(capsys) -> None:
+    code, once, _ = _one_shot(["hi"], identity=False)
     assert code == 1
-    assert "a user id is required" in capsys.readouterr().out
+    assert "an app id and a policy id are required" in capsys.readouterr().out
     code, once, _ = _one_shot([], stdin="  \n")
     assert code == 1
     once.assert_not_called()
@@ -546,9 +574,12 @@ class _WorkflowClient:
         return [{"workflow_id": "export", "step_count": 1,
                  "step_preview": [{"step_id": "export", "kind": "code"}]}]
 
-    def run_workflow(self, workflow_id, *, dedup_key=None, workflow_input=None, user_id=None):
+    def run_workflow(
+        self, workflow_id, *, dedup_key=None, workflow_input=None, app_id=None, policy_id=None
+    ):
         self.runs.append({"workflow_id": workflow_id, "dedup_key": dedup_key,
-                          "workflow_input": workflow_input, "user_id": user_id})
+                          "workflow_input": workflow_input, "app_id": app_id,
+                          "policy_id": policy_id})
         return {"workflow_id": workflow_id, "run_id": "run-1", "status": "queued"}
 
     def stream_workflow_run(self, workflow_id, run_id):
@@ -567,13 +598,16 @@ class _WorkflowClient:
         pass
 
 
-def _workflow(argv: list[str], client: _WorkflowClient, *, user_id: str | None = "u-42") -> int:
+def _workflow(argv: list[str], client: _WorkflowClient, *, identity: bool = True) -> int:
     from unittest.mock import patch
 
     from mash.cli import app as cli_main
     from mash.cli.config import CLIConfig
 
-    existing = CLIConfig(api_base_url="http://127.0.0.1:8000", user_id=user_id)
+    existing = CLIConfig(
+        api_base_url="http://127.0.0.1:8000",
+        **({"app_id": "app-42", "policy_id": "p-1"} if identity else {}),
+    )
     with patch.object(cli_main, "MashHostClient", return_value=client), patch.object(
         cli_main, "load_config", return_value=existing
     ):
@@ -585,7 +619,8 @@ def test_workflow_run_follows_the_run_to_its_result(capsys) -> None:
     code = _workflow(["run", "export", "--input", '{"table": "bills"}', "--dedup-key", "k1"], client)
     assert code == 0
     assert client.runs == [{"workflow_id": "export", "dedup_key": "k1",
-                            "workflow_input": {"table": "bills"}, "user_id": "u-42"}]
+                            "workflow_input": {"table": "bills"}, "app_id": "app-42",
+                            "policy_id": "p-1"}]
     out = capsys.readouterr().out
     assert "Run ID: run-1" in out
     assert "Workflow step scan completed" in out
@@ -593,13 +628,14 @@ def test_workflow_run_follows_the_run_to_its_result(capsys) -> None:
     assert '"rows": 3' in out
 
 
-def test_workflow_run_reads_its_input_from_a_file_and_runs_without_a_user(tmp_path) -> None:
+def test_workflow_run_reads_its_input_from_a_file_and_runs_without_an_app(tmp_path) -> None:
     path = tmp_path / "input.json"
     path.write_text('{\n  "table": "two words"\n}\n', encoding="utf-8")
     client = _WorkflowClient()
-    assert _workflow(["run", "export", "--input", f"@{path}"], client, user_id=None) == 0
+    assert _workflow(["run", "export", "--input", f"@{path}"], client, identity=False) == 0
     assert client.runs == [{"workflow_id": "export", "dedup_key": None,
-                            "workflow_input": {"table": "two words"}, "user_id": None}]
+                            "workflow_input": {"table": "two words"}, "app_id": None,
+                            "policy_id": None}]
 
 
 def test_workflow_run_no_follow_prints_the_run_id_and_exits(capsys) -> None:
@@ -635,3 +671,75 @@ def test_workflow_status_resume_and_list(capsys) -> None:
     with pytest.raises(SystemExit):
         _workflow([], client)
     capsys.readouterr()
+
+
+def test_policy_put_reads_a_file_and_get_prints_the_policy(tmp_path, capsys) -> None:
+    import json
+    from unittest.mock import MagicMock, patch
+
+    from mash.cli import app as cli_main
+    from mash.cli.config import CLIConfig
+
+    client = MagicMock()
+    client.put_policy.return_value = {"policy_id": "acme-ws", "sandbox": False}
+    client.get_policy.return_value = {"policy_id": "acme-ws", "sandbox": False}
+    path = tmp_path / "policy.json"
+    path.write_text('{"sandbox": false}', encoding="utf-8")
+    existing = CLIConfig(api_base_url="http://127.0.0.1:8000", api_key="k")
+    with patch.object(cli_main, "MashHostClient", return_value=client) as made, patch.object(
+        cli_main, "load_config", return_value=existing
+    ):
+        assert cli_main.main(["policy", "put", "acme-ws", "--file", str(path)]) == 0
+        assert cli_main.main(["policy", "get", "acme-ws"]) == 0
+    client.put_policy.assert_called_once_with("acme-ws", {"sandbox": False})
+    client.get_policy.assert_called_once_with("acme-ws")
+    assert made.call_args.kwargs == {"api_key": "k"}
+    printed = capsys.readouterr().out
+    assert json.loads(printed.split("\n}\n")[0] + "\n}") == {"policy_id": "acme-ws", "sandbox": False}
+
+
+def test_policy_put_refuses_a_file_that_is_not_an_object(tmp_path, capsys) -> None:
+    from unittest.mock import MagicMock, patch
+
+    from mash.cli import app as cli_main
+    from mash.cli.config import CLIConfig
+
+    client = MagicMock()
+    path = tmp_path / "policy.json"
+    path.write_text("[]", encoding="utf-8")
+    existing = CLIConfig(api_base_url="http://127.0.0.1:8000")
+    with patch.object(cli_main, "MashHostClient", return_value=client), patch.object(
+        cli_main, "load_config", return_value=existing
+    ):
+        assert cli_main.main(["policy", "put", "acme-ws", "--file", str(path)]) == 1
+    client.put_policy.assert_not_called()
+    assert "JSON object" in capsys.readouterr().out
+
+
+def test_policy_puts_reads_and_removes_a_policy(tmp_path, capsys) -> None:
+    from unittest.mock import MagicMock, patch
+
+    from mash.cli import app as cli_main
+    from mash.cli.config import CLIConfig
+
+    client = MagicMock()
+    client.put_policy.return_value = {"policy_id": "p-9", "sandbox": False}
+    client.get_policy.return_value = {"policy_id": "p-9", "sandbox": False}
+    policy_file = tmp_path / "policy.json"
+    policy_file.write_text('{"sandbox": false}')
+    existing = CLIConfig(api_base_url="http://127.0.0.1:8000")
+    with patch.object(cli_main, "MashHostClient", return_value=client), patch.object(
+        cli_main, "load_config", return_value=existing
+    ):
+        assert cli_main.main(["policy", "put", "p-9", "--file", str(policy_file)]) == 0
+        assert cli_main.main(["policy", "get", "p-9"]) == 0
+        assert cli_main.main(["policy", "rm", "p-9"]) == 0
+        client.delete_policy.side_effect = RuntimeError("policy 'p-9' has queued or active events")
+        assert cli_main.main(["policy", "rm", "p-9"]) == 1
+    client.put_policy.assert_called_once_with("p-9", {"sandbox": False})
+    client.get_policy.assert_called_once_with("p-9")
+    assert client.delete_policy.call_count == 2
+    out = capsys.readouterr().out
+    assert '"sandbox": false' in out
+    assert "Policy p-9 deleted, with its sandbox and browser." in out
+    assert "queued or active events" in out

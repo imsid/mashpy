@@ -34,6 +34,7 @@ from mash.runtime.host.tokens import agent_for_token, derive_agent_token
 from mash.runtime.factory import build_turn_agent
 from mash.tools.sandbox import RunCodeTool, SandboxGetTool, SandboxPutTool
 from mash.testing.runtime_fixtures import (
+    DEFAULT_POLICY,
     DelegatingLLMProvider,
     build_spec,
     metadata,
@@ -237,21 +238,23 @@ class H2ARelayAuthTests(unittest.TestCase):
         app.state.runtime_state = SimpleNamespace(pool=pool, host_secret=SECRET)
         self.app = app
         self.http = TestClient(app)
-        self._accept("req-1", agent_id="primary-app", user_id="u-1", host=HOST_SNAPSHOT)
+        self._accept("req-1", agent_id="primary-app", app_id="app-1", host=HOST_SNAPSHOT)
 
     def _accept(
         self,
         request_id: str,
         *,
         agent_id: str,
-        user_id: str | None = None,
+        app_id: str | None = None,
         parent: dict | None = None,
         host: dict | None = None,
         session_id: str = "s-1",
     ) -> None:
         import asyncio
 
-        request_metadata = {"user_id": user_id} if user_id else {}
+        request_metadata = (
+            {"app_id": app_id, "policy_id": "p-1", "policy": DEFAULT_POLICY} if app_id else {}
+        )
         if parent is not None:
             request_metadata["parent"] = parent
         if host is not None:
@@ -260,7 +263,6 @@ class H2ARelayAuthTests(unittest.TestCase):
             self.store.append_event(
                 RuntimeEvent(
                     request_id=request_id,
-                    app_id=agent_id,
                     agent_id=agent_id,
                     session_id=session_id,
                     event_type=RuntimeEventType.INVOKE_AGENT_START.value,
@@ -298,27 +300,35 @@ class H2ARelayAuthTests(unittest.TestCase):
         self.assertEqual(call["request_id"], "req-1-sub-0-0")
         self.assertEqual(call["host"], HOST_SNAPSHOT)
         self.assertEqual(call["parent"]["agent_id"], "primary-app")
-        self.assertEqual(call["user_id"], "u-1")
+        self.assertEqual(
+            (call["app_id"], call["policy_id"], call["policy"]), ("app-1", "p-1", DEFAULT_POLICY)
+        )
 
-    def test_matching_user_id_is_forwarded(self) -> None:
-        resp = self._submit(user_id="u-1")
+    def test_a_matching_app_and_policy_are_forwarded(self) -> None:
+        resp = self._submit(app_id="app-1", policy_id="p-1", policy=DEFAULT_POLICY)
 
         self.assertEqual(resp.status_code, 202)
-        self.assertEqual(self.client_for_research.calls[0]["user_id"], "u-1")
+        self.assertEqual(self.client_for_research.calls[0]["app_id"], "app-1")
 
-    def test_another_user_id_is_403(self) -> None:
-        resp = self._submit(user_id="u-2")
-
-        self.assertEqual(resp.status_code, 403)
+    def test_another_app_policy_or_snapshot_is_403(self) -> None:
+        for override in (
+            {"app_id": "app-2"},
+            {"policy_id": "p-2"},
+            {"policy": {**DEFAULT_POLICY, "sandbox": False}},
+        ):
+            with self.subTest(override=override):
+                resp = self._submit(**override)
+                self.assertEqual(resp.status_code, 403)
         self.assertEqual(self.client_for_research.calls, [])
 
-    def test_parent_without_a_user_forwards_none(self) -> None:
+    def test_a_parent_without_an_app_or_policy_is_400(self) -> None:
         self._accept("req-anon", agent_id="primary-app", host=HOST_SNAPSHOT)
 
         resp = self._submit(parent=_parent("req-anon"))
 
-        self.assertEqual(resp.status_code, 202)
-        self.assertIsNone(self.client_for_research.calls[0]["user_id"])
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"]["code"], "INVALID_PARENT")
+        self.assertEqual(self.client_for_research.calls, [])
 
     def test_unknown_parent_request_is_400(self) -> None:
         resp = self._submit(parent=_parent("req-missing"))
@@ -327,7 +337,7 @@ class H2ARelayAuthTests(unittest.TestCase):
         self.assertEqual(resp.json()["error"]["code"], "INVALID_PARENT")
 
     def test_parent_request_of_another_agent_is_403(self) -> None:
-        self._accept("req-other", agent_id="other", user_id="u-9")
+        self._accept("req-other", agent_id="other", app_id="app-9")
 
         resp = self._submit(parent=_parent("req-other"))
 
@@ -350,7 +360,7 @@ class H2ARelayAuthTests(unittest.TestCase):
         self.assertEqual(self.client_for_research.calls, [])
 
     def test_subagent_must_be_in_the_parents_stored_host(self) -> None:
-        self._accept("req-w", agent_id="primary-app", user_id="u-1",
+        self._accept("req-w", agent_id="primary-app", app_id="app-1",
                      host={**HOST_SNAPSHOT, "agents": ["writer"]})
 
         resp = self._submit(parent=_parent("req-w"))
@@ -372,7 +382,7 @@ class H2ARelayAuthTests(unittest.TestCase):
         self.assertEqual(self.client_for_research.calls[0]["host"], HOST_SNAPSHOT)
 
     def test_a_parent_without_a_host_may_not_claim_one(self) -> None:
-        self._accept("req-bare", agent_id="primary-app", user_id="u-1")
+        self._accept("req-bare", agent_id="primary-app", app_id="app-1")
 
         resp = self._submit(parent=_parent("req-bare"))
 
@@ -386,7 +396,7 @@ class H2ARelayAuthTests(unittest.TestCase):
         self.assertEqual(self.client_for_research.calls, [])
 
     def test_without_a_host_there_is_no_target(self) -> None:
-        self._accept("req-bare", agent_id="primary-app", user_id="u-1")
+        self._accept("req-bare", agent_id="primary-app", app_id="app-1")
         bare = _parent("req-bare")
         for target in ("primary-app", "research"):
             with self.subTest(target=target):
@@ -400,26 +410,20 @@ class H2ARelayAuthTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 403)
         self.assertEqual(self.client_for_research.calls, [])
 
-    def test_mode_is_forwarded(self) -> None:
-        resp = self._submit(mode="bg")
-
-        self.assertEqual(resp.status_code, 202)
-        self.assertEqual(self.client_for_research.calls[0]["mode"], "bg")
-
     def _seed_child_session(
         self, session_id: str, *, agent_id: str = "research", primary_session_id: str = "s-1"
     ) -> None:
         import asyncio
 
         self._accept(
-            f"{session_id}-req", agent_id=agent_id, user_id="u-1",
+            f"{session_id}-req", agent_id=agent_id, app_id="app-1",
             parent=_parent("req-1"), session_id=session_id,
         )
         asyncio.run(
             self.memory.save_turn(
                 trace_id=f"{session_id}-t",
                 session_id=session_id,
-                app_id=agent_id,
+                agent_id=agent_id,
                 user_message="earlier brief",
                 agent_response="earlier answer",
                 signals={},
@@ -463,7 +467,7 @@ class H2ARelayAuthTests(unittest.TestCase):
         )
 
     def test_the_parent_agent_may_cancel_its_child(self) -> None:
-        self._accept("child-1", agent_id="research", user_id="u-1", parent=_parent("req-1"))
+        self._accept("child-1", agent_id="research", app_id="app-1", parent=_parent("req-1"))
 
         resp = self._cancel("child-1")
 
@@ -471,7 +475,7 @@ class H2ARelayAuthTests(unittest.TestCase):
         self.assertEqual(self.client_for_research.cancelled, ["child-1"])
 
     def test_another_agent_may_not_cancel_the_child(self) -> None:
-        self._accept("child-1", agent_id="research", user_id="u-1", parent=_parent("req-1"))
+        self._accept("child-1", agent_id="research", app_id="app-1", parent=_parent("req-1"))
 
         self.assertEqual(self._cancel("child-1", caller="other").status_code, 403)
         self.assertEqual(self._cancel("missing").status_code, 404)
@@ -485,7 +489,7 @@ class H2ARelayAuthTests(unittest.TestCase):
         )
 
     def test_the_parent_agent_may_answer_its_childs_interaction(self) -> None:
-        self._accept("child-1", agent_id="research", user_id="u-1", parent=_parent("req-1"))
+        self._accept("child-1", agent_id="research", app_id="app-1", parent=_parent("req-1"))
 
         resp = self._answer("child-1", {"interaction_id": "itr_1", "response": "approve"})
 
@@ -493,7 +497,7 @@ class H2ARelayAuthTests(unittest.TestCase):
         self.assertEqual(self.client_for_research.answers, [("child-1", "itr_1", "approve")])
 
     def test_another_agent_may_not_answer_the_childs_interaction(self) -> None:
-        self._accept("child-1", agent_id="research", user_id="u-1", parent=_parent("req-1"))
+        self._accept("child-1", agent_id="research", app_id="app-1", parent=_parent("req-1"))
         body = {"interaction_id": "itr_1", "response": "approve"}
 
         self.assertEqual(self._answer("child-1", body, caller="other").status_code, 403)
@@ -501,7 +505,7 @@ class H2ARelayAuthTests(unittest.TestCase):
         self.assertEqual(self.client_for_research.answers, [])
 
     def test_an_answer_needs_an_interaction_id(self) -> None:
-        self._accept("child-1", agent_id="research", user_id="u-1", parent=_parent("req-1"))
+        self._accept("child-1", agent_id="research", app_id="app-1", parent=_parent("req-1"))
 
         resp = self._answer("child-1", {"response": "approve"})
 
@@ -509,7 +513,7 @@ class H2ARelayAuthTests(unittest.TestCase):
         self.assertEqual(self.client_for_research.answers, [])
 
     def test_a_closed_interaction_is_409(self) -> None:
-        self._accept("child-1", agent_id="research", user_id="u-1", parent=_parent("req-1"))
+        self._accept("child-1", agent_id="research", app_id="app-1", parent=_parent("req-1"))
         self.client_for_research.closed.add("itr_1")
 
         resp = self._answer("child-1", {"interaction_id": "itr_1", "response": "approve"})
@@ -536,7 +540,6 @@ class H2ARelayAuthTests(unittest.TestCase):
             self.store.append_event(
                 RuntimeEvent(
                     request_id="req-sub",
-                    app_id="research",
                     agent_id="research",
                     session_id="s-1",
                     event_type=RuntimeEventType.INVOKE_AGENT_START.value,
@@ -616,7 +619,7 @@ class AgentProcessEndToEndTests(unittest.IsolatedAsyncioTestCase):
         try:
             async with host_app.router.lifespan_context(host_app):
                 accepted = await host_pool.submit_host_request(
-                    "assistant", message="delegate", session_id="s-1", user_id="u-1"
+                    "assistant", message="delegate", session_id="s-1", app_id="app-1", policy_id="p-1"
                 )
                 events = [
                     event
@@ -627,9 +630,9 @@ class AgentProcessEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 # The subagent ran in its own process, in a session of its own.
                 [child] = await runtime_store.list_child_requests(accepted["request_id"])
                 turns = await memory_store.get_turns(
-                    session_id=child["session_id"], app_id="research"
+                    session_id=child["session_id"], agent_id="research"
                 )
-                turn_users = {(t["app_id"], t["user_id"]) for t in memory_store._turns}
+                turn_apps = {(t["agent_id"], t["app_id"]) for t in memory_store._turns}
         finally:
             await primary_server.runtime.shutdown()
             await research_server.runtime.shutdown()
@@ -650,9 +653,9 @@ class AgentProcessEndToEndTests(unittest.IsolatedAsyncioTestCase):
             [child["agent_id"] for child in call_starts[0]["subagents"]], ["research"]
         )
         self.assertEqual(turns[-1]["user_message"], "analyze")
-        # The host copied the companion request's user onto the child,
-        # so both turns are stored for that user.
-        self.assertEqual(turn_users, {("companion", "u-1"), ("research", "u-1")})
+        # The host copied the companion request's app onto the child, so both
+        # turns are stored for that app.
+        self.assertEqual(turn_apps, {("companion", "app-1"), ("research", "app-1")})
 
 
 if __name__ == "__main__":

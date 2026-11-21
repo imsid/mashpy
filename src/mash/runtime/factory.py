@@ -11,8 +11,15 @@ from mash.skills.tool import SkillTool
 
 from ..core.agent import Agent
 from ..core.config import SystemPrompt
-from ..browser.sites import check_sites
-from ..tools.browser import browser_tool_names, build_browser_tools
+from ..browser.sites import check_sites, request_sites
+from ..tools.browser import (
+    BROWSER_NAVIGATE,
+    BROWSER_SAVE,
+    BROWSER_UPLOAD,
+    browser_tool_names,
+    build_browser_tools,
+    listing_sites,
+)
 from ..tools.sandbox import SANDBOX_TOOL_NAMES, build_sandbox_tools
 from ..tools.runtime import RuntimeToolBuilder
 from ..tools.subagent import RunSubAgentsTool
@@ -30,7 +37,7 @@ if TYPE_CHECKING:
 def _is_companion(self: "AgentRuntime") -> bool:
     from mash.agents.companion import COMPANION_AGENT_ID
 
-    return self.app_id == COMPANION_AGENT_ID
+    return self.agent_id == COMPANION_AGENT_ID
 
 
 def resolve_host_agents(
@@ -51,7 +58,7 @@ def resolve_host_agents(
     access = self.get_host_access()
     if access is None:
         raise RuntimeError(
-            f"agent '{self.app_id}' received a host snapshot but has no host access"
+            f"agent '{self.agent_id}' received a host snapshot but has no host access"
         )
     resolved: dict[str, AgentMetadata] = {}
     for agent_id in agent_ids:
@@ -89,14 +96,14 @@ def register_sandbox_tools(self: "AgentRuntime", agent: Agent) -> None:
     for name in SANDBOX_TOOL_NAMES:
         if name in agent.tools:
             raise ValueError(
-                f"agent '{self.app_id}' registers its own '{name}' tool; the host "
-                "provides it on the request user's sandbox, so remove it from build_tools()"
+                f"agent '{self.agent_id}' registers its own '{name}' tool; the host "
+                "provides it on the request policy's sandbox, so remove it from build_tools()"
             )
     host_api_url, token = self._sandbox_tools
     for tool in build_sandbox_tools(
         host_api_url=host_api_url,
         token=token,
-        agent_id=self.app_id,
+        agent_id=self.agent_id,
         file_roots=self.definition.sandbox_file_roots(),
         env=self.definition.sandbox_env(),
     ):
@@ -110,13 +117,13 @@ def register_browser_tools(self: "AgentRuntime", agent: Agent) -> None:
     for name in browser_tool_names():
         if name in agent.tools:
             raise ValueError(
-                f"agent '{self.app_id}' registers its own '{name}' tool; the host "
-                "provides it on the request user's browser, so remove it from build_tools()"
+                f"agent '{self.agent_id}' registers its own '{name}' tool; the host "
+                "provides it on the request policy's browser, so remove it from build_tools()"
             )
     try:
         check_sites(self.definition.browser_sites())
     except ValueError as exc:
-        raise ValueError(f"agent '{self.app_id}': {exc}") from exc
+        raise ValueError(f"agent '{self.agent_id}': {exc}") from exc
     host_api_url, token = self._browser_tools
     for tool in build_browser_tools(host_api_url=host_api_url, token=token):
         agent.tools.register(tool)
@@ -137,10 +144,10 @@ def build_base_agent(self: "AgentRuntime") -> Agent:
     llm = self.definition.build_llm()
     llm.enable_thought_summaries()
     config = self.definition.build_agent_config()
-    if config.app_id != self.app_id:
+    if config.agent_id != self.agent_id:
         raise ValueError(
-            "AgentSpec.get_agent_id() must match build_agent_config().app_id "
-            f"(got {self.app_id!r} vs {config.app_id!r})"
+            "AgentSpec.get_agent_id() must match build_agent_config().agent_id "
+            f"(got {self.agent_id!r} vs {config.agent_id!r})"
         )
     agent = Agent(llm=llm, tools=tools, skills=skills, config=config)
     if config.skills_enabled and skills.list_skills() and "Skill" not in agent.tools:
@@ -154,15 +161,17 @@ def build_turn_agent(
     *,
     session_id: str,
     host: dict[str, Any] | None = None,
-    user_id: str | None = None,
+    app_id: str | None = None,
+    policy: dict[str, Any] | None = None,
     parent_kind: str | None = None,
 ) -> Agent:
     """An agent for one step of a request, over the runtime's shared tools.
 
     It shares the base agent's LLM, skills and tool objects, and adds the
     tools bound to the request: the conversation tools for its session and
-    user, and ``search_cortex`` for its user. The companion, on a host request
-    the user started, also gets ``RunSubAgents`` over the host's agents and
+    app, and ``search_cortex`` for its app. The request's policy narrows the
+    sandbox and browser tools. The companion, on a host request the user
+    started, also gets ``RunSubAgents`` over the host's agents and
     ``RunWorkflow`` over its workflows.
     """
     base = self.agent
@@ -177,10 +186,11 @@ def build_turn_agent(
     if chain_renderer is not None:
         agent.set_chain_renderer(chain_renderer)
     if self.definition.enable_runtime_tools():
-        configure_runtime_tools(self, agent, session_id=session_id, user_id=user_id)
+        configure_runtime_tools(self, agent, session_id=session_id, app_id=app_id)
     cortex = self.get_cortex()
-    if cortex is not None and user_id:
-        agent.tools.register(cortex.search_tool(user_id))
+    if cortex is not None and app_id:
+        agent.tools.register(cortex.search_tool(app_id))
+    apply_policy(self, agent, policy)
     for name in ("RunSubAgents", "RunWorkflow"):
         if name in agent.tools:
             agent.tools.unregister(name)
@@ -190,18 +200,41 @@ def build_turn_agent(
     return agent
 
 
+def apply_policy(self: "AgentRuntime", agent: Agent, policy: dict[str, Any] | None) -> None:
+    """Narrow a turn agent's sandbox and browser tools to the request's policy.
+
+    ``sandbox: false`` drops the sandbox tools, and ``browser_save`` and
+    ``browser_upload``, which move files through the sandbox. The browser tools
+    keep the sites both the agent and the policy allow, and go when none are
+    left; ``browser_navigate`` lists the sites so the model knows them.
+    """
+    if not (policy or {}).get("sandbox", True):
+        for name in (*SANDBOX_TOOL_NAMES, BROWSER_SAVE, BROWSER_UPLOAD):
+            if name in agent.tools:
+                agent.tools.unregister(name)
+    if self._browser_tools is None or BROWSER_NAVIGATE not in agent.tools:
+        return
+    sites = request_sites(self.definition.browser_sites(), policy)
+    if not sites:
+        for name in browser_tool_names():
+            if name in agent.tools:
+                agent.tools.unregister(name)
+        return
+    agent.tools.replace(listing_sites(agent.tools.get(BROWSER_NAVIGATE), sites))
+
+
 def configure_runtime_tools(
     self: "AgentRuntime",
     agent: Agent,
     *,
     session_id: str,
-    user_id: str | None = None,
+    app_id: str | None = None,
 ) -> None:
     builder = RuntimeToolBuilder(
         store=self.memory_store,
-        app_id=self.app_id,
+        agent_id=self.agent_id,
         session_id=session_id,
-        user_id=user_id,
+        app_id=app_id,
     )
     for tool in builder.build_tools():
         agent.tools.register(tool)
@@ -260,7 +293,7 @@ def configure_run_subagents(
     agent.tools.register(
         RunSubAgentsTool(
             client_resolver=client_resolver,
-            caller_agent_id=self.app_id,
+            caller_agent_id=self.agent_id,
             session_id=session_id,
             host=host,
             timeout_seconds=agent.config.subagent_timeout_seconds,

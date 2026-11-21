@@ -1,4 +1,4 @@
-"""``mash run``: submit one request, print its answer, exit.
+"""``mash run``: post one event to a host, print its answer, exit.
 
 The answer goes to stdout as plain Markdown text and nothing else does, so the
 command can be piped. Progress (one line per tool call) goes to stderr when
@@ -17,9 +17,12 @@ import json
 import signal
 import sys
 import time
+import uuid
 from typing import Mapping, TextIO
 
 from rich.console import Console
+
+from mash.agents.companion import COMPANION_AGENT_ID
 
 from .client import MashHostClient, MashHostClientError
 from .render import OutputPrinter, RichRenderer, ToolLine, rich_theme
@@ -54,34 +57,32 @@ def read_message(argument: str | None, stdin: TextIO) -> str:
 def _submit(
     client: MashHostClient,
     *,
-    agent_id: str,
-    host_id: str | None,
+    host_id: str,
     session_id: str,
-    user_id: str,
+    app_id: str,
+    policy_id: str,
     message: str,
 ) -> tuple[str, str]:
-    """Submit to the host or the agent; returns (agent_id, request_id)."""
-    if host_id:
-        accepted = client.submit_host_request(
-            host_id, message=message, session_id=session_id, user_id=user_id
-        )
-        return (
-            str(accepted.get("agent_id") or agent_id),
-            str(accepted.get("request_id") or ""),
-        )
-    request_id = client.submit_request(
-        agent_id, message=message, session_id=session_id, user_id=user_id
+    """Post the message as an event; returns (event_id, request_id)."""
+    event_id = str(uuid.uuid4())
+    accepted = client.post_event(
+        session_id,
+        event_id=event_id,
+        host_id=host_id,
+        app_id=app_id,
+        policy_id=policy_id,
+        message=message,
     )
-    return agent_id, request_id
+    return event_id, str(accepted.get("request_id") or "")
 
 
 async def _run(
     client: MashHostClient,
     *,
-    agent_id: str,
-    host_id: str | None,
+    host_id: str,
     session_id: str,
-    user_id: str,
+    app_id: str,
+    policy_id: str,
     message: str,
     json_output: bool,
     stdout: TextIO,
@@ -89,18 +90,22 @@ async def _run(
     theme: Mapping[str, str] | None,
     tool_lines: Mapping[str, ToolLine] | None,
 ) -> int:
-    agent_id, request_id = await asyncio.to_thread(
+    event_id, request_id = await asyncio.to_thread(
         lambda: _submit(
             client,
-            agent_id=agent_id,
             host_id=host_id,
             session_id=session_id,
-            user_id=user_id,
+            app_id=app_id,
+            policy_id=policy_id,
             message=message,
         )
     )
     view = RequestView(
-        agent_id=agent_id, request_id=request_id, started_at=time.monotonic(), brief=message
+        agent_id=COMPANION_AGENT_ID,
+        request_id=request_id,
+        event_id=event_id,
+        started_at=time.monotonic(),
+        brief=message,
     )
     progress = None
     if not json_output and stderr.isatty():
@@ -109,7 +114,7 @@ async def _run(
         )
     asked: Interaction | None = None
     try:
-        async for event in client.request_events(agent_id, request_id):
+        async for event in client.event_events(session_id, event_id):
             if json_output:
                 stdout.write(json.dumps(event, ensure_ascii=True, default=str) + "\n")
                 stdout.flush()
@@ -122,13 +127,13 @@ async def _run(
                 break
     except asyncio.CancelledError:
         with contextlib.suppress(MashHostClientError):
-            await asyncio.to_thread(client.cancel_request, agent_id, request_id)
+            await asyncio.to_thread(client.cancel_event, session_id, event_id)
         stderr.write("Interrupted. The request was cancelled.\n")
         return EXIT_INTERRUPTED
 
     if asked is not None:
         with contextlib.suppress(MashHostClientError):
-            await asyncio.to_thread(client.cancel_request, agent_id, request_id)
+            await asyncio.to_thread(client.cancel_event, session_id, event_id)
         prompt = str(asked.payload.get("prompt") or "input required")
         stderr.write(
             f"The request asked for input and was cancelled: {prompt}\n"
@@ -147,10 +152,10 @@ async def _run(
 def run_once(
     client: MashHostClient,
     *,
-    agent_id: str,
-    host_id: str | None,
+    host_id: str,
     session_id: str,
-    user_id: str,
+    app_id: str,
+    policy_id: str,
     message: str,
     json_output: bool = False,
     stdout: TextIO | None = None,
@@ -166,10 +171,10 @@ def run_once(
         task: asyncio.Task[int] = asyncio.ensure_future(
             _run(
                 client,
-                agent_id=agent_id,
                 host_id=host_id,
                 session_id=session_id,
-                user_id=user_id,
+                app_id=app_id,
+                policy_id=policy_id,
                 message=message,
                 json_output=json_output,
                 stdout=stdout,

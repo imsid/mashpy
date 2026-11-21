@@ -19,8 +19,9 @@ Postgres.
 You author two things. A workflow is the pipeline itself, the shape of the
 automation as code. An agent is an LLM loop running inside a harness that gives
 it tools, skills, memory, a sandbox for the code it writes, a browser for the
-sites it works on, and a durable request lifecycle. An agent serves user requests directly, runs as a step
-inside a workflow, or both. Either way, it works for a user.
+sites it works on, and a durable request lifecycle. An agent answers the messages an application posts to a host, runs as a
+step inside a workflow, or both. Either way, it works under a policy the
+application names.
 
 ## Workflows
 
@@ -43,7 +44,7 @@ step's status, inputs, outputs, and attempts.
 Each agent is an `AgentSpec`: a Python contract that names the agent, picks its
 LLM, and declares its system prompt, tools, and skills. The loop runs inside a
 durable request: think, act, observe, with tools executing in the agent's
-process, the code the model writes running in the user's sandbox, skills loaded
+process, the code the model writes running in the policy's sandbox, skills loaded
 on demand, memory management, and structured output. Every
 request is recorded as replayable runtime events, so retries, restarts, and
 long-running work recover mid-loop instead of starting over. An agent can pause
@@ -67,11 +68,11 @@ application integrates once.
 │            ▼                         ▼                         ▼            │
 │      ┌───────────┐            ┌─────────────┐            ┌───────────┐      │
 │      │   agent   │            │  companion  │            │ workflow  │      │
-│      │           │            │  (router)   │            │           │      │
+│      │           │            │  (events)   │            │           │      │
 │      └───────────┘            └─────────────┘            └───────────┘      │
 │            │                         ▲                         │            │
 │            │   approvals, questions  │ RunSubAgents: one or    │            │
-│            │   and answers go back   │ more bg subagents       │            │
+│            │   and answers go back   │ more subagents          │            │
 │            │           ┌─────────────┼─────────────┐           │            │
 │            │           ▼             ▼             ▼           │            │
 │            │      ┌─────────┐   ┌─────────┐   ┌─────────┐      │            │
@@ -102,41 +103,44 @@ application integrates once.
             │ run_code                 │ browser                  │ MCP tools
             ▼                          ▼                          ▼
 ┌───────────────────────┐  ┌───────────────────────┐  ┌───────────────────────┐
-│ Sandbox: one per user │  │ Browser: one per user │  │ MCP servers: your own │
+│ Sandbox: per policy   │  │ Browser: per policy   │  │ MCP servers: your own │
 │ workspaces/<agent_id> │  │ Chromium, own profile │  │ remote tools          │
 │ files persist         │  │ listed sites only     │  │ web search            │
 │ no secrets · no db    │  │ sign-in via live view │  │ listed at startup     │
 └───────────────────────┘  └───────────────────────┘  └───────────────────────┘
 ```
 
-A request to a host goes to the companion, which runs the host's agents as
-background requests, each in its own session, or starts a workflow, and then
-writes the answer. When one of those agents needs an approval or an answer,
-the companion relays it to the user. A request to one agent or one workflow
-skips the companion. Any request can run in the background: the user keeps
-talking and the client reports when it finishes or needs input. Whichever way
-a request reaches an agent, it rides the same durable loop, and the code it
-runs lands in the sandbox of the user it acts for. An agent that lists sites
-drives that user's browser, and remote tools call the MCP servers the agent
-connects to.
+Every input to a host is an event in a session, such as a Slack thread.
+Events in a session run one at a time, in arrival order, and the user can
+keep sending while one runs; the rest wait in the session's queue. Each event
+runs as a request on the companion, which runs the host's agents as child
+requests, each in its own session, or starts a workflow, and then writes the
+answer. When one of those agents needs an approval or an answer, the
+companion relays it to the user. A workflow run skips the companion. Whichever
+way a request reaches an agent, it rides the same durable loop, and the code
+it runs lands in the sandbox of the policy it runs under. An agent that lists
+sites drives that policy's browser, and remote tools call the MCP servers the
+agent connects to.
 
 ## Sandboxes
 
 With a computer of its own, an agent can analyse a file, build a chart or a
 page, keep a SQLite database, run the tests of the code it produced, and keep
 the results for a later request. Mash runs that code in a sandbox, a container
-for the user the request acts for.
+for the policy the request runs under.
 
-Every request names its user with a `user_id`, which the application sends and
-the host trusts. The host starts a user's sandbox on their first command and
-stops it after 15 idle minutes. With Docker on the host, every agent gets
-`run_code`, which runs Python, JavaScript or shell in the request user's
-sandbox, in a folder of its own (`/home/agent/workspaces/<agent_id>`). An
+Every event names a policy with a `policy_id`, which the application sends and
+the host trusts. A policy is a named resource that many sessions share: it
+owns the sandbox and the browser profile, and it sets whether agents get the
+sandbox, which browser sites they may open, and how long an interaction may
+wait. The host starts a policy's sandbox on its first command and stops it
+after 15 idle minutes. With Docker on the host, every agent gets `run_code`,
+which runs Python, JavaScript or shell in the policy's sandbox, in a folder of its own (`/home/agent/workspaces/<agent_id>`). An
 agent whose spec names folders on its machine also gets `sandbox_put` and
 `sandbox_get` to copy files in and out of those folders. Its files persist
 across requests and restarts, and the user opens the pages and files it makes
 at links the host serves. Each agent's code runs as an unprivileged uid of
-its own with a clean environment. A sandbox holds only that user's files: the agents' secrets
+its own with a clean environment. A sandbox holds only that policy's files: the agents' secrets
 and the database stay with the host.
 
 Each agent runs as a process of the host, with its credentials, its model
@@ -146,24 +150,26 @@ and the code the model writes goes to the sandbox.
 ## Browsers
 
 Some work only happens in a website: downloading a bill from a utility's
-portal, checking an order's status, filling in a form. Mash gives each user a
-browser for it, a Chromium in a container of its own next to the user's
+portal, checking an order's status, filling in a form. Mash gives each policy
+a browser for it, a Chromium in a container of its own next to the policy's
 sandbox. Its profile keeps the sites the user signed in to, and every agent
-acting for that user shares it.
+and session under that policy shares it.
 
 An agent gets the browser tools when its spec lists sites with
-`browser_sites()`, such as `https://*.example.com`. The tools are Playwright
+`browser_sites()`, such as `https://*.example.com`, and the policy can narrow
+that list. The tools are Playwright
 MCP's page tools: the model reads the page as an accessibility tree, clicks,
 types, and takes screenshots it can see. A URL outside the listed sites fails,
 and a click that leaves them goes back without showing the page. Downloads
 can be copied into the sandbox, where the agent's code reads them.
 
 When a site needs a sign-in, the agent calls `browser_handoff`. The request
-pauses on a durable interaction whose payload carries a live-view link to the
-browser. The user opens it, signs in, and answers `done`; the REPL opens the
-link and waits for Enter, and an app shows it and posts the answer. Mash never
+pauses on a durable interaction, and when the user is ready the app asks the
+host for a live-view link to the browser. The user opens it, signs in, and
+answers `done`; the REPL opens the link and waits for Enter, and an app shows
+it and posts the answer. Mash never
 sees the password, and the profile keeps the session for later requests. Code
-in the sandbox has no route to the browser, so the user's signed-in sessions
+in the sandbox has no route to the browser, so the signed-in sessions
 stay out of reach of the code the model writes.
 
 ## The pool and hosts
@@ -174,7 +180,7 @@ into a `Pool`, and the API server runs it. Every pool also has the built-in
 workflow runs alone.
 
 A host is a composition over the pool: a `host_id` and a set of agents and
-workflows. Every request to a host runs on the companion, which routes each
+workflows. Every event to a host runs on the companion, which routes each
 message to the host's agents or workflows, continues an agent's earlier
 session on a follow-up, and writes the answer. Hosts are
 defined in code at build time or dynamically over the API, so the same pool
@@ -190,9 +196,9 @@ flowchart TD
     P --> A1["Agent: support"]
     P --> A2["Agent: research"]
     P --> W1["Workflow: research-brief"]
-    A1 -- "run_code" --> S["Sandboxes<br/>one per user"]
+    A1 -- "run_code" --> S["Sandboxes<br/>one per policy"]
     A2 -- "run_code" --> S
-    A1 -- "browser_*" --> B["Browsers<br/>one per user"]
+    A1 -- "browser_*" --> B["Browsers<br/>one per policy"]
 ```
 
 ## The execution surface
@@ -237,13 +243,13 @@ The same spans go to Grafana, Datadog, Honeycomb or any OTLP backend when you
 install `mashpy[otel]` and set `OTEL_EXPORTER_OTLP_ENDPOINT` on the host. A
 request is exported when it ends, with its log records and the GenAI client
 metrics, and a workflow run goes out as one trace with each agent step's
-request under its step. A W3C `traceparent` on submit puts the request inside
+request under its step. A W3C `traceparent` on an event puts its request inside
 your own service's trace. Prompts, completions and tool I/O stay out of the
 export unless you turn content capture on.
 
 ## Evals
 
-The host is also the unit of evaluation. A user request lands on the
+The host is also the unit of evaluation. An event lands on the
 composition: the companion, the routing choices it makes, and the agents and
 tools behind them. Mash evals run against the host rather than any single
 agent, so what gets measured is the path the application actually takes and
