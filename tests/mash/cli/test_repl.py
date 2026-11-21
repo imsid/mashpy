@@ -50,13 +50,14 @@ def test_a_message_is_submitted_for_the_user_and_its_answer_printed() -> None:
         await d.say("hello")
 
     d = run(script, host)
+    [event_id] = host.events
     assert host.submitted == [
-        {"agent_id": "primary", "message": "hello", "session_id": "s-1",
-         "app_id": "app-1", "policy_id": "p-1", "request_id": "r-1"}
+        {"host_id": "assistant", "message": "hello", "session_id": "s-1",
+         "app_id": "app-1", "policy_id": "p-1", "request_id": "r-1", "event_id": event_id}
     ]
     assert "Hello there." in d.output
     assert d.repl.context.last_request_id == "r-1"
-    assert host.stream_calls == [("primary", "r-1", 0)]
+    assert host.stream_calls == [("companion", "r-1", 0)]
 
 
 def test_a_host_target_submits_through_the_host_and_follows_the_companion() -> None:
@@ -205,7 +206,7 @@ def test_a_submit_that_fails_is_reported() -> None:
     def refuse(*args: Any, **kwargs: Any) -> str:
         raise MashHostClientError("agent is disabled", status_code=409)
 
-    host.submit_request = refuse  # type: ignore[method-assign]
+    host.post_event = refuse  # type: ignore[method-assign]
 
     async def script(d: ReplDriver) -> None:
         d.type("hello" + ENTER)
@@ -260,7 +261,7 @@ def test_ctrl_c_cancels_the_running_request() -> None:
         d.type("long task" + ENTER)
         await d.until(d.repl.running)
         d.type(CTRL_C)
-        await d.until(lambda: host.cancelled == [("primary", "r-1")])
+        await d.until(lambda: host.cancelled == [("companion", "r-1")])
         gate.open()
         await d.idle()
 
@@ -314,9 +315,11 @@ def test_a_message_typed_while_a_request_runs_is_sent_after_it() -> None:
         await d.until(d.repl.running)
         d.type("two" + ENTER)
         await d.until(lambda: d.repl.queue == ["two"])
-        assert len(host.submitted) == 1
+        # Posted at once: it waits in the session's queue on the host.
+        assert len(host.submitted) == 2
+        assert host.stream_calls == [("companion", "r-1", 0)]
         gate.open()
-        await d.until(lambda: len(host.submitted) == 2)
+        await d.until(lambda: ("companion", "r-2", 0) in host.stream_calls)
         await d.idle()
 
     out = run(script, host).output
@@ -328,7 +331,7 @@ def test_up_on_an_empty_input_takes_the_last_queued_message_back() -> None:
     host = FakeHost()
     gate = Gate()
     host.script("r-1", trace("chat.start"), gate, *simple())
-    host.script("r-2", *simple())
+    host.script("r-3", *simple())
 
     async def script(d: ReplDriver) -> None:
         d.type("one" + ENTER)
@@ -340,11 +343,13 @@ def test_up_on_an_empty_input_takes_the_last_queued_message_back() -> None:
         d.type(" and three" + ENTER)
         await d.until(lambda: d.repl.queue == ["two and three"])
         gate.open()
-        await d.until(lambda: len(host.submitted) == 2)
+        await d.until(lambda: ("companion", "r-3", 0) in host.stream_calls)
         await d.idle()
 
     run(script, host)
-    assert host.submitted[1]["message"] == "two and three"
+    # "two" was posted, then its event cancelled when it was taken back.
+    assert host.cancelled == [("companion", "r-2")]
+    assert [s["message"] for s in host.submitted] == ["one", "two", "two and three"]
 
 
 def test_leaving_while_a_request_runs_says_it_keeps_running() -> None:
@@ -585,7 +590,7 @@ def test_three_children_print_three_lines_in_the_order_they_end() -> None:
     assert any(line.startswith("✓ solar ↺") for line in lines)
 
 
-def test_subagent_lists_shows_and_cancels_children() -> None:
+def test_subagent_lists_and_shows_children() -> None:
     host = FakeHost()
     gates = [Gate(), Gate(), Gate()]
     _three_children(host, gates)
@@ -599,13 +604,8 @@ def test_subagent_lists_shows_and_cancels_children() -> None:
         children = d.repl.foreground.children
         gates[0].open()
         await d.until(lambda: children[0].ended)
-        # One child is cancelled while the request runs; the others go on.
-        await d.command("/subagent cancel 2")
-        assert host.cancelled == [("review", "c-1")]
-        assert not children[1].ended and not children[2].ended
-        await d.command("/subagent cancel 1")
         await d.command("/subagent 9")
-        await d.command("/subagent cancel")
+        await d.command("/subagent cancel 2")
         gates[1].open()
         gates[2].open()
         await d.until(lambda: all(child.ended for child in children))
@@ -615,10 +615,10 @@ def test_subagent_lists_shows_and_cancels_children() -> None:
         await d.say("/subagent 1")
 
     out = run(script, host, host_id="fudge").output
-    assert "energy already ended (completed)." in out
     assert "Give a number from 1 to 3; /subagent lists them." in out
-    assert "Usage: /subagent | /subagent <n> | /subagent cancel <n>" in out
-    assert host.cancelled == [("review", "c-1")]
+    # A child stops with its parent's event; nothing cancels one alone.
+    assert "Usage: /subagent | /subagent <n>" in out
+    assert host.cancelled == []
     # The list: one row per child, with what it was asked.
     table = out[out.index("Asked"):]
     for name in ("energy", "review", "solar ↺"):
@@ -773,7 +773,7 @@ def _piped(lines: str, host: FakeHost) -> str:
     buffer = io.StringIO()
     repl = Repl(
         host,  # type: ignore[arg-type]
-        Target(api_base_url="http://host", agent_id="primary", session_id="s-1", app_id="app-1", policy_id="p-1"),
+        Target(api_base_url="http://host", session_id="s-1", app_id="app-1", policy_id="p-1", host_id="assistant"),
         console=Console(file=buffer, width=100, force_terminal=False, color_system=None,
                         theme=rich_theme()),
     )
@@ -807,15 +807,15 @@ def test_a_piped_request_that_asks_something_is_cancelled() -> None:
     gate = Gate()
     host.script("r-1", interaction("i-1", "approval", "Approve execution of: deploy?"),
                 gate, cancelled())
-    original = host.cancel_request
+    original = host.cancel_event
 
-    def cancel(agent_id: str, request_id: str) -> dict[str, Any]:
+    def cancel(session_id: str, event_id: str) -> dict[str, Any]:
         gate.open()
-        return original(agent_id, request_id)
+        return original(session_id, event_id)
 
-    host.cancel_request = cancel  # type: ignore[method-assign]
+    host.cancel_event = cancel  # type: ignore[method-assign]
     out = _piped("deploy\n", host)
-    assert host.cancelled == [("primary", "r-1")]
+    assert host.cancelled == [("companion", "r-1")]
     assert host.answers == []
     assert "Approve execution of: deploy?" in out
     assert "Input is not a terminal, so this cannot be answered." in out
@@ -855,7 +855,7 @@ def test_a_resumed_session_starts_with_its_last_two_turns() -> None:
     d = run(script, host, target={"session_id": "s-bills", "resumed": True,
                                   "title": "why was march high"})
     lines = [line.rstrip() for line in d.output.splitlines()]
-    assert lines[0] == "mash · app-1 · agent primary · why was march high · /help for commands"
+    assert lines[0] == "mash · app-1 · host assistant · why was march high · /help for commands"
     assert lines[1:9] == [
         "", "› why was march high", "", "Heating.", "", "› and april?", "", "Lower.",
     ]
@@ -870,7 +870,7 @@ def test_resume_picks_one_of_the_apps_sessions() -> None:
 
     async def script(d: ReplDriver) -> None:
         d.type("/resume" + ENTER)
-        await d.until(lambda: ("list_sessions", ("primary", "app-1", 20)) in host.calls)
+        await d.until(lambda: ("list_sessions", ("companion", "app-1", 20)) in host.calls)
         await asyncio.sleep(0.05)
         d.type(DOWN + ENTER)
         await d.until(lambda: d.repl.context.session_id == "s-solar")
@@ -971,7 +971,7 @@ def _answer_approval(keys: str, *before: Any) -> tuple[FakeHost, str]:
 def test_enter_approves_and_the_answer_is_posted() -> None:
     host, out = _answer_approval(ENTER)
     assert host.answers == [
-        {"agent_id": "primary", "request_id": "r-1", "interaction_id": "i-1", "response": "approve"}
+        {"agent_id": "companion", "request_id": "r-1", "interaction_id": "i-1", "response": "approve"}
     ]
     lines = [line.rstrip() for line in out.splitlines()]
     assert lines.index("Approve execution of: deploy?") < lines.index("  → approve")
@@ -1070,8 +1070,15 @@ def test_a_question_takes_free_text() -> None:
 def _browser(keys: str) -> tuple[FakeHost, str, str]:
     host = FakeHost()
     gate = Gate()
-    url = "http://127.0.0.1:8000/browser/s/" + "t" * 120 + "/vnc.html"
-    host.script("r-1", interaction("i-1", "browser", "Sign in to PG&E", url=url), gate, *simple())
+    url = "http://127.0.0.1:8000/s/" + "t" * 120 + "/browser/"
+    # The interaction carries no link: the REPL asks the host to mint one.
+    host.script("r-1", interaction("i-1", "browser", "Sign in to PG&E"), gate, *simple())
+
+    def mint(session_id: str, event_id: str, interaction_id: str) -> dict[str, Any]:
+        host.handoffs.append((event_id, interaction_id))
+        return {"url": url, "expires_at": 0}
+
+    host.handoff_link = mint  # type: ignore[method-assign]
 
     async def script(d: ReplDriver) -> None:
         with patch("mash.cli.session.webbrowser.open") as opened:
@@ -1089,6 +1096,7 @@ def _browser(keys: str) -> tuple[FakeHost, str, str]:
 def test_a_browser_handoff_prints_and_opens_the_link_then_answers_done() -> None:
     host, out, url = _browser(ENTER)
     assert host.answers[0]["response"] == "done"
+    assert host.handoffs == [(next(iter(host.events)), "i-1")]
     # The link is never broken across lines.
     assert f"  Open: {url}" in out.splitlines()
 
@@ -1162,7 +1170,7 @@ def test_ctrl_c_at_an_interaction_cancels_the_request() -> None:
         d.type("go" + ENTER)
         await d.until(_asking(d))
         d.type(CTRL_C)
-        await d.until(lambda: host.cancelled == [("primary", "r-1")])
+        await d.until(lambda: host.cancelled == [("companion", "r-1")])
         gate.open()
         await d.idle()
 
@@ -1181,7 +1189,7 @@ def test_ctrl_c_at_a_question_cancels_the_request() -> None:
         d.type("go" + ENTER)
         await d.until(_asking(d))
         d.type("si" + CTRL_C)
-        await d.until(lambda: host.cancelled == [("primary", "r-1")])
+        await d.until(lambda: host.cancelled == [("companion", "r-1")])
         gate.open()
         await d.idle()
 
@@ -1320,7 +1328,7 @@ def test_an_answer_the_host_refuses_is_reported() -> None:
     def closed(*args: Any, **kwargs: Any) -> dict[str, Any]:
         raise MashHostClientError("interaction 'i-1' is no longer open", status_code=409)
 
-    host.post_interaction = closed  # type: ignore[method-assign]
+    host.answer_event = closed  # type: ignore[method-assign]
 
     async def script(d: ReplDriver) -> None:
         d.type("go" + ENTER)

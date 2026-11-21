@@ -54,14 +54,28 @@ class BrowserToolsEndToEndTests(unittest.IsolatedAsyncioTestCase):
                     events.append(event)
                     if event["event"] == "request.interaction.create":
                         payload = event["data"]
+                        # The interaction carries no link: one is minted when
+                        # someone asks, as the events API does.
+                        handoff = pool.get_browsers().mint_link(
+                            "p-1", request_id, payload["interaction_id"]
+                        )
+                        relay = await pool._agent_provider._ensure_relay()
+                        url = f"{relay}/s/{handoff.token}/browser/"
                         async with httpx.AsyncClient() as http:
-                            view = await http.get(payload["url"], follow_redirects=False)
-                        interactions.append({**payload, "view_status": view.status_code})
+                            view = await http.get(url, follow_redirects=False)
+                        interactions.append(
+                            {**payload, "view_status": view.status_code, "link": url}
+                        )
                         await client.post_interaction(
                             request_id,
                             interaction_id=payload["interaction_id"],
                             response=answer,
                         )
+                    if event["event"] == "request.completed" and interactions:
+                        # Closing the interaction revoked the link.
+                        async with httpx.AsyncClient() as http:
+                            after = await http.get(interactions[-1]["link"], follow_redirects=False)
+                        interactions[-1]["view_status_after"] = after.status_code
             finally:
                 await pool.close()
                 await provider.close()
@@ -82,7 +96,7 @@ class BrowserToolsEndToEndTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("https://evil.io is outside the sites", text)
 
-    async def test_handoff_pauses_on_a_browser_interaction_with_a_live_link(self) -> None:
+    async def test_handoff_pauses_on_a_browser_interaction_whose_links_are_minted_on_demand(self) -> None:
         text, interactions, _ = await self._run(
             "browser_handoff", {"reason": "Sign in to pge.com"}
         )
@@ -91,9 +105,11 @@ class BrowserToolsEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(interaction["type"], "browser")
         self.assertEqual(interaction["prompt"], "Sign in to pge.com")
         self.assertEqual(interaction["schema"], {"type": "enum", "options": ["done", "cancel"]})
-        self.assertRegex(interaction["url"], r"^http://127\.0\.0\.1:\d+/s/[^/]+/browser/$")
-        self.assertIsInstance(interaction["expires_at"], int)
+        self.assertNotIn("url", interaction)
+        # No timeout of its own: the policy's cap.
+        self.assertEqual(interaction["timeout_seconds"], 86400)
         self.assertEqual(interaction["view_status"], 307)
+        self.assertEqual(interaction["view_status_after"], 404)
         self.assertTrue(text.startswith("The user is done in the browser. The page now:"))
 
     async def test_a_cancelled_handoff_tells_the_model(self) -> None:

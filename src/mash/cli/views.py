@@ -49,6 +49,9 @@ class RequestView:
     agent_id: str
     request_id: str
     started_at: float
+    # The event the request runs for: set on a message's own request, not on
+    # a child's.
+    event_id: str | None = None
     # What was asked: the user's message, or the brief the companion wrote.
     brief: str = ""
     parent: "RequestView | None" = None
@@ -432,12 +435,14 @@ def reduce(view: RequestView, event: Mapping[str, Any], now: float) -> list[Outp
         view.phase = "tool" if view.running_tools else "thinking"
         return [Ack(view, dict(data))]
 
-    if name in ("request.completed", "request.error", "request.cancelled"):
+    if name in ("request.completed", "request.error", "request.cancelled", "event.cancelled"):
         outputs = _flush_tail(view)
+        # event.cancelled: an event cancelled before its request started.
         view.status = {
             "request.completed": COMPLETED,
             "request.error": FAILED,
             "request.cancelled": CANCELLED,
+            "event.cancelled": CANCELLED,
         }[name]
         view.ended_at = now
         view.final = dict(data)

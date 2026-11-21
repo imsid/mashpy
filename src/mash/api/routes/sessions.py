@@ -7,6 +7,7 @@ The other routes read an event, its stream and the ledgers, and cancel.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any, AsyncIterator, Optional
 
 from fastapi import APIRouter, Query, Request
@@ -30,6 +31,7 @@ from mash.sessions import (
     validate_session_id,
 )
 
+from .browser import view_url
 from .common import (
     APIError,
     build_runtime_event_sse_payload,
@@ -269,6 +271,42 @@ def build_sessions_router() -> APIRouter:
         except EventTerminalError as exc:
             raise APIError(code="EVENT_TERMINAL", message=str(exc), status_code=409) from exc
         return success(await service.describe(record))
+
+    @router.post("/sessions/{session_id}/events/{event_id}/interactions/{interaction_id}/handoff")
+    async def mint_handoff_link(
+        request: Request, session_id: str, event_id: str, interaction_id: str
+    ) -> dict[str, Any]:
+        """A new live-view link for an open ``browser`` interaction of the event.
+
+        It lasts ``MASH_BROWSER_HANDOFF_SECONDS``; earlier links keep working
+        until they expire or the interaction closes. A relayed interaction's
+        link opens the asking child's tab.
+        """
+        service = _service(request)
+        state = state_from_request(request)
+        browsers = state.pool.get_browsers()
+        if browsers is None or not state.host_secret:
+            raise APIError(
+                code="BROWSER_UNAVAILABLE", message="this host has no browsers", status_code=503
+            )
+        try:
+            policy_id, request_id = await service.handoff_target(
+                _session_id(session_id), _event_id(event_id), interaction_id.strip()
+            )
+        except EventNotFoundError as exc:
+            raise _not_found(exc) from exc
+        except KeyError as exc:
+            raise APIError(
+                code="INTERACTION_NOT_FOUND",
+                message=f"no open browser interaction '{interaction_id}'",
+                status_code=404,
+            ) from exc
+        handoff = browsers.mint_link(policy_id, request_id, interaction_id.strip())
+        with contextlib.suppress(Exception):
+            await browsers.front(policy_id, request_id)
+        return success(
+            {"url": view_url(state.public_url, handoff.token), "expires_at": handoff.expires_at}
+        )
 
     @router.get("/sessions/{session_id}/events/{event_id}/stream")
     async def stream_event(

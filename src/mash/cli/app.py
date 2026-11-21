@@ -47,9 +47,8 @@ class App:
     # The program name, the REPL's header line and the input history file.
     name: str
     description: str = ""
-    # The target when no --host or --agent is given. At most one of the two.
+    # The host when no --host is given.
     default_host: str | None = None
-    default_agent: str | None = None
     # The deployment when no flag or environment variable names one.
     default_base_url: str | None = None
     # "FUDGE" reads FUDGE_API_BASE_URL, FUDGE_API_KEY, FUDGE_APP_ID and
@@ -74,8 +73,6 @@ class App:
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ValueError("an App needs a name")
-        if self.default_host and self.default_agent:
-            raise ValueError("an App takes default_host or default_agent, not both")
 
     def env(self, name: str) -> str | None:
         """``<PREFIX>_<name>`` when the app has a prefix and it is set, else ``MASH_<name>``."""
@@ -177,12 +174,9 @@ def _resolve_connection(
     base_url, api_key, saved = _connection(args, app)
     agent_id = getattr(args, "agent", None)
     host_id = getattr(args, "host_id", None)
-    if not agent_id and not host_id:
-        # The app's own target, else the host `compose` pinned.
-        if app.default_host or app.default_agent:
-            agent_id, host_id = app.default_agent, app.default_host
-        elif saved:
-            host_id = saved.host_id
+    if not host_id:
+        # The app's own host, else the host `compose` pinned.
+        host_id = app.default_host or (saved.host_id if saved else None)
     app_id, policy_id = _identity(args, app, saved)
     if not base_url:
         raise ValueError(
@@ -246,6 +240,19 @@ def _run_workflow_command(
     assert command is not None
     command.handler(repl.context, words)
     return 1 if failed else 0
+
+
+def _resolve_host(client: MashHostClient, host_id: str | None) -> str:
+    """The host to post events to: the one given, or the deployment's only one."""
+    if host_id:
+        client.get_host(host_id)
+        return host_id
+    hosts = (client.health().get("deployment") or {}).get("hosts") or []
+    if len(hosts) == 1 and isinstance(hosts[0], dict) and hosts[0].get("host_id"):
+        return str(hosts[0]["host_id"])
+    raise ValueError(
+        "a host is required: use --host, or `mash compose` to define one and target it"
+    )
 
 
 def _resolve_target(
@@ -526,18 +533,22 @@ def build_parser(app: App = MASH) -> argparse.ArgumentParser:
     )
 
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--api-base-url", default=None, help="Mash host base URL")
-    common.add_argument("--api-key", default=None, help="Bearer API key")
-    common.add_argument("--agent", default=None, help="Target agent id (bare-agent targeting)")
-    common.add_argument("--host", dest="host_id", default=None, help="Target host id")
-    common.add_argument(
+    # Every command's connection and identity; `on_host` (repl, run) talks
+    # to a host, the others may also name an agent to read.
+    on_host = argparse.ArgumentParser(add_help=False)
+    on_host.add_argument("--api-base-url", default=None, help="Mash host base URL")
+    on_host.add_argument("--api-key", default=None, help="Bearer API key")
+    on_host.add_argument("--host", dest="host_id", default=None, help="Target host id")
+    on_host.add_argument(
         "--app-id", default=None, help="App to act for (overrides the saved connection's)"
     )
-    common.add_argument(
+    on_host.add_argument(
         "--policy-id",
         default=None,
         help="Policy to run under (overrides the saved connection's)",
     )
+    common = argparse.ArgumentParser(add_help=False, parents=[on_host])
+    common.add_argument("--agent", default=None, help="Agent whose sessions to read")
 
     subparsers.add_parser("status", parents=[common], help="Show deployment status")
     subparsers.add_parser(
@@ -555,7 +566,7 @@ def build_parser(app: App = MASH) -> argparse.ArgumentParser:
     history.add_argument("--session-id", required=True, help="Remote session id")
     history.add_argument("--limit", type=int, default=None, help="Optional turn limit")
 
-    repl = subparsers.add_parser("repl", parents=[common], help="Start an interactive remote REPL")
+    repl = subparsers.add_parser("repl", parents=[on_host], help="Start an interactive remote REPL")
     session = repl.add_mutually_exclusive_group()
     session.add_argument("--session-id", default=None, help="Remote session id")
     session.add_argument(
@@ -577,7 +588,7 @@ def build_parser(app: App = MASH) -> argparse.ArgumentParser:
 
     run = subparsers.add_parser(
         "run",
-        parents=[common],
+        parents=[on_host],
         help="Submit one request, print its answer and exit",
         description=(
             "Submit one request, print its answer on stdout and exit. Exit status: "
@@ -786,11 +797,15 @@ def main(argv: Sequence[str] | None = None, *, app: App = MASH) -> int:
             renderer.table(["Host", "Agents", "Workflows"], rows)
             return 0
 
-        agent_id, target_host_id = _resolve_target(
-            client,
-            getattr(args, "agent", None) or configured_agent,
-            getattr(args, "host_id", None) or configured_host,
-        )
+        if args.command in ("repl", "run"):
+            # Both talk to a host; each resolves its own below.
+            agent_id, target_host_id = COMPANION_AGENT_ID, None
+        else:
+            agent_id, target_host_id = _resolve_target(
+                client,
+                getattr(args, "agent", None) or configured_agent,
+                getattr(args, "host_id", None) or configured_host,
+            )
 
         if args.command == "sessions":
             sessions_payload = client.list_sessions(agent_id)
@@ -818,15 +833,15 @@ def main(argv: Sequence[str] | None = None, *, app: App = MASH) -> int:
 
         if args.command == "run":
             app_id, policy_id = _require_identity(app, app_id, policy_id)
+            host_id = _resolve_host(client, configured_host)
             message = read_message(args.message, sys.stdin)
             session_id = args.session_id
             if args.continue_session:
-                earlier = client.list_sessions(agent_id, app_id=app_id, limit=1)
+                earlier = client.list_sessions(COMPANION_AGENT_ID, app_id=app_id, limit=1)
                 session_id = str(earlier[0]["session_id"]) if earlier else None
             return run_once(
                 client,
-                agent_id=agent_id,
-                host_id=target_host_id,
+                host_id=host_id,
                 session_id=session_id or Repl.new_session_id(),
                 app_id=app_id,
                 policy_id=policy_id,
@@ -846,17 +861,20 @@ def main(argv: Sequence[str] | None = None, *, app: App = MASH) -> int:
                     session_id=Repl.new_session_id(),
                     app_id=app_id or "",
                     policy_id=policy_id or "",
-                    host_id=target_host_id,
+                    host_id=target_host_id or "",
                 ),
                 app,
             )
 
         if args.command == "repl":
             app_id, policy_id = _require_identity(app, app_id, policy_id)
+            host_id = _resolve_host(client, configured_host)
             session_id, title = args.session_id, ""
             if args.continue_session or args.resume:
                 earlier = client.list_sessions(
-                    agent_id, app_id=app_id, limit=1 if args.continue_session else PICKER_LIMIT
+                    COMPANION_AGENT_ID,
+                    app_id=app_id,
+                    limit=1 if args.continue_session else PICKER_LIMIT,
                 )
                 picked = None
                 if not earlier:
@@ -872,11 +890,10 @@ def main(argv: Sequence[str] | None = None, *, app: App = MASH) -> int:
                     session_id, title = str(picked["session_id"]), session_title(picked)
             target = Target(
                 api_base_url=base_url,
-                agent_id=agent_id,
                 session_id=session_id or Repl.new_session_id(),
                 app_id=app_id,
                 policy_id=policy_id,
-                host_id=target_host_id,
+                host_id=host_id,
                 resumed=bool(session_id),
                 title=title,
             )

@@ -229,6 +229,41 @@ class EventService:
         )
         return record
 
+    async def handoff_target(
+        self, session_id: str, event_id: str, interaction_id: str
+    ) -> tuple[str, str]:
+        """``(policy_id, request_id)`` whose browser an open handoff shows.
+
+        The request is the event's, or for a relayed interaction the child's
+        that asked. Raises ``EventNotFoundError``, and ``KeyError`` unless the
+        event's request has that ``browser`` interaction open.
+        """
+        record = await self._require(session_id, event_id)
+        if not record.request_id:
+            raise KeyError(interaction_id)
+        runtime_store = self._pool.get_runtime_store()
+        events = await runtime_store.list_request_events(record.request_id)
+        if interaction_id not in pending_interactions(events):
+            raise KeyError(interaction_id)
+        opened = next(
+            dict(e.payload or {})
+            for e in events
+            if e.event_type == RuntimeEventType.INTERACTION_START.value
+            and (e.payload or {}).get("interaction_id") == interaction_id
+        )
+        if opened.get("type") != "browser":
+            raise KeyError(interaction_id)
+        origin = opened.get("origin")
+        request_id = (
+            str(origin.get("request_id"))
+            if isinstance(origin, dict) and origin.get("request_id")
+            else record.request_id
+        )
+        identity = await runtime_store.get_request_identity(request_id)
+        if identity is None or not identity.policy_id:
+            raise KeyError(interaction_id)
+        return identity.policy_id, request_id
+
     async def _require(self, session_id: str, event_id: str) -> EventRecord:
         record = await self._store.get_event(session_id, event_id)
         if record is None:

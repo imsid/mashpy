@@ -15,7 +15,7 @@ import { useApi } from '../lib/useApi.js';
 import { useBreakpoint } from '../lib/useMediaQuery.js';
 import { reconstructMessages, previewText } from '../lib/conversation.js';
 import { compactNumber, formatDuration, tokensInOut } from '../lib/format.js';
-import { traceActions, traceStatusFromRequest, traceStatusMeta } from '../lib/trace.js';
+import { traceStatusFromRequest, traceStatusMeta } from '../lib/trace.js';
 
 const ROLE_TONE = { user: 'emerald', assistant: 'indigo', tool: 'amber', system: 'slate' };
 
@@ -299,85 +299,7 @@ function MessagesInspector({ messages }) {
   );
 }
 
-// Cancel / Resume / Rerun for the request behind this trace. The server
-// resolves the request from the trace id, so nothing here handles one.
-function TraceActions({ agentId, traceId, status, onDone, onRerun }) {
-  const [pending, setPending] = useState('');
-  const [error, setError] = useState(null);
-  const actions = traceActions(status);
-
-  if (!traceId || (!actions.cancel && !actions.resume && !actions.rerun)) return null;
-
-  const run = async (kind, confirmText, call) => {
-    if (!window.confirm(confirmText)) return;
-    setError(null);
-    setPending(kind);
-    try {
-      await call();
-      if (kind === 'rerun') onRerun?.();
-      else onDone?.();
-    } catch (err) {
-      setError(err.message || `Failed to ${kind} this request.`);
-    } finally {
-      setPending('');
-    }
-  };
-
-  return (
-    <div className="flex flex-col items-end gap-2">
-      <div className="flex gap-2">
-        {actions.cancel ? (
-          <Button
-            variant="secondary"
-            disabled={Boolean(pending)}
-            onClick={() =>
-              run(
-                'cancel',
-                'Cancel this request? The step in flight finishes and is checkpointed, then execution stops.',
-                () => api.cancelTraceRequest(agentId, traceId),
-              )
-            }
-          >
-            {pending === 'cancel' ? 'Cancelling…' : 'Cancel request'}
-          </Button>
-        ) : null}
-        {actions.resume ? (
-          <Button
-            variant="secondary"
-            disabled={Boolean(pending)}
-            onClick={() =>
-              run(
-                'resume',
-                'Resume this request from its last checkpoint?',
-                () => api.resumeTraceRequest(agentId, traceId),
-              )
-            }
-          >
-            {pending === 'resume' ? 'Resuming…' : 'Resume request'}
-          </Button>
-        ) : null}
-        {actions.rerun ? (
-          <Button
-            variant="primary"
-            disabled={Boolean(pending)}
-            onClick={() =>
-              run(
-                'rerun',
-                'Start this request over as a new request? It runs against the session as it is now.',
-                () => api.rerunTraceRequest(agentId, traceId),
-              )
-            }
-          >
-            {pending === 'rerun' ? 'Starting…' : 'Rerun request'}
-          </Button>
-        ) : null}
-      </div>
-      {error ? <p className="text-xs text-rose-600">{error}</p> : null}
-    </div>
-  );
-}
-
-export function TraceDrawer({ open, trace, agentId, onClose, onChanged }) {
+export function TraceDrawer({ open, trace, agentId, onClose }) {
   const sessionId = trace?.session_id;
   const traceId = trace?.trace_id;
 
@@ -498,19 +420,6 @@ export function TraceDrawer({ open, trace, agentId, onClose, onChanged }) {
               ) : null}
             </div>
             <div className="flex items-start gap-2">
-              <TraceActions
-                agentId={agentId}
-                traceId={traceId}
-                status={status}
-                onDone={() => {
-                  reloadAll();
-                  onChanged?.();
-                }}
-                onRerun={() => {
-                  onChanged?.();
-                  onClose?.();
-                }}
-              />
               <Button variant="ghost" onClick={reloadAll}>
                 Refresh
               </Button>

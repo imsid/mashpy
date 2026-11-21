@@ -56,15 +56,6 @@ class AppRuntimeState:
     otel_exporter: Any = None
 
 
-class SubmitRequest(BaseModel):
-    message: str = Field(min_length=1)
-    session_id: str = Field(min_length=1)
-    app_id: str
-    policy_id: str
-    structured_output: Optional[dict[str, Any]] = None
-    metadata: Optional[dict[str, Any]] = None
-
-
 class DefineHostRequest(BaseModel):
     # A body in the old primary/subagents shape fails instead of defining an
     # empty host.
@@ -72,16 +63,6 @@ class DefineHostRequest(BaseModel):
 
     agents: list[str] = Field(default_factory=list)
     workflows: list[str] = Field(default_factory=list)
-
-
-class HostSubmitRequest(BaseModel):
-    message: str = Field(min_length=1)
-    session_id: str = Field(min_length=1)
-    app_id: str
-    policy_id: str
-    structured_output: Optional[dict[str, Any]] = None
-    context: Optional[str] = None
-    metadata: Optional[dict[str, Any]] = None
 
 
 class CompactSessionRequest(BaseModel):
@@ -140,13 +121,6 @@ def normalize_optional_text(value: Optional[str]) -> Optional[str]:
         return None
     text = value.strip()
     return text or None
-
-
-def require_message(value: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        raise APIError(code="INVALID_REQUEST", message="message is required", status_code=400)
-    return text
 
 
 def require_session_id(value: str) -> str:

@@ -1,4 +1,4 @@
-// Trace status vocabulary and the actions available on a trace.
+// Trace status vocabulary.
 //
 // A trace is one request, so the request lifecycle is the trace's status and
 // the server addresses the request by trace id. `cancelled` mirrors the
@@ -10,8 +10,6 @@ export const TRACE_STATUS = {
   cancelled: { label: 'cancelled', tone: 'slate' },
   in_progress: { label: 'running', tone: 'indigo' },
 };
-
-export const TERMINAL_TRACE_STATUSES = new Set(['completed', 'error', 'cancelled']);
 
 // Map the request-status endpoint's statuses onto the trace chips so a drawer
 // and its list row never disagree.
@@ -33,16 +31,3 @@ export function traceStatusMeta(status) {
   return TRACE_STATUS[String(status || '')] || null;
 }
 
-/** Which actions apply to a trace in this state.
- *
- * Cancel needs something running. Resume continues a cancelled or failed
- * request from its last step. Rerun applies to anything already finished.
- */
-export function traceActions(status) {
-  const value = String(status || '');
-  return {
-    cancel: value === 'in_progress',
-    resume: value === 'cancelled' || value === 'error',
-    rerun: TERMINAL_TRACE_STATUSES.has(value),
-  };
-}

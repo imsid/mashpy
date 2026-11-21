@@ -37,8 +37,7 @@ def _run(host: FakeHost, *, err: io.StringIO | None = None, **kwargs: Any) -> tu
     code = run_once(
         host,  # type: ignore[arg-type]
         **{
-            "agent_id": "primary",
-            "host_id": None,
+            "host_id": "assistant",
             "session_id": "s-1",
             "app_id": "app-1", "policy_id": "p-1",
             "message": "hello",
@@ -65,9 +64,10 @@ def test_the_answer_is_printed_as_is_and_nothing_else_reaches_stdout() -> None:
     _answer(host)
     code, out, err = _run(host)
     assert (code, out, err) == (EXIT_OK, "The **answer**.\n", "")
+    [event_id] = host.events
     assert host.submitted == [
-        {"agent_id": "primary", "message": "hello", "session_id": "s-1",
-         "app_id": "app-1", "policy_id": "p-1", "request_id": "r-1"}
+        {"host_id": "assistant", "message": "hello", "session_id": "s-1",
+         "app_id": "app-1", "policy_id": "p-1", "request_id": "r-1", "event_id": event_id}
     ]
 
 
@@ -80,10 +80,10 @@ def test_progress_goes_to_stderr_when_it_is_a_terminal() -> None:
     assert "✓" in err and "search(q=x)" in err
 
 
-def test_a_host_target_submits_through_the_host() -> None:
+def test_the_message_is_an_event_on_the_host_and_the_companion_is_followed() -> None:
     host = FakeHost()
     _answer(host)
-    code, _, _ = _run(host, agent_id="companion", host_id="fudge")
+    code, _, _ = _run(host, host_id="fudge")
     assert code == EXIT_OK
     assert host.submitted[0]["host_id"] == "fudge"
     assert host.stream_calls == [("companion", "r-1", 0)]
@@ -114,7 +114,7 @@ def test_a_host_that_refuses_the_request_exits_1() -> None:
     def refuse(*args: Any, **kwargs: Any) -> str:
         raise MashHostClientError("agent is disabled", status_code=409)
 
-    host.submit_request = refuse  # type: ignore[method-assign]
+    host.post_event = refuse  # type: ignore[method-assign]
     assert _run(host) == (EXIT_FAILED, "", "agent is disabled\n")
 
 
@@ -126,7 +126,7 @@ def test_a_request_that_asks_for_input_is_cancelled_and_exits_2() -> None:
     assert code == EXIT_NEEDS_INPUT
     assert out == ""
     assert "Approve execution of: deploy?" in err
-    assert host.cancelled == [("primary", "r-1")]
+    assert host.cancelled == [("companion", "r-1")]
     assert host.answers == []
 
 

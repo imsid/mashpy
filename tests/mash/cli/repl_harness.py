@@ -158,7 +158,7 @@ class FakeHost:
     def __init__(self) -> None:
         # request id -> the stream's events and gates, in order.
         self.scripts: dict[str, list[Any]] = {}
-        # Request ids handed out by submit, in order; "r-<n>" when exhausted.
+        # Request ids handed out to posted events, in order; "r-<n>" when exhausted.
         self.request_ids: list[str] = []
         self.submitted: list[dict[str, Any]] = []
         self.cancelled: list[tuple[str, str]] = []
@@ -174,7 +174,6 @@ class FakeHost:
         # None: the deployment has no Cortex, or no browsers.
         self.cortex: dict[str, Any] | None = None
         self.browser_sites: list[dict[str, Any]] | None = None
-        self.reruns: list[tuple[str, str, str]] = []
         self.summary = ""
         # The app's sessions, newest first, and each session's turns.
         self.sessions: list[dict[str, Any]] = []
@@ -183,6 +182,9 @@ class FakeHost:
         self.workflow_runs: dict[str, list[dict[str, Any]]] = {}
         self.workflow_scripts: dict[str, list[Any]] = {}
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
+        # event id -> the request it runs as; the browser links asked for.
+        self.events: dict[str, str] = {}
+        self.handoffs: list[tuple[str, str]] = []
         self._count = 0
 
     def script(self, request_id: str, *events: Any) -> None:
@@ -194,23 +196,39 @@ class FakeHost:
             return self.request_ids.pop(0)
         return f"r-{self._count}"
 
-    # --- submit -----------------------------------------------------------
+    # --- events -----------------------------------------------------------
 
-    def submit_request(self, agent_id, *, message, session_id, app_id, policy_id, **_):
+    def post_event(self, session_id, *, event_id, host_id, app_id, policy_id, message, **_):
         request_id = self._next_id()
-        self.submitted.append(
-            {"agent_id": agent_id, "message": message, "session_id": session_id,
-             "app_id": app_id, "policy_id": policy_id, "request_id": request_id}
-        )
-        return request_id
-
-    def submit_host_request(self, host_id, *, message, session_id, app_id, policy_id, **_):
-        request_id = self._next_id()
+        self.events[event_id] = request_id
         self.submitted.append(
             {"host_id": host_id, "message": message, "session_id": session_id,
-             "app_id": app_id, "policy_id": policy_id, "request_id": request_id}
+             "app_id": app_id, "policy_id": policy_id, "request_id": request_id,
+             "event_id": event_id}
         )
-        return {"request_id": request_id, "agent_id": "companion"}
+        return {"event_id": event_id, "request_id": request_id, "status": "queued"}
+
+    def get_event(self, session_id, event_id):
+        return {"event_id": event_id, "request_id": self.events[event_id], "status": "running"}
+
+    async def event_events(self, session_id, event_id, *, after=0):
+        async for event in self.request_events("companion", self.events[event_id], after=after):
+            yield event
+
+    def cancel_event(self, session_id, event_id):
+        self.cancelled.append(("companion", self.events[event_id]))
+        return {"status": "cancelled"}
+
+    def answer_event(self, session_id, event_id, *, interaction_id, response):
+        self.answers.append(
+            {"agent_id": "companion", "request_id": self.events[event_id],
+             "interaction_id": interaction_id, "response": response}
+        )
+        return {}
+
+    def handoff_link(self, session_id, event_id, interaction_id):
+        self.handoffs.append((event_id, interaction_id))
+        return {"url": f"http://host/s/tok-{len(self.handoffs)}/browser/", "expires_at": 0}
 
     # --- streams ----------------------------------------------------------
 
@@ -251,17 +269,6 @@ class FakeHost:
         if request_id in self.missing or request_id not in self.scripts:
             raise MashHostClientError("Request not found", status_code=404)
         return {"request_id": request_id, "status": "running"}
-
-    def cancel_request(self, agent_id, request_id):
-        self.cancelled.append((agent_id, request_id))
-        return {"status": "cancelled"}
-
-    def post_interaction(self, agent_id, request_id, *, interaction_id, response):
-        self.answers.append(
-            {"agent_id": agent_id, "request_id": request_id,
-             "interaction_id": interaction_id, "response": response}
-        )
-        return {}
 
     def list_session_requests(self, agent_id, session_id, *, status=None, started_by=None):
         return [
@@ -325,11 +332,6 @@ class FakeHost:
         self.browser_sites = [s for s in self.browser_sites or [] if s["domain"] != domain]
         return {"domain": domain, "cookies": sum(s["cookies"] for s in removed)}
 
-    def rerun_request(self, agent_id, request_id):
-        new_id = self._next_id()
-        self.reruns.append((agent_id, request_id, new_id))
-        return {"request_id": new_id, "agent_id": agent_id}
-
     def compact_session(self, agent_id, session_id):
         self.calls.append(("compact_session", (agent_id, session_id)))
         return {"summary_text": self.summary, "trace_id": "t-compact"}
@@ -367,7 +369,7 @@ class ReplDriver:
         self,
         host: FakeHost,
         *,
-        host_id: str | None = None,
+        host_id: str = "assistant",
         target: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
@@ -386,7 +388,6 @@ class ReplDriver:
             Target(
                 **{
                     "api_base_url": "http://host",
-                    "agent_id": "companion" if host_id else "primary",
                     "session_id": "s-1",
                     "app_id": "app-1", "policy_id": "p-1",
                     "host_id": host_id,

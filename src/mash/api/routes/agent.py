@@ -11,28 +11,20 @@ from fastapi.responses import StreamingResponse
 from mash.runtime import AgentClientError
 from mash.runtime.client import (
     AgentUnavailableError,
-    InteractionClosedError,
-    InvalidInteractionResponseError,
 )
-from mash.runtime.errors import RequestStaleError
 from mash.runtime.host.host import AgentInUseError
 from mash.runtime.host.processes import AgentStartError
 from mash.runtime.events import build_reasoning_trace
 from mash.memory.signals import build_default_signal_collector
 from mash.runtime import sessions
-from mash.runtime.structured_output import serialize_structured_output
 
 from .common import (
     APIError,
     CompactSessionRequest,
-    SubmitRequest,
     build_runtime_event_sse_payload,
     get_client,
     parse_limit,
-    require_app_id,
-    require_policy_id,
     require_agent_id,
-    require_message,
     require_session_id,
     require_trace_id,
     state_from_request,
@@ -51,21 +43,6 @@ _REQUEST_ID_KEYS = ("request_id", "workflow_id")
 # GET /agent/{id}/sessions returns the most recently active sessions first.
 SESSIONS_DEFAULT_LIMIT = 50
 SESSIONS_MAX_LIMIT = 500
-
-
-async def _cancel_with_children(
-    request: Request, agent_id: str, request_id: str
-) -> dict[str, Any]:
-    """Cancel a request and its running children (``Pool.cancel_with_children``)."""
-    get_client(request, agent_id)
-    try:
-        return await state_from_request(request).pool.cancel_with_children(agent_id, request_id)
-    except AgentUnavailableError:
-        raise
-    except (KeyError, AgentClientError) as exc:
-        raise APIError(
-            code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
-        ) from exc
 
 
 def _without_request_ids(payload: dict[str, Any], trace_id: str) -> dict[str, Any]:
@@ -156,34 +133,6 @@ def build_agent_router() -> APIRouter:
     async def get_agent(request: Request, agent_id: str) -> dict[str, Any]:
         return success({"agent": _described_agent(request, agent_id)})
 
-    @router.post("/agent/{agent_id}/request")
-    async def submit_request(
-        request: Request, agent_id: str, body: SubmitRequest
-    ) -> dict[str, Any]:
-        client = get_client(request, agent_id)
-        try:
-            structured_output = serialize_structured_output(body.structured_output)
-        except (TypeError, ValueError) as exc:
-            raise APIError(
-                code="INVALID_STRUCTURED_OUTPUT",
-                message=str(exc),
-                status_code=400,
-            ) from exc
-        policy_id = require_policy_id(body.policy_id)
-        policy = await state_from_request(request).pool.read_policy(policy_id)
-        request_id = await client.post_request(
-            require_message(body.message),
-            session_id=require_session_id(body.session_id),
-            structured_output=structured_output,
-            metadata=body.metadata,
-            app_id=require_app_id(body.app_id),
-            policy_id=policy_id,
-            policy=policy,
-            traceparent=request.headers.get("traceparent"),
-            tracestate=request.headers.get("tracestate"),
-        )
-        return success({"request_id": request_id})
-
     @router.get("/agent/{agent_id}/request/{request_id}/events")
     async def stream_request_events(
         request: Request,
@@ -238,48 +187,6 @@ def build_agent_router() -> APIRouter:
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
 
-    @router.post("/agent/{agent_id}/request/{request_id}/interaction")
-    async def post_interaction(
-        request: Request, agent_id: str, request_id: str
-    ) -> dict[str, Any]:
-        client = get_client(request, agent_id)
-        body = await request.json()
-        if not isinstance(body, dict):
-            raise APIError(
-                code="INVALID_REQUEST",
-                message="Request body must be an object",
-                status_code=400,
-            )
-        interaction_id = body.get("interaction_id")
-        if not isinstance(interaction_id, str) or not interaction_id.strip():
-            raise APIError(
-                code="INVALID_REQUEST",
-                message="interaction_id is required",
-                status_code=400,
-            )
-        response_value = body.get("response")
-        try:
-            result = await client.post_interaction(
-                request_id.strip(),
-                interaction_id=interaction_id.strip(),
-                response=response_value,
-            )
-        except InvalidInteractionResponseError as exc:
-            raise APIError(
-                code="INVALID_RESPONSE", message=str(exc), status_code=400
-            ) from exc
-        except InteractionClosedError as exc:
-            raise APIError(
-                code="INTERACTION_CLOSED", message=str(exc), status_code=409
-            ) from exc
-        except AgentUnavailableError:
-            raise
-        except AgentClientError as exc:
-            raise APIError(
-                code="INTERACTION_NOT_FOUND", message=str(exc), status_code=404
-            ) from exc
-        return success(result)
-
     @router.get("/agent/{agent_id}/request/{request_id}/status")
     async def get_request_status(
         request: Request, agent_id: str, request_id: str
@@ -301,67 +208,6 @@ def build_agent_router() -> APIRouter:
                 code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
             ) from exc
         return success(status)
-
-    @router.post("/agent/{agent_id}/request/{request_id}/resume")
-    async def resume_request(
-        request: Request, agent_id: str, request_id: str
-    ) -> dict[str, Any]:
-        client = get_client(request, agent_id)
-        normalized = request_id.strip()
-        if not normalized:
-            raise APIError(
-                code="INVALID_REQUEST",
-                message="request_id is required",
-                status_code=400,
-            )
-        try:
-            result = await client.resume_request(normalized)
-        except RequestStaleError as exc:
-            raise APIError(
-                code="REQUEST_STALE", message=str(exc), status_code=409
-            ) from exc
-        except AgentUnavailableError:
-            raise
-        except (KeyError, AgentClientError) as exc:
-            raise APIError(
-                code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
-            ) from exc
-        return success(result)
-
-    @router.post("/agent/{agent_id}/request/{request_id}/cancel")
-    async def cancel_request(
-        request: Request, agent_id: str, request_id: str
-    ) -> dict[str, Any]:
-        normalized = request_id.strip()
-        if not normalized:
-            raise APIError(
-                code="INVALID_REQUEST",
-                message="request_id is required",
-                status_code=400,
-            )
-        return success(await _cancel_with_children(request, agent_id, normalized))
-
-    @router.post("/agent/{agent_id}/request/{request_id}/rerun")
-    async def rerun_request(
-        request: Request, agent_id: str, request_id: str
-    ) -> dict[str, Any]:
-        client = get_client(request, agent_id)
-        normalized = request_id.strip()
-        if not normalized:
-            raise APIError(
-                code="INVALID_REQUEST",
-                message="request_id is required",
-                status_code=400,
-            )
-        try:
-            result = await client.rerun_request(normalized)
-        except AgentUnavailableError:
-            raise
-        except (KeyError, AgentClientError) as exc:
-            raise APIError(
-                code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
-            ) from exc
-        return success(result)
 
     def _session_store(request: Request, agent_id: str):
         """The shared memory store holding ``agent_id``'s sessions."""
@@ -576,63 +422,6 @@ def build_agent_router() -> APIRouter:
                 code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
             ) from exc
         return success(_without_request_ids(status, trace_id))
-
-    @router.post("/agent/{agent_id}/trace/{trace_id}/cancel")
-    async def cancel_trace_request(
-        request: Request, agent_id: str, trace_id: str
-    ) -> dict[str, Any]:
-        request_id = await _request_id_for_trace(request, agent_id, trace_id)
-        result = await _cancel_with_children(request, agent_id, request_id)
-        return success(_without_request_ids(result, trace_id))
-
-    @router.post("/agent/{agent_id}/trace/{trace_id}/resume")
-    async def resume_trace_request(
-        request: Request, agent_id: str, trace_id: str
-    ) -> dict[str, Any]:
-        request_id = await _request_id_for_trace(request, agent_id, trace_id)
-        client = get_client(request, agent_id)
-        try:
-            result = await client.resume_request(request_id)
-        except RequestStaleError as exc:
-            raise APIError(
-                code="REQUEST_STALE", message=str(exc), status_code=409
-            ) from exc
-        except AgentUnavailableError:
-            raise
-        except (KeyError, AgentClientError) as exc:
-            raise APIError(
-                code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
-            ) from exc
-        return success(_without_request_ids(result, trace_id))
-
-    @router.post("/agent/{agent_id}/trace/{trace_id}/rerun")
-    async def rerun_trace_request(
-        request: Request, agent_id: str, trace_id: str
-    ) -> dict[str, Any]:
-        """Start the trace's request over as a new request.
-
-        The new trace does not exist until the new request starts executing, so
-        this reports acceptance only; the caller reloads its trace list and the
-        rerun appears as a new row.
-        """
-        request_id = await _request_id_for_trace(request, agent_id, trace_id)
-        client = get_client(request, agent_id)
-        try:
-            result = await client.rerun_request(request_id)
-        except AgentUnavailableError:
-            raise
-        except (KeyError, AgentClientError) as exc:
-            raise APIError(
-                code="REQUEST_NOT_FOUND", message=str(exc), status_code=404
-            ) from exc
-        return success(
-            {
-                "rerun_of_trace_id": trace_id,
-                "agent_id": result.get("agent_id"),
-                "session_id": result.get("session_id"),
-                "status": result.get("status") or "accepted",
-            }
-        )
 
     @router.get("/agent/{agent_id}/session/{session_id}/trace/{trace_id}/reasoning")
     async def get_reasoning_trace(

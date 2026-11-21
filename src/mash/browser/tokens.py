@@ -17,6 +17,7 @@ import base64
 import binascii
 import hmac
 import json
+import secrets
 import time
 
 from mash.sandbox.tokens import _hmac
@@ -27,9 +28,17 @@ def derive_browser_token(secret: str, policy_id: str) -> str:
 
 
 def make_view_token(secret: str, policy_id: str, request_id: str, expires_at: int) -> str:
-    """``<base64url(claims)>.<hmac>``: opens the policy's live view until ``expires_at``."""
+    """``<base64url(claims)>.<hmac>``: opens the policy's live view until ``expires_at``.
+
+    A nonce makes each token new, so two minted in the same second differ.
+    """
     claims = json.dumps(
-        {"u": str(policy_id).strip(), "r": str(request_id), "e": int(expires_at)},
+        {
+            "u": str(policy_id).strip(),
+            "r": str(request_id),
+            "e": int(expires_at),
+            "n": secrets.token_hex(8),
+        },
         separators=(",", ":"),
         sort_keys=True,
     )

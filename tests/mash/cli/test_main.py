@@ -62,6 +62,15 @@ def test_build_parser_accepts_compose_flags() -> None:
     assert args.agents == "email,calendar"
 
 
+def test_repl_and_run_talk_to_a_host_and_take_no_agent(capsys) -> None:
+    parser = build_parser()
+    for command in (["repl"], ["run", "hi"]):
+        with pytest.raises(SystemExit):
+            parser.parse_args([*command, "--agent", "primary"])
+        assert parser.parse_args([*command, "--host", "assistant"]).host_id == "assistant"
+    capsys.readouterr()
+
+
 def test_build_parser_rejects_targeting_flags_on_connect() -> None:
     parser = build_parser()
     with pytest.raises(SystemExit):
@@ -303,13 +312,13 @@ def test_repl_requires_an_app_and_a_policy(capsys) -> None:
     with patch.object(cli_main, "MashHostClient", return_value=fake_client), patch.object(
         cli_main, "load_config", return_value=existing
     ), patch.object(cli_main, "Repl", shell):
-        assert cli_main.main(["repl", "--agent", "primary"]) == 1
-        assert cli_main.main(["repl", "--agent", "primary", "--app-id", "app-42"]) == 1
+        assert cli_main.main(["repl", "--host", "assistant"]) == 1
+        assert cli_main.main(["repl", "--host", "assistant", "--app-id", "app-42"]) == 1
         shell.assert_not_called()
         assert "an app id and a policy id are required" in capsys.readouterr().out
         assert (
             cli_main.main(
-                ["repl", "--agent", "primary", "--app-id", "app-42", "--policy-id", "p-1"]
+                ["repl", "--host", "assistant", "--app-id", "app-42", "--policy-id", "p-1"]
             )
             == 0
         )
@@ -329,9 +338,9 @@ def test_repl_debug_is_off_by_default() -> None:
     with patch.object(cli_main, "MashHostClient", return_value=MagicMock()), patch.object(
         cli_main, "load_config", return_value=existing
     ), patch.object(cli_main, "Repl", shell):
-        assert cli_main.main(["repl", "--agent", "primary"]) == 0
+        assert cli_main.main(["repl", "--host", "assistant"]) == 0
         assert shell.call_args.kwargs["debug"] is False
-        assert cli_main.main(["repl", "--agent", "primary", "--debug"]) == 0
+        assert cli_main.main(["repl", "--host", "assistant", "--debug"]) == 0
         assert shell.call_args.kwargs["debug"] is True
 
 
@@ -354,7 +363,7 @@ def _repl_target(argv: list[str], sessions: list[dict], picked=None):
     with patch.object(cli_main, "MashHostClient", return_value=client), patch.object(
         cli_main, "load_config", return_value=existing
     ), patch.object(cli_main, "Repl", shell), patch.object(cli_main, "menu", picker):
-        code = cli_main.main(["repl", "--agent", "primary", *argv])
+        code = cli_main.main(["repl", "--host", "assistant", *argv])
     target = shell.call_args.args[1] if shell.call_args else None
     return code, target, client, picker
 
@@ -370,7 +379,7 @@ _SESSIONS = [
 def test_repl_continue_goes_on_in_the_apps_latest_session() -> None:
     code, target, client, picker = _repl_target(["--continue"], _SESSIONS[:1])
     assert code == 0
-    client.list_sessions.assert_called_once_with("primary", app_id="app-42", limit=1)
+    client.list_sessions.assert_called_once_with("companion", app_id="app-42", limit=1)
     assert (target.session_id, target.resumed, target.title) == (
         "s-new", True, "why was march high"
     )
@@ -380,7 +389,7 @@ def test_repl_continue_goes_on_in_the_apps_latest_session() -> None:
 def test_repl_resume_opens_the_picker() -> None:
     code, target, client, picker = _repl_target(["--resume"], _SESSIONS, picked=_SESSIONS[1])
     assert code == 0
-    client.list_sessions.assert_called_once_with("primary", app_id="app-42", limit=20)
+    client.list_sessions.assert_called_once_with("companion", app_id="app-42", limit=20)
     options = picker.call_args.args[0]
     assert [value["session_id"] for value, _ in options] == ["s-new", "s-old"]
     assert (target.session_id, target.resumed, target.title) == ("s-old", True, "compare quotes")
@@ -477,7 +486,7 @@ def _one_shot(argv: list[str], *, sessions: list[dict] | None = None, identity: 
     for item in patches:
         item.start()
     try:
-        code = cli_main.main(["run", "--agent", "primary", *argv])
+        code = cli_main.main(["run", "--host", "assistant", *argv])
     finally:
         for item in reversed(patches):
             item.stop()
@@ -491,7 +500,7 @@ def test_run_submits_the_message_in_a_new_session() -> None:
     assert once.call_args.args == (client,)
     assert kwargs["session_id"]
     assert {key: value for key, value in kwargs.items() if key != "session_id"} == {
-        "agent_id": "primary", "host_id": None, "app_id": "app-42", "policy_id": "p-1",
+        "host_id": "assistant", "app_id": "app-42", "policy_id": "p-1",
         "message": "why was march high", "json_output": False,
         "theme": None, "tool_lines": None,
     }
@@ -508,7 +517,7 @@ def test_run_returns_the_requests_exit_status() -> None:
     with patch.object(cli_main, "MashHostClient", return_value=MagicMock()), patch.object(
         cli_main, "load_config", return_value=existing
     ), patch.object(cli_main, "run_once", MagicMock(return_value=2)):
-        assert cli_main.main(["run", "--agent", "primary", "deploy"]) == 2
+        assert cli_main.main(["run", "--host", "assistant", "deploy"]) == 2
 
 
 def test_run_reads_the_message_from_stdin_and_takes_json() -> None:
@@ -521,7 +530,7 @@ def test_run_reads_the_message_from_stdin_and_takes_json() -> None:
 def test_run_continue_goes_on_in_the_apps_latest_session() -> None:
     code, once, client = _one_shot(["--continue", "and april?"], sessions=_SESSIONS[:1])
     assert code == 0
-    client.list_sessions.assert_called_once_with("primary", app_id="app-42", limit=1)
+    client.list_sessions.assert_called_once_with("companion", app_id="app-42", limit=1)
     assert once.call_args.kwargs["session_id"] == "s-new"
 
 

@@ -17,10 +17,10 @@ class _FakeClient:
     def __init__(self) -> None:
         self.workflow_runs: list[dict[str, Any]] = []
         self.workflow_status_requests: list[dict[str, str]] = []
-        self.host_workflows: list[str] = []
+        # The REPL runs the workflows its host lists.
+        self.host_workflows: list[str] = ["changelog"]
         self.feedback: list[dict[str, Any]] = []
         self.interactions: list[dict[str, Any]] = []
-        self.submitted_identities: list[tuple[str, str]] = []
         self.workflow_result: dict[str, Any] = {"status": "ok"}
 
     def health(self):
@@ -137,13 +137,6 @@ class _FakeClient:
             "error": None,
             "result": {"digest": "ok"},
         }
-
-    def submit_request(
-        self, agent_id: str, *, message: str, session_id: str, app_id: str, policy_id: str
-    ):
-        del agent_id, message, session_id
-        self.submitted_identities.append((app_id, policy_id))
-        return "req-1"
 
     def list_session_requests(self, agent_id: str, session_id: str, **filters: Any):
         del agent_id, session_id, filters
@@ -290,7 +283,7 @@ class DefaultCommandTests(unittest.TestCase):
     def _build_shell(self) -> Repl:
         return Repl(
             cast("MashHostClient", _FakeClient()),
-            Target(api_base_url="http://localhost:8000", agent_id="primary", session_id="s-1", app_id="app-1", policy_id="p-1"),
+            Target(api_base_url="http://localhost:8000", session_id="s-1", host_id="assistant", app_id="app-1", policy_id="p-1"),
         )
 
     def _build_host_shell(self, *, host_workflows: list[str] | None = None) -> Repl:
@@ -300,7 +293,6 @@ class DefaultCommandTests(unittest.TestCase):
             cast("MashHostClient", client),
             Target(
                 api_base_url="http://localhost:8000",
-                agent_id="primary",
                 session_id="s-1",
                 host_id="assistant",
                 app_id="app-1", policy_id="p-1",
@@ -328,7 +320,7 @@ class DefaultCommandTests(unittest.TestCase):
             )
         self.assertEqual(len(_fake(shell).feedback), 1)
         recorded = _fake(shell).feedback[0]
-        self.assertEqual(recorded["agent_id"], "primary")
+        self.assertEqual(recorded["agent_id"], "companion")
         self.assertEqual(recorded["message"], "the trace output is hard to read")
         self.assertEqual(recorded["host_id"], "assistant")
         self.assertEqual(recorded["session_id"], "s-1")
@@ -523,7 +515,7 @@ class WorkflowResultRenderingTests(unittest.TestCase):
     def _build_shell(self) -> Repl:
         return Repl(
             cast("MashHostClient", _FakeClient()),
-            Target(api_base_url="http://localhost:8000", agent_id="primary", session_id="s-1", app_id="app-1", policy_id="p-1"),
+            Target(api_base_url="http://localhost:8000", session_id="s-1", host_id="assistant", app_id="app-1", policy_id="p-1"),
         )
 
     def test_result_renders_as_json_code_block_by_default(self) -> None:

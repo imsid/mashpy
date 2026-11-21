@@ -24,6 +24,7 @@ from mash.api.routes.browser import (
     build_browser_api_router,
     build_browser_link_router,
     build_browser_router,
+    view_url,
 )
 from mash.api.routes.common import APIError, error_payload
 from mash.browser.manager import BrowserManager
@@ -250,10 +251,11 @@ class BrowserRelayTests(unittest.TestCase):
 
     def test_handoff_link_opens_the_live_view_until_the_handoff_ends(self) -> None:
         self.navigate()
-        started = self.post("/handoff").json()
-        self.assertTrue(started["url"].startswith(f"{PUBLIC}/s/"))
-        self.assertEqual(started["timeout_seconds"], 900)
-        path = urlsplit(started["url"]).path
+        # The relay readies the tab; the link is minted when someone asks.
+        self.assertEqual(self.post("/handoff").json(), {})
+        path = self._mint()
+        # Each ask mints another link; the first keeps working.
+        self.assertNotEqual(self._mint(), path)
 
         root = self.http.get(path, follow_redirects=False)
         self.assertEqual(root.status_code, 307)
@@ -268,6 +270,11 @@ class BrowserRelayTests(unittest.TestCase):
         ended = self.post("/handoff/end").json()
         self.assertIn("PG&E", ended["content"])
         self.assertEqual(self.http.get(f"{path}vnc.html").status_code, 404)
+
+    def _mint(self) -> str:
+        """A live-view link's path for req-1's browser interaction."""
+        handoff = self.browsers.mint_link("p-1", "req-1", "itr-1")
+        return urlsplit(view_url(PUBLIC, handoff.token)).path
 
     async def _through_view(self, path: str) -> bytes:
         """Bytes sent through the live view's websocket, echoed by the VNC stand-in."""
@@ -302,12 +309,12 @@ class BrowserRelayTests(unittest.TestCase):
             await task
 
     async def _closed_after(self, ws, action) -> bool:
-        """Whether the server closes ``ws`` within two seconds of ``action()``."""
+        """Whether the server closes ``ws`` within three seconds of ``action()``."""
         await ws.send(b"RFB 003.008\n")
         await ws.recv()
         action()
         try:
-            await asyncio.wait_for(ws.recv(), 2.0)
+            await asyncio.wait_for(ws.recv(), 3.0)
         except websockets.ConnectionClosed:
             return True
         except asyncio.TimeoutError:
@@ -316,7 +323,7 @@ class BrowserRelayTests(unittest.TestCase):
 
     def test_ending_the_handoff_closes_a_connected_live_view(self) -> None:
         self.navigate()
-        path = urlsplit(self.post("/handoff").json()["url"]).path
+        path = self._mint()
 
         closed = self.http.portal.call(
             self._in_view,
@@ -328,8 +335,10 @@ class BrowserRelayTests(unittest.TestCase):
 
     def test_a_connected_live_view_closes_when_its_handoff_expires(self) -> None:
         self.navigate()
-        self.browsers.handoff_seconds = 1
-        path = urlsplit(self.post("/handoff").json()["url"]).path
+        # Whole seconds: a link minted for 2 lasts more than one, so it is
+        # still good when the view connects, and expires within the wait.
+        self.browsers.handoff_seconds = 2
+        path = self._mint()
 
         closed = self.http.portal.call(
             self._in_view, f"{path}websockify", lambda ws: self._closed_after(ws, lambda: None)
@@ -338,7 +347,7 @@ class BrowserRelayTests(unittest.TestCase):
         self.assertTrue(closed)
 
     def test_an_operator_view_closes_when_its_token_expires(self) -> None:
-        token = make_view_token(SECRET, "p-1", "", int(time.time()) + 1)
+        token = make_view_token(SECRET, "p-1", "", int(time.time()) + 2)
 
         closed = self.http.portal.call(
             self._in_view,

@@ -25,7 +25,9 @@ COMPACT_TIMEOUT = httpx.Timeout(180.0, connect=10.0)
 # A browser call may start the policy's browser container first.
 BROWSER_TIMEOUT = httpx.Timeout(90.0, connect=10.0)
 
-TERMINAL_EVENTS = frozenset({"request.completed", "request.error", "request.cancelled"})
+TERMINAL_EVENTS = frozenset(
+    {"request.completed", "request.error", "request.cancelled", "event.cancelled"}
+)
 
 # A dropped event stream is retried this many times, waiting
 # STREAM_RETRY_DELAY * 2**attempt seconds (capped) before each try. Any event
@@ -299,88 +301,85 @@ class MashHostClient:
         data = response.json()["data"]
         return data if isinstance(data, dict) else {}
 
-    def submit_host_request(
+    # --- events -------------------------------------------------------------
+
+    @staticmethod
+    def _events_path(session_id: str, *parts: str) -> str:
+        path = f"/api/v1/sessions/{quote(session_id, safe='')}/events"
+        return path + "".join(f"/{quote(part, safe='')}" for part in parts)
+
+    def post_event(
         self,
-        host_id: str,
-        *,
-        message: str,
         session_id: str,
+        *,
+        event_id: str,
+        host_id: str,
         app_id: str,
         policy_id: str,
+        message: str,
         structured_output: Any = None,
     ) -> dict[str, Any]:
+        """Post a new event; its state, with the ``request_id`` it runs as."""
         json_body: dict[str, Any] = {
-            "message": message,
-            "session_id": session_id,
+            "event_id": event_id,
+            "host_id": host_id,
             "app_id": app_id,
             "policy_id": policy_id,
+            "message": message,
         }
         if structured_output is not None:
             json_body["structured_output"] = serialize_structured_output(structured_output)
-        response = self._request(
-            "POST",
-            f"/api/v1/hosts/{quote(host_id, safe='')}/request",
-            json_body=json_body,
-        )
+        response = self._request("POST", self._events_path(session_id), json_body=json_body)
         data = response.json()["data"]
         return data if isinstance(data, dict) else {}
 
-    def submit_request(
-        self,
-        agent_id: str,
-        *,
-        message: str,
-        session_id: str,
-        app_id: str,
-        policy_id: str,
-        structured_output: Any = None,
-    ) -> str:
-        json_body: dict[str, Any] = {
-            "message": message,
-            "session_id": session_id,
-            "app_id": app_id,
-            "policy_id": policy_id,
-        }
-        if structured_output is not None:
-            json_body["structured_output"] = serialize_structured_output(structured_output)
-        response = self._request(
-            "POST",
-            f"/api/v1/agent/{quote(agent_id, safe='')}/request",
-            json_body=json_body,
-        )
-        return str(response.json()["data"]["request_id"])
-
-    def post_interaction(
-        self,
-        agent_id: str,
-        request_id: str,
-        *,
-        interaction_id: str,
-        response: Any,
+    def answer_event(
+        self, session_id: str, event_id: str, *, interaction_id: str, response: Any
     ) -> dict[str, Any]:
+        """Answer an open interaction of the event's request."""
         resp = self._request(
             "POST",
-            f"/api/v1/agent/{quote(agent_id, safe='')}/request/{quote(request_id, safe='')}/interaction",
-            json_body={"interaction_id": interaction_id, "response": response},
+            self._events_path(session_id),
+            json_body={"event_id": event_id, "interaction_id": interaction_id, "response": response},
         )
-        return resp.json().get("data", {})
+        data = resp.json()["data"]
+        return data if isinstance(data, dict) else {}
 
-    def cancel_request(self, agent_id: str, request_id: str) -> dict[str, Any]:
+    def cancel_event(self, session_id: str, event_id: str) -> dict[str, Any]:
+        response = self._request("POST", self._events_path(session_id, event_id, "cancel"))
+        data = response.json()["data"]
+        return data if isinstance(data, dict) else {}
+
+    def get_event(self, session_id: str, event_id: str) -> dict[str, Any]:
+        response = self._request("GET", self._events_path(session_id, event_id))
+        data = response.json()["data"]
+        return data if isinstance(data, dict) else {}
+
+    def handoff_link(
+        self, session_id: str, event_id: str, interaction_id: str
+    ) -> dict[str, Any]:
+        """A new live-view link for an open browser interaction: ``{url, expires_at}``."""
         response = self._request(
             "POST",
-            f"/api/v1/agent/{quote(agent_id, safe='')}/request/{quote(request_id, safe='')}/cancel",
+            self._events_path(session_id, event_id, "interactions", interaction_id, "handoff"),
+            timeout=BROWSER_TIMEOUT,
         )
         data = response.json()["data"]
         return data if isinstance(data, dict) else {}
 
-    def rerun_request(self, agent_id: str, request_id: str) -> dict[str, Any]:
-        """Start a previous request over as a new request; returns its ``request_id``."""
-        response = self._request(
-            "POST",
-            f"/api/v1/agent/{quote(agent_id, safe='')}/request/{quote(request_id, safe='')}/rerun",
-        )
-        data = response.json()["data"]
-        return data if isinstance(data, dict) else {}
+    async def event_events(
+        self, session_id: str, event_id: str, *, after: int = 0
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield the event's frames: ``event.queued`` while it waits, then its request's.
+
+        It ends at the request's end frame, or at ``event.cancelled`` for an
+        event cancelled while queued, and reconnects as ``request_events``
+        does.
+        """
+        async for event in self._follow(
+            self._events_path(session_id, event_id, "stream"), after=after, unsequenced_ok=True
+        ):
+            yield event
 
     def compact_session(self, agent_id: str, session_id: str) -> dict[str, Any]:
         """Summarize the session's history; returns ``summary_text`` and ``trace_id``."""
@@ -524,7 +523,19 @@ class MashHostClient:
         ``STREAM_RETRIES`` tries in a row without an event. A host that sends
         no seq cannot be continued: the generator ends where the stream did.
         """
-        path = self._request_events_path(agent_id, request_id)
+        async for event in self._follow(
+            self._request_events_path(agent_id, request_id), after=after
+        ):
+            yield event
+
+    async def _follow(
+        self, path: str, *, after: int, unsequenced_ok: bool = False
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Read a stream of request frames to its end, reconnecting after its last seq.
+
+        ``unsequenced_ok``: frames without a seq (an event's own) do not stop
+        a reconnect.
+        """
         cursor = max(0, int(after))
         failures = 0
         while True:
@@ -538,7 +549,7 @@ class MashHostClient:
                     seq = event.get("seq")
                     if isinstance(seq, int):
                         cursor = seq
-                    else:
+                    elif not unsequenced_ok:
                         resumable = False
                     yield event
                     if event.get("event") in TERMINAL_EVENTS:

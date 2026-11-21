@@ -142,14 +142,10 @@ def register(shell) -> None:
     async def subagent_command(ctx, args: list[str]) -> None:
         if not args:
             shell.list_subagents()
-        elif len(args) == 1 and args[0] != "cancel":
+        elif len(args) == 1:
             await shell.show_subagent(args[0])
-        elif len(args) == 2 and args[0] == "cancel":
-            await shell.cancel_subagent(args[1])
         else:
-            ctx.renderer.error(
-                "Usage: /subagent | /subagent <n> | /subagent cancel <n>"
-            )
+            ctx.renderer.error("Usage: /subagent | /subagent <n>")
 
     async def retry_command(ctx, args: list[str]) -> None:
         del ctx, args
@@ -197,7 +193,7 @@ def register(shell) -> None:
 
     add(
         "subagent",
-        "The last request's subagents: list, show one (<n>) or cancel one (cancel <n>)",
+        "The last request's subagents: list them, or show one (<n>)",
         subagent_command,
         GROUP_REQUESTS,
     )

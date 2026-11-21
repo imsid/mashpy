@@ -156,17 +156,6 @@
           },
           {
             "flags": [
-              "--agent"
-            ],
-            "name": "agent",
-            "help": "Target agent id (bare-agent targeting)",
-            "positional": false,
-            "required": false,
-            "default": null,
-            "choices": null
-          },
-          {
-            "flags": [
               "--host"
             ],
             "name": "host_id",
@@ -193,6 +182,17 @@
             ],
             "name": "policy_id",
             "help": "Policy to run under (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--agent"
+            ],
+            "name": "agent",
+            "help": "Agent whose sessions to read",
             "positional": false,
             "required": false,
             "default": null,
@@ -229,17 +229,6 @@
           },
           {
             "flags": [
-              "--agent"
-            ],
-            "name": "agent",
-            "help": "Target agent id (bare-agent targeting)",
-            "positional": false,
-            "required": false,
-            "default": null,
-            "choices": null
-          },
-          {
-            "flags": [
               "--host"
             ],
             "name": "host_id",
@@ -266,6 +255,17 @@
             ],
             "name": "policy_id",
             "help": "Policy to run under (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--agent"
+            ],
+            "name": "agent",
+            "help": "Agent whose sessions to read",
             "positional": false,
             "required": false,
             "default": null,
@@ -302,17 +302,6 @@
           },
           {
             "flags": [
-              "--agent"
-            ],
-            "name": "agent",
-            "help": "Target agent id (bare-agent targeting)",
-            "positional": false,
-            "required": false,
-            "default": null,
-            "choices": null
-          },
-          {
-            "flags": [
               "--host"
             ],
             "name": "host_id",
@@ -339,6 +328,17 @@
             ],
             "name": "policy_id",
             "help": "Policy to run under (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--agent"
+            ],
+            "name": "agent",
+            "help": "Agent whose sessions to read",
             "positional": false,
             "required": false,
             "default": null,
@@ -375,17 +375,6 @@
           },
           {
             "flags": [
-              "--agent"
-            ],
-            "name": "agent",
-            "help": "Target agent id (bare-agent targeting)",
-            "positional": false,
-            "required": false,
-            "default": null,
-            "choices": null
-          },
-          {
-            "flags": [
               "--host"
             ],
             "name": "host_id",
@@ -412,6 +401,17 @@
             ],
             "name": "policy_id",
             "help": "Policy to run under (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--agent"
+            ],
+            "name": "agent",
+            "help": "Agent whose sessions to read",
             "positional": false,
             "required": false,
             "default": null,
@@ -448,17 +448,6 @@
           },
           {
             "flags": [
-              "--agent"
-            ],
-            "name": "agent",
-            "help": "Target agent id (bare-agent targeting)",
-            "positional": false,
-            "required": false,
-            "default": null,
-            "choices": null
-          },
-          {
-            "flags": [
               "--host"
             ],
             "name": "host_id",
@@ -485,6 +474,17 @@
             ],
             "name": "policy_id",
             "help": "Policy to run under (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--agent"
+            ],
+            "name": "agent",
+            "help": "Agent whose sessions to read",
             "positional": false,
             "required": false,
             "default": null,
@@ -521,17 +521,6 @@
           },
           {
             "flags": [
-              "--agent"
-            ],
-            "name": "agent",
-            "help": "Target agent id (bare-agent targeting)",
-            "positional": false,
-            "required": false,
-            "default": null,
-            "choices": null
-          },
-          {
-            "flags": [
               "--host"
             ],
             "name": "host_id",
@@ -558,6 +547,17 @@
             ],
             "name": "policy_id",
             "help": "Policy to run under (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--agent"
+            ],
+            "name": "agent",
+            "help": "Agent whose sessions to read",
             "positional": false,
             "required": false,
             "default": null,
@@ -594,17 +594,6 @@
           },
           {
             "flags": [
-              "--agent"
-            ],
-            "name": "agent",
-            "help": "Target agent id (bare-agent targeting)",
-            "positional": false,
-            "required": false,
-            "default": null,
-            "choices": null
-          },
-          {
-            "flags": [
               "--host"
             ],
             "name": "host_id",
@@ -631,6 +620,17 @@
             ],
             "name": "policy_id",
             "help": "Policy to run under (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--agent"
+            ],
+            "name": "agent",
+            "help": "Agent whose sessions to read",
             "positional": false,
             "required": false,
             "default": null,
@@ -682,17 +682,6 @@
             ],
             "name": "api_key",
             "help": "Bearer API key",
-            "positional": false,
-            "required": false,
-            "default": null,
-            "choices": null
-          },
-          {
-            "flags": [
-              "--agent"
-            ],
-            "name": "agent",
-            "help": "Target agent id (bare-agent targeting)",
             "positional": false,
             "required": false,
             "default": null,
@@ -806,17 +795,6 @@
           },
           {
             "flags": [
-              "--agent"
-            ],
-            "name": "agent",
-            "help": "Target agent id (bare-agent targeting)",
-            "positional": false,
-            "required": false,
-            "default": null,
-            "choices": null
-          },
-          {
-            "flags": [
               "--host"
             ],
             "name": "host_id",
@@ -923,17 +901,6 @@
           },
           {
             "flags": [
-              "--agent"
-            ],
-            "name": "agent",
-            "help": "Target agent id (bare-agent targeting)",
-            "positional": false,
-            "required": false,
-            "default": null,
-            "choices": null
-          },
-          {
-            "flags": [
               "--host"
             ],
             "name": "host_id",
@@ -960,6 +927,17 @@
             ],
             "name": "policy_id",
             "help": "Policy to run under (overrides the saved connection's)",
+            "positional": false,
+            "required": false,
+            "default": null,
+            "choices": null
+          },
+          {
+            "flags": [
+              "--agent"
+            ],
+            "name": "agent",
+            "help": "Agent whose sessions to read",
             "positional": false,
             "required": false,
             "default": null,
@@ -1690,7 +1668,7 @@
       },
       {
         "name": "subagent",
-        "help": "The last request's subagents: list, show one (<n>) or cancel one (cancel <n>)",
+        "help": "The last request's subagents: list them, or show one (<n>)",
         "aliases": []
       },
       {

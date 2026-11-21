@@ -347,3 +347,73 @@ def test_cancelling_an_event_cancels_its_requests_children() -> None:
                 break
             time.sleep(0.03)
         assert child["status"] == "cancelled"
+
+
+def test_a_browser_handoff_mints_a_link_each_time_someone_asks() -> None:
+    from urllib.parse import urlsplit
+
+    from mash.browser.manager import BrowserManager
+    from mash.testing.browsers import FakePage, LocalBrowserProvider
+
+    provider = ToolCallingLLMProvider(tool_name="browser_handoff", arguments={"reason": "Sign in"})
+    browsers = LocalBrowserProvider(pages={"https://www.pge.com/": FakePage(title="PG&E")})
+    with tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
+        stack.enter_context(
+            patch.dict(os.environ, {"MASH_DATA_DIR": str(Path(tmp)), "MASH_DATABASE_URL": ""})
+        )
+        stack.enter_context(patch_companion_llm(provider))
+        stack.enter_context(
+            patch.object(CompanionSpec, "browser_sites", lambda self: ["https://*.pge.com"])
+        )
+        pool = HostBuilder().host(Host(host_id="assistant", agents=())).build()
+        pool.configure_browsers(BrowserManager(browsers, host_secret="local-agents"))
+        app = create_app(
+            pool,
+            config=MashHostConfig(
+                runtime_database_url="postgresql://test/runtime",
+                host_secret="local-agents",
+                public_url="http://testserver",
+            ),
+        )
+        with TestClient(app) as client:
+            _post(client, "e-1")
+            waiting = _wait(client, "e-1", {"waiting"})
+            [interaction] = waiting["interactions"]
+            assert interaction["type"] == "browser"
+            assert "url" not in interaction
+            handoff = f"/api/v1/sessions/s-1/events/e-1/interactions/{interaction['interaction_id']}/handoff"
+
+            first = client.post(handoff)
+            assert first.status_code == 200, first.text
+            second = client.post(handoff).json()["data"]
+            link = first.json()["data"]["url"]
+            assert link != second["url"] and isinstance(second["expires_at"], int)
+            path = urlsplit(link).path
+            assert client.get(path, follow_redirects=False).status_code == 307
+
+            assert client.post(
+                "/api/v1/sessions/s-1/events/e-1/interactions/itr_nope/handoff"
+            ).json()["error"]["code"] == "INTERACTION_NOT_FOUND"
+            client.post(
+                "/api/v1/sessions/s-1/events",
+                json={"event_id": "e-1", "interaction_id": interaction["interaction_id"], "response": "done"},
+            )
+            _wait(client, "e-1", {"completed"})
+            # The interaction closed: its links stop working, and no new one is made.
+            assert client.get(path, follow_redirects=False).status_code == 404
+            assert client.post(handoff).json()["error"]["code"] == "INTERACTION_NOT_FOUND"
+    import asyncio
+
+    asyncio.run(browsers.close())
+
+
+def test_the_handoff_route_needs_browsers_and_a_browser_interaction() -> None:
+    provider = ToolCallingLLMProvider(tool_name="AskUser", arguments={"question": "Which?"})
+    with _client(provider, ask=True) as client:
+        _post(client, "e-1")
+        [interaction] = _wait(client, "e-1", {"waiting"})["interactions"]
+        resp = client.post(
+            f"/api/v1/sessions/s-1/events/e-1/interactions/{interaction['interaction_id']}/handoff"
+        )
+        assert resp.status_code == 503
+        assert resp.json()["error"]["code"] == "BROWSER_UNAVAILABLE"

@@ -1052,7 +1052,7 @@ async def emit_interaction_create(
     interaction_type: str,
     prompt: str,
     schema: dict[str, Any],
-    timeout_seconds: int,
+    timeout_seconds: int | None,
     extra: dict[str, Any] | None = None,
 ) -> RuntimeEvent:
     """Append the interaction's create event; a repeat with the same id is a no-op."""
@@ -1116,10 +1116,11 @@ async def emit_interaction_ack(
 
 
 async def start_browser_handoff(runtime: "AgentRuntime", request_id: str) -> dict[str, Any]:
-    """Ask the host for a live-view link to the request policy's browser.
+    """Get the request's tab ready for a handoff: the host brings it to the front.
 
-    ``{url, expires_at, timeout_seconds}``, or ``{error}`` when there is no one
-    to hand off to: a workflow request, or an agent without browser tools.
+    ``{}``, or ``{error}`` when there is no one to hand off to: a workflow
+    request, or an agent without browser tools. The live-view link is made
+    when someone asks for it on the event, not here.
     """
     if get_workflow_id():
         return {

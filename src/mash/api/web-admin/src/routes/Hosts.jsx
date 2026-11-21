@@ -175,9 +175,10 @@ function TestRequestDrawer({ open, host, onClose }) {
     setError(null);
     setResult(null);
     try {
-      const res = await api.submitHostRequest(host.host_id, {
+      const res = await api.postEvent(sessionId.trim(), {
+        event_id: crypto.randomUUID(),
+        host_id: host.host_id,
         message: message.trim(),
-        session_id: sessionId.trim(),
         app_id: appId.trim(),
         policy_id: policyId.trim(),
       });
@@ -194,7 +195,7 @@ function TestRequestDrawer({ open, host, onClose }) {
       open={open}
       onClose={onClose}
       title={host ? `Test ${host.host_id}` : 'Test host'}
-      subtitle="Submit a request to this host. The companion routes it."
+      subtitle="Post an event to this host. The companion routes it."
       footer={
         <div className="flex items-center justify-between">
           <span className="text-xs text-rose-600">{error?.message || ''}</span>
@@ -205,7 +206,7 @@ function TestRequestDrawer({ open, host, onClose }) {
               sending || !message.trim() || !sessionId.trim() || !appId.trim() || !policyId.trim()
             }
           >
-            {sending ? 'Sending…' : 'Send request'}
+            {sending ? 'Sending…' : 'Post event'}
           </Button>
         </div>
       }
@@ -230,10 +231,10 @@ function TestRequestDrawer({ open, host, onClose }) {
         </Field>
         {result ? (
           <Card className="space-y-2 bg-slate-50 p-3 text-sm">
-            <div className="font-medium text-emerald-700">Request accepted</div>
+            <div className="font-medium text-emerald-700">Event {result.status}</div>
             <div className="flex items-center gap-2">
-              <span className="text-slate-500">Agent</span>
-              <Mono>{result.agent_id}</Mono>
+              <span className="text-slate-500">Event</span>
+              <Mono>{result.event_id}</Mono>
             </div>
             <div className="flex items-center gap-2">
               <span className="text-slate-500">Request</span>
@@ -243,7 +244,7 @@ function TestRequestDrawer({ open, host, onClose }) {
               variant="secondary"
               onClick={() =>
                 navigate(
-                  `/logs?agent=${encodeURIComponent(result.agent_id)}&session=${encodeURIComponent(result.session_id || sessionId)}`,
+                  `/logs?agent=companion&session=${encodeURIComponent(result.session_id || sessionId)}`,
                 )
               }
             >

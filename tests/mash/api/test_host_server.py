@@ -329,114 +329,47 @@ def test_workflow_list_host_filter() -> None:
             assert missing.json()["error"]["code"] == "HOST_NOT_FOUND"
 
 
-def test_host_request_routes_to_the_companion_and_streams_from_it() -> None:
+def test_an_event_runs_on_the_companion_and_streams_from_it() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root) as client:
-            submitted = client.post(
-                "/api/v1/hosts/assistant/request",
-                json={"message": "hello", "session_id": "s-host-1", "app_id": "app-1", "policy_id": "p-1"},
-            )
-            assert submitted.status_code == 200
-            accepted = submitted.json()["data"]
-            assert accepted["agent_id"] == "companion"
-            assert accepted["session_id"] == "s-host-1"
-            request_id = accepted["request_id"]
-            assert request_id
-
+            request_id = _send(client, "s-host-1", "hello")
             payload = _collect_terminal_response(client, "companion", request_id)
             assert payload["response"]["text"] == "companion-ok"
 
-            missing = client.post(
-                "/api/v1/hosts/unknown/request",
-                json={"message": "hello", "session_id": "s-host-2", "app_id": "app-1", "policy_id": "p-1"},
-            )
-            assert missing.status_code == 404
-            assert missing.json()["error"]["code"] == "HOST_NOT_FOUND"
 
-
-def test_host_and_agent_requests_require_an_app_and_a_policy() -> None:
+def test_agent_scoped_session_routes() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root) as client:
-            body = {"message": "hello", "app_id": "app-42", "policy_id": "p-1"}
-            submitted = client.post(
-                "/api/v1/hosts/assistant/request", json={**body, "session_id": "s-id-1"}
-            )
-            assert submitted.status_code == 200
-            data = submitted.json()["data"]
-            assert (data["app_id"], data["policy_id"]) == ("app-42", "p-1")
+            request_id = _send(client, "s1", "hello")
+            payload = _collect_terminal_response(client, "companion", request_id)
+            assert payload["response"]["text"] == "companion-ok"
+            _collect_terminal_response(client, "companion", _send(client, "s2", "again"))
 
-            direct = client.post(
-                "/api/v1/agent/primary/request", json={**body, "session_id": "s-id-2"}
-            )
-            assert direct.status_code == 200
-
-            for route in ("/api/v1/hosts/assistant/request", "/api/v1/agent/primary/request"):
-                for key, code in (("app_id", "INVALID_APP_ID"), ("policy_id", "INVALID_POLICY_ID")):
-                    invalid = client.post(
-                        route, json={**body, "session_id": "s-id-3", key: "has space"}
-                    )
-                    assert invalid.status_code == 400
-                    assert invalid.json()["error"]["code"] == code
-                    missing = {**body, "session_id": "s-id-4"}
-                    del missing[key]
-                    resp = client.post(route, json=missing)
-                    assert resp.status_code == 422
-                    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
-                unknown = client.post(
-                    route, json={**body, "session_id": "s-id-5", "policy_id": "nope"}
-                )
-                assert unknown.status_code == 404
-                assert unknown.json()["error"]["code"] == "POLICY_NOT_FOUND"
-
-
-def test_agent_scoped_request_and_session_routes() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        with _build_test_client(root) as client:
-            submitted = client.post(
-                "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s1", "app_id": "app-1", "policy_id": "p-1"},
-            )
-            assert submitted.status_code == 200
-            request_id = submitted.json()["data"]["request_id"]
-            payload = _collect_terminal_response(client, "primary", request_id)
-            assert payload["response"]["text"] == "primary-ok"
-
-            second = client.post(
-                "/api/v1/agent/primary/request",
-                json={"message": "again", "session_id": "s2", "app_id": "app-1", "policy_id": "p-1"},
-            )
-            _collect_terminal_response(client, "primary", second.json()["data"]["request_id"])
-
-            sessions = client.get("/api/v1/agent/primary/sessions")
+            sessions = client.get("/api/v1/agent/companion/sessions")
             assert sessions.status_code == 200
             listed = sessions.json()["data"]
             assert [s["session_id"] for s in listed["sessions"]] == ["s2", "s1"]
             assert listed["sessions"][1]["turn_count"] == 1
             assert listed["limit"] == 50
-            newest = client.get("/api/v1/agent/primary/sessions", params={"limit": 1})
+            newest = client.get("/api/v1/agent/companion/sessions", params={"limit": 1})
             assert [s["session_id"] for s in newest.json()["data"]["sessions"]] == ["s2"]
             # Each row carries the session's first message, and app_id keeps
             # only the sessions with that app's turns.
             assert [s["first_message"] for s in listed["sessions"]] == ["again", "hello"]
-            other = client.post(
-                "/api/v1/agent/primary/request",
-                json={"message": "mine", "session_id": "s3", "app_id": "app-2", "policy_id": "p-1"},
-            )
-            _collect_terminal_response(client, "primary", other.json()["data"]["request_id"])
-            mine = client.get("/api/v1/agent/primary/sessions", params={"app_id": "app-2"})
+            _collect_terminal_response(client, "companion", _send(client, "s3", "mine", app_id="app-2"))
+            mine = client.get("/api/v1/agent/companion/sessions", params={"app_id": "app-2"})
             assert [s["session_id"] for s in mine.json()["data"]["sessions"]] == ["s3"]
-            theirs = client.get("/api/v1/agent/primary/sessions", params={"app_id": "app-1"})
+            theirs = client.get("/api/v1/agent/companion/sessions", params={"app_id": "app-1"})
             assert [s["session_id"] for s in theirs.json()["data"]["sessions"]] == ["s2", "s1"]
 
-            history = client.get("/api/v1/agent/primary/sessions/s1/history")
+            history = client.get("/api/v1/agent/companion/sessions/s1/history")
             assert history.status_code == 200
             assert len(history.json()["data"]["turns"]) == 1
 
 
-def test_agent_request_accepts_structured_output_schema_payload() -> None:
+def test_an_events_structured_output_reaches_its_response() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with patch.dict(
@@ -445,11 +378,13 @@ def test_agent_request_accepts_structured_output_schema_payload() -> None:
                 "MASH_DATA_DIR": str(root),
                 "MASH_DATABASE_URL": "",
             },
-        ):
-            host = HostBuilder().agent(
-                build_spec(agent_id="primary", response_text='{"ok":true}'),
-                metadata=metadata(),
-            ).build()
+        ), patch_companion_llm(build_spec(agent_id="companion", response_text='{"ok":true}').build_llm()):
+            host = (
+                HostBuilder()
+                .agent(build_spec(agent_id="primary"), metadata=metadata())
+                .host(Host(host_id="assistant", agents=("primary",)))
+                .build()
+            )
             app = create_app(
                 host,
                 config=MashHostConfig(
@@ -457,68 +392,35 @@ def test_agent_request_accepts_structured_output_schema_payload() -> None:
                 ),
             )
             with TestClient(app) as client:
-                submitted = client.post(
-                    "/api/v1/agent/primary/request",
-                    json={
-                        "message": "hello",
-                        "session_id": "s1",
-                        "app_id": "app-1", "policy_id": "p-1",
-                        "structured_output": {
-                            "title": "Result",
-                            "type": "object",
-                            "properties": {"ok": {"type": "boolean"}},
-                            "required": ["ok"],
-                            "additionalProperties": False,
-                        },
+                request_id = _send(
+                    client,
+                    "s1",
+                    "hello",
+                    structured_output={
+                        "title": "Result",
+                        "type": "object",
+                        "properties": {"ok": {"type": "boolean"}},
+                        "required": ["ok"],
+                        "additionalProperties": False,
                     },
                 )
-                assert submitted.status_code == 200
-                request_id = submitted.json()["data"]["request_id"]
-                payload = _collect_terminal_response(client, "primary", request_id)
+                payload = _collect_terminal_response(client, "companion", request_id)
                 assert payload["response"]["structured_output"] == {"ok": True}
-
-
-def test_agent_request_rejects_invalid_structured_output_schema_payload() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        with _build_test_client(root) as client:
-            submitted = client.post(
-                "/api/v1/agent/primary/request",
-                json={
-                    "message": "hello",
-                    "session_id": "s1",
-                    "app_id": "app-1", "policy_id": "p-1",
-                    "structured_output": ["not-a-schema"],
-                },
-            )
-
-            assert submitted.status_code == 422
 
 
 def test_session_signals_route_returns_definitions_and_turn_rows() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root) as client:
-            first = client.post(
-                "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s1", "app_id": "app-1", "policy_id": "p-1"},
+            first_payload = _collect_terminal_response(client, "companion", _send(client, "s1", "hello"))
+            second_payload = _collect_terminal_response(
+                client, "companion", _send(client, "s1", "hello again")
             )
-            assert first.status_code == 200
-            first_request_id = first.json()["data"]["request_id"]
-            first_payload = _collect_terminal_response(client, "primary", first_request_id)
 
-            second = client.post(
-                "/api/v1/agent/primary/request",
-                json={"message": "hello again", "session_id": "s1", "app_id": "app-1", "policy_id": "p-1"},
-            )
-            assert second.status_code == 200
-            second_request_id = second.json()["data"]["request_id"]
-            second_payload = _collect_terminal_response(client, "primary", second_request_id)
-
-            response = client.get("/api/v1/agent/primary/sessions/s1/signals")
+            response = client.get("/api/v1/agent/companion/sessions/s1/signals")
             assert response.status_code == 200
             payload = response.json()["data"]
-            assert payload["agent_id"] == "primary"
+            assert payload["agent_id"] == "companion"
             assert payload["session_id"] == "s1"
             assert set(payload["definitions"].keys()) == {"unused_tools", "unused_tool_tokens"}
             assert payload["definitions"]["unused_tools"]["value_type"] == "string_list"
@@ -530,7 +432,7 @@ def test_session_signals_route_returns_definitions_and_turn_rows() -> None:
             assert "unused_tools" in payload["turns"][0]["signals"]
             assert "unused_tool_tokens" in payload["turns"][0]["signals"]
 
-            limited = client.get("/api/v1/agent/primary/sessions/s1/signals", params={"limit": 1})
+            limited = client.get("/api/v1/agent/companion/sessions/s1/signals", params={"limit": 1})
             assert limited.status_code == 200
             limited_payload = limited.json()["data"]
             assert [turn["trace_id"] for turn in limited_payload["turns"]] == [
@@ -583,6 +485,25 @@ def test_invoke_route_is_removed() -> None:
             assert response.status_code == 404
 
 
+def test_request_submit_and_write_routes_are_gone() -> None:
+    """Every input is an event: nothing starts or revives a request outside a session queue."""
+    with tempfile.TemporaryDirectory() as tmp:
+        with _build_test_client(Path(tmp)) as client:
+            body = {"message": "hello", "session_id": "s1", "app_id": "app-1", "policy_id": "p-1"}
+            for path in (
+                "/api/v1/hosts/assistant/request",
+                "/api/v1/agent/primary/request",
+                "/api/v1/agent/primary/request/r-1/interaction",
+                "/api/v1/agent/primary/request/r-1/resume",
+                "/api/v1/agent/primary/request/r-1/cancel",
+                "/api/v1/agent/primary/request/r-1/rerun",
+                "/api/v1/agent/primary/trace/t-1/cancel",
+                "/api/v1/agent/primary/trace/t-1/resume",
+                "/api/v1/agent/primary/trace/t-1/rerun",
+            ):
+                assert client.post(path, json=body).status_code in (404, 405), path
+
+
 def test_removed_session_state_routes_return_not_found() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -627,17 +548,11 @@ def test_async_request_stream_and_auth() -> None:
             assert unauthorized.status_code == 401
 
             headers = {"Authorization": "Bearer secret"}
-            submitted = client.post(
-                "/api/v1/agent/research/request",
-                json={"message": "hello", "session_id": "s1", "app_id": "app-1", "policy_id": "p-1"},
-                headers=headers,
-            )
-            assert submitted.status_code == 200
-            request_id = submitted.json()["data"]["request_id"]
+            request_id = _send(client, "s1", "hello", headers=headers)
 
             with client.stream(
                 "GET",
-                f"/api/v1/agent/research/request/{request_id}/events",
+                f"/api/v1/agent/companion/request/{request_id}/events",
                 headers=headers,
             ) as stream:
                 assert stream.status_code == 200
@@ -679,12 +594,8 @@ def _read_sse(stream) -> list[tuple[int | None, str]]:
 def test_request_events_carry_ids_and_start_after_a_cursor() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         with _build_test_client(Path(tmp)) as client:
-            submitted = client.post(
-                "/api/v1/agent/research/request",
-                json={"message": "hello", "session_id": "s1", "app_id": "app-1", "policy_id": "p-1"},
-            )
-            request_id = submitted.json()["data"]["request_id"]
-            url = f"/api/v1/agent/research/request/{request_id}/events"
+            request_id = _send(client, "s1", "hello")
+            url = f"/api/v1/agent/companion/request/{request_id}/events"
 
             with client.stream("GET", url) as stream:
                 frames = _read_sse(stream)
@@ -704,68 +615,6 @@ def test_request_events_carry_ids_and_start_after_a_cursor() -> None:
                 assert _read_sse(stream) == []
 
             assert client.get(url, params={"after": -1}).status_code == 422
-
-
-def test_same_session_overlap_completes_without_waiting_event() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        with patch.dict(
-            os.environ,
-            {
-                "MASH_DATA_DIR": str(root),
-                "MASH_DATABASE_URL": "",
-            },
-        ):
-            host = (
-                HostBuilder()
-                .agent(
-                    build_spec(
-                        agent_id="primary",
-                        response_text="primary-ok",
-                        delay_seconds=0.25,
-                    ),
-                    metadata=metadata(),
-                )
-                .build()
-            )
-            app = create_app(
-                host,
-                config=MashHostConfig(runtime_database_url="postgresql://test/runtime"),
-            )
-            with TestClient(app) as client:
-                first = client.post(
-                    "/api/v1/agent/primary/request",
-                    json={"message": "first", "session_id": "shared", "app_id": "app-1", "policy_id": "p-1"},
-                )
-                assert first.status_code == 200
-                second = client.post(
-                    "/api/v1/agent/primary/request",
-                    json={"message": "second", "session_id": "shared", "app_id": "app-1", "policy_id": "p-1"},
-                )
-                assert second.status_code == 200
-                request_id = second.json()["data"]["request_id"]
-
-                with client.stream(
-                    "GET",
-                    f"/api/v1/agent/primary/request/{request_id}/events",
-                ) as stream:
-                    assert stream.status_code == 200
-                    names: list[str] = []
-                    current_event = None
-                    for line in stream.iter_lines():
-                        if not line:
-                            continue
-                        text = line if isinstance(line, str) else line.decode("utf-8")
-                        if text.startswith("event:"):
-                            current_event = text.split(":", 1)[1].strip()
-                        if text.startswith("data:") and current_event:
-                            names.append(current_event)
-                            if current_event in {"request.completed", "request.error"}:
-                                break
-
-                    assert names[0] == "request.accepted"
-                    assert "request.waiting" not in names
-                    assert names[-1] == "request.completed"
 
 
 def test_admin_ui_never_hands_out_the_api_key() -> None:
@@ -928,15 +777,10 @@ def test_telemetry_events_filter_by_agent() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root) as client:
-            submitted = client.post(
-                "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s-1", "app_id": "app-1", "policy_id": "p-1"},
-            )
-            assert submitted.status_code == 200
-            request_id = submitted.json()["data"]["request_id"]
-            payload = _collect_terminal_response(client, "primary", request_id)
-            assert payload["response"]["text"] == "primary-ok"
-            events = client.get("/api/v1/telemetry/events?agent_id=primary")
+            request_id = _send(client, "s-1", "hello")
+            payload = _collect_terminal_response(client, "companion", request_id)
+            assert payload["response"]["text"] == "companion-ok"
+            events = client.get("/api/v1/telemetry/events?agent_id=companion")
             assert events.status_code == 200
             payload = events.json()["data"]
             assert any(event["event_type"] == "invoke_agent.start" for event in payload["events"])
@@ -949,65 +793,24 @@ def _accepted_payload(client, request_id: str) -> dict[str, Any]:
     return next(e.payload for e in events if e.event_type == "invoke_agent.start")
 
 
-def test_submit_routes_store_a_callers_traceparent() -> None:
-    traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
-    with tempfile.TemporaryDirectory() as tmp:
-        with _build_test_client(Path(tmp)) as client:
-            agent = client.post(
-                "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s-tp", "app_id": "app-1", "policy_id": "p-1"},
-                headers={"traceparent": traceparent, "tracestate": "vendor=1"},
-            )
-            request_id = agent.json()["data"]["request_id"]
-            _collect_terminal_response(client, "primary", request_id)
-            payload = _accepted_payload(client, request_id)
-            assert payload["traceparent"] == traceparent
-            assert payload["tracestate"] == "vendor=1"
-
-            hosted = client.post(
-                "/api/v1/hosts/assistant/request",
-                json={"message": "hello", "session_id": "s-tp2", "app_id": "app-1", "policy_id": "p-1"},
-                headers={"traceparent": traceparent},
-            )
-            hosted_id = hosted.json()["data"]["request_id"]
-            _collect_terminal_response(client, "companion", hosted_id)
-            assert _accepted_payload(client, hosted_id)["traceparent"] == traceparent
-
-            # An invalid header is dropped; the request starts its own trace.
-            invalid = client.post(
-                "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s-tp3", "app_id": "app-1", "policy_id": "p-1"},
-                headers={"traceparent": "not-a-traceparent", "tracestate": "vendor=1"},
-            )
-            invalid_id = invalid.json()["data"]["request_id"]
-            _collect_terminal_response(client, "primary", invalid_id)
-            payload = _accepted_payload(client, invalid_id)
-            assert "traceparent" not in payload
-            assert "tracestate" not in payload
-
-
 def test_trace_analysis_returns_the_projection() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         with _build_test_client(Path(tmp)) as client:
-            submitted = client.post(
-                "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s-proj", "app_id": "app-1", "policy_id": "p-1"},
-            )
-            request_id = submitted.json()["data"]["request_id"]
-            _collect_terminal_response(client, "primary", request_id)
+            request_id = _send(client, "s-proj", "hello")
+            _collect_terminal_response(client, "companion", request_id)
             store = client.app.state.runtime_state.pool.get_runtime_store()
             events = client.portal.call(store.list_request_events, request_id)
             trace_id = events[0].trace_id
 
             response = client.get(
                 "/api/v1/telemetry/trace/analysis",
-                params={"agent_id": "primary", "session_id": "s-proj", "trace_id": trace_id},
+                params={"agent_id": "companion", "session_id": "s-proj", "trace_id": trace_id},
             )
             assert response.status_code == 200, response.text
             data = response.json()["data"]
             root = data["projection"]["root"]
-            assert root["name"] == "invoke_agent primary"
-            assert root["attributes"]["gen_ai.agent.id"] == "primary"
+            assert root["name"] == "invoke_agent companion"
+            assert root["attributes"]["gen_ai.agent.id"] == "companion"
             assert data["status"] == "completed"
             assert data["request_id"] == request_id
             names = {child["name"] for child in root["children"]}
@@ -1018,19 +821,14 @@ def test_telemetry_sessions_rollup_from_events() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root) as client:
-            submitted = client.post(
-                "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s-roll", "app_id": "app-1", "policy_id": "p-1"},
-            )
-            assert submitted.status_code == 200
-            request_id = submitted.json()["data"]["request_id"]
-            _collect_terminal_response(client, "primary", request_id)
+            request_id = _send(client, "s-roll", "hello")
+            _collect_terminal_response(client, "companion", request_id)
 
             listed = client.get("/api/v1/telemetry/sessions")
             assert listed.status_code == 200
             sessions = listed.json()["data"]["sessions"]
             rolled = next(s for s in sessions if s["session_id"] == "s-roll")
-            assert rolled["owner_agent_id"] == "primary"
+            assert rolled["owner_agent_id"] == "companion"
             assert rolled["trace_count"] >= 1
             assert "started_at" in rolled and "total_tokens" in rolled
 
@@ -1059,7 +857,7 @@ def test_telemetry_sessions_rollup_from_events() -> None:
             assert invalid.json()["error"]["code"] == "INVALID_STATUS"
 
             # /session (get_session) reports the same event-log total.
-            info = client.get("/api/v1/agent/primary/sessions/s-roll").json()["data"]
+            info = client.get("/api/v1/agent/companion/sessions/s-roll").json()["data"]
             assert info["total_tokens"] == rolled["total_tokens"]
 
             # Agent filter matches sessions the agent participated in.
@@ -1078,14 +876,9 @@ def test_telemetry_sessions_participant_and_workflow_filters() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root) as client:
-            # Primary owns the session; research participates as a subagent.
-            submitted = client.post(
-                "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s-multi", "app_id": "app-1", "policy_id": "p-1"},
-            )
-            assert submitted.status_code == 200
-            request_id = submitted.json()["data"]["request_id"]
-            _collect_terminal_response(client, "primary", request_id)
+            # The companion owns the session; research participates as a subagent.
+            request_id = _send(client, "s-multi", "hello")
+            _collect_terminal_response(client, "companion", request_id)
 
             store = _runtime_state(client).pool.get_runtime_store()
             asyncio.run(
@@ -1110,12 +903,12 @@ def test_telemetry_sessions_participant_and_workflow_filters() -> None:
                 )
             )
 
-            # The session is owned by primary but research participated, so
+            # The session is owned by the companion but research participated, so
             # filtering by research must still return it.
             scoped = client.get("/api/v1/telemetry/sessions?agent_id=research")
             data = scoped.json()["data"]
             assert [s["session_id"] for s in data["sessions"]] == ["s-multi"]
-            assert data["sessions"][0]["owner_agent_id"] == "primary"
+            assert data["sessions"][0]["owner_agent_id"] == "companion"
             assert "research" in data["sessions"][0]["agent_ids"]
             assert data["total"] == 1
 
@@ -1230,22 +1023,17 @@ def test_reasoning_trace_route_returns_compact_trace() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root) as client:
-            submitted = client.post(
-                "/api/v1/agent/primary/request",
-                json={"message": "hello", "session_id": "s-1", "app_id": "app-1", "policy_id": "p-1"},
-            )
-            assert submitted.status_code == 200
-            request_id = submitted.json()["data"]["request_id"]
-            terminal = _collect_terminal_response(client, "primary", request_id)
+            request_id = _send(client, "s-1", "hello")
+            terminal = _collect_terminal_response(client, "companion", request_id)
             trace_id = terminal["trace_id"]
 
             reasoning_trace = client.get(
-                f"/api/v1/agent/primary/session/s-1/trace/{trace_id}/reasoning",
+                f"/api/v1/agent/companion/session/s-1/trace/{trace_id}/reasoning",
             )
             assert reasoning_trace.status_code == 200
             payload = reasoning_trace.json()["data"]
             assert payload["source"] == "runtime_event_log"
-            assert payload["agent_id"] == "primary"
+            assert payload["agent_id"] == "companion"
             assert payload["session_id"] == "s-1"
             assert payload["trace_id"] == trace_id
             assert payload["status"] == "completed"
@@ -1271,26 +1059,21 @@ def test_memory_search_uses_agent_memory_store_by_default() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with _build_test_client(root) as client:
-            submitted = client.post(
-                "/api/v1/agent/primary/request",
-                json={"message": "hello world", "session_id": "s-1", "app_id": "app-1", "policy_id": "p-1"},
-            )
-            assert submitted.status_code == 200
-            request_id = submitted.json()["data"]["request_id"]
-            payload = _collect_terminal_response(client, "primary", request_id)
-            assert payload["response"]["text"] == "primary-ok"
+            request_id = _send(client, "s-1", "hello world")
+            payload = _collect_terminal_response(client, "companion", request_id)
+            assert payload["response"]["text"] == "companion-ok"
 
             search = client.get(
                 "/api/v1/telemetry/memory/search",
                 params={
                     "q": "@user: hello",
-                    "agent_id": "primary",
+                    "agent_id": "companion",
                     "session_id": "s-1",
                 },
             )
             assert search.status_code == 200
             payload = search.json()["data"]
-            assert payload["agent_id"] == "primary"
+            assert payload["agent_id"] == "companion"
             assert payload["session_id"] == "s-1"
             assert payload["results"]
             assert payload["results"][0]["preview"]
@@ -1778,6 +1561,33 @@ def test_missing_admin_assets_degrade_gracefully() -> None:
                     assert client.get("/admin").status_code == 404
 
 
+def _send(
+    client: TestClient,
+    session_id: str,
+    message: str,
+    *,
+    app_id: str = "app-1",
+    host_id: str = "assistant",
+    headers: dict[str, str] | None = None,
+    **body: Any,
+) -> str:
+    """Post a message as an event; the id of the companion request it runs as."""
+    resp = client.post(
+        f"/api/v1/sessions/{session_id}/events",
+        json={
+            "event_id": f"e-{time.monotonic_ns()}",
+            "host_id": host_id,
+            "app_id": app_id,
+            "policy_id": "p-1",
+            "message": message,
+            **body,
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 202, resp.text
+    return resp.json()["data"]["request_id"]
+
+
 def _collect_terminal_response(
     client: TestClient,
     agent_id: str,
@@ -1830,38 +1640,3 @@ def _collect_sse_events(stream) -> list[dict[str, Any]]:
     return events
 
 
-def test_answer_to_a_closed_interaction_is_a_conflict() -> None:
-    from mash.runtime.client import (
-        AgentClient,
-        InteractionClosedError,
-        InvalidInteractionResponseError,
-    )
-
-    async def _closed(*_args, **_kwargs):
-        raise InteractionClosedError("interaction 'itr_1' is no longer open")
-
-    async def _invalid(*_args, **_kwargs):
-        raise InvalidInteractionResponseError("response must be one of ['approve', 'deny', 'skip']")
-
-    async def _missing(*_args, **_kwargs):
-        from mash.runtime import AgentClientError
-
-        raise AgentClientError("POST interaction failed (status=404): not found")
-
-    with tempfile.TemporaryDirectory() as tmp:
-        with _build_test_client(Path(tmp)) as client:
-            url = "/api/v1/agent/primary/request/req-1/interaction"
-            body = {"interaction_id": "itr_1", "response": "yes"}
-            with patch.object(AgentClient, "post_interaction", _closed):
-                closed = client.post(url, json=body)
-            with patch.object(AgentClient, "post_interaction", _missing):
-                missing = client.post(url, json=body)
-            with patch.object(AgentClient, "post_interaction", _invalid):
-                invalid = client.post(url, json=body)
-
-    assert closed.status_code == 409
-    assert closed.json()["error"]["code"] == "INTERACTION_CLOSED"
-    assert missing.status_code == 404
-    assert missing.json()["error"]["code"] == "INTERACTION_NOT_FOUND"
-    assert invalid.status_code == 400
-    assert invalid.json()["error"]["code"] == "INVALID_RESPONSE"

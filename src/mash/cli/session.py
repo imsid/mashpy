@@ -35,6 +35,8 @@ from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.markup import escape
 
+from mash.agents.companion import COMPANION_AGENT_ID
+
 from .ask import menu
 from .client import MashHostClient, MashHostClientError
 from .command_log import RemoteCommandEventLogger
@@ -88,14 +90,18 @@ MAX_REDRAWS_PER_SECOND = 30
 
 @dataclass(frozen=True)
 class Target:
-    """What the REPL talks to: an agent, or a host through its companion."""
+    """What the REPL talks to: a host, through its companion.
+
+    Each message is an event in ``session_id``, for ``app_id`` under
+    ``policy_id``.
+    """
 
     api_base_url: str
-    agent_id: str
     session_id: str
     app_id: str
     policy_id: str
-    host_id: str | None = None
+    host_id: str
+    agent_id: str = COMPANION_AGENT_ID
     # The session has earlier turns: the REPL starts by showing the last two.
     resumed: bool = False
     # The session's first message, for the header line.
@@ -221,6 +227,10 @@ class Repl:
         self.last_answer = ""
         # Messages typed while a request ran, sent in order when it ends.
         self.queue: list[str] = []
+        # The events of the queued messages, posted at once, in queue order.
+        self._queued_events: list[str] = []
+        # The last message sent, for /retry.
+        self._last_message = ""
         # Interactions waiting for the user, oldest first.
         self._interactions: deque[Interaction] = deque()
         # The interaction being asked and the application asking it.
@@ -317,15 +327,8 @@ class Repl:
                 return [
                     (str(index), f"{child.agent_id}: {clip(child.brief, 50)}")
                     for index, child in enumerate(children, 1)
-                ] + [("cancel", "Cancel one subagent")]
+                ]
             return list(ARGUMENT_MENUS.get(command, ()))
-        if command == "subagent" and list(typed) == ["cancel"]:
-            children = self.last_parent.children if self.last_parent else []
-            return [
-                (str(index), child.agent_id)
-                for index, child in enumerate(children, 1)
-                if not child.ended
-            ]
         return []
 
     def running(self) -> bool:
@@ -402,7 +405,7 @@ class Repl:
 
     def _toolbar(self) -> Fragments:
         ctx = self.context
-        parts = [ctx.host_id or ctx.agent_id]
+        parts = [ctx.host_id]
         if self._flash is not None and self._flash[1] > self.now():
             parts.append(self._flash[0])
         else:
@@ -458,6 +461,11 @@ class Repl:
 
         @bindings.add("up", filter=empty & Condition(lambda: bool(self.queue)))
         def _edit_queued(event: KeyPressEvent) -> None:
+            # The message was posted: cancel its event, and edit its text.
+            event_id = self._queued_events.pop()
+            self._spawn(
+                asyncio.to_thread(self.client.cancel_event, self.context.session_id, event_id)
+            )
             event.current_buffer.insert_text(self.queue.pop())
 
         return bindings
@@ -476,46 +484,49 @@ class Repl:
 
     # --- submitting and following requests --------------------------------
 
-    def submit_message(self, ctx: CLIContext, message: str) -> str:
-        """Submit a message to the pinned host or agent; returns the request id."""
-        if ctx.host_id:
-            accepted = self.client.submit_host_request(
-                ctx.host_id,
-                message=message,
-                session_id=ctx.session_id,
-                app_id=ctx.app_id,
-                policy_id=ctx.policy_id,
-            )
-            request_id = str(accepted.get("request_id") or "")
-            accepted_agent_id = str(accepted.get("agent_id") or "").strip()
-            if accepted_agent_id:
-                ctx.agent_id = accepted_agent_id
-        else:
-            request_id = self.client.submit_request(
-                ctx.agent_id,
-                message=message,
-                session_id=ctx.session_id,
-                app_id=ctx.app_id,
-                policy_id=ctx.policy_id,
-            )
+    def post_message(self, ctx: CLIContext, message: str) -> tuple[str, str]:
+        """Post a message as an event in the session; ``(event_id, request_id)``."""
+        event_id = str(uuid.uuid4())
+        accepted = self.client.post_event(
+            ctx.session_id,
+            event_id=event_id,
+            host_id=str(ctx.host_id),
+            app_id=ctx.app_id,
+            policy_id=ctx.policy_id,
+            message=message,
+        )
+        request_id = str(accepted.get("request_id") or "")
         ctx.last_request_id = request_id or None
-        return request_id
+        self._last_message = message
+        return event_id, request_id
 
     async def send(self, message: str) -> None:
-        """Send a message now, or queue it behind the running request."""
+        """Post a message now; it waits in the session's queue behind a running one."""
         if self._foreground_task is not None:
+            event_id, _ = await asyncio.to_thread(self.post_message, self.context, message)
             self.queue.append(message)
+            self._queued_events.append(event_id)
             self._invalidate()
             return
         await self._start(message)
 
-    async def _start(self, message: str) -> None:
+    async def _start(self, message: str, event_id: str | None = None) -> None:
+        """Follow a message's event: one posted now, or one that waited in the queue."""
         ctx = self.context
         self.renderer.echo(self._typed.pop(message, message), PROMPT, CONTINUATION)
-        request_id = await asyncio.to_thread(self.submit_message, ctx, message)
+        if event_id is None:
+            event_id, request_id = await asyncio.to_thread(self.post_message, ctx, message)
+        else:
+            request_id = str(
+                (await asyncio.to_thread(self.client.get_event, ctx.session_id, event_id)).get(
+                    "request_id"
+                )
+                or ""
+            )
         view = RequestView(
             agent_id=ctx.agent_id,
             request_id=request_id,
+            event_id=event_id,
             started_at=self.now(),
             brief=message,
         )
@@ -551,12 +562,12 @@ class Repl:
         self._invalidate()
         await self._refresh_session_tokens()
         # Cleared last, so the REPL is not idle while the lines above run.
-        queued = self.queue.pop(0) if self.queue else None
+        queued = (self.queue.pop(0), self._queued_events.pop(0)) if self.queue else None
         self._foreground_task = None
         self._invalidate()
         if queued is not None:
             try:
-                await self._start(queued)
+                await self._start(*queued)
             except Exception as exc:
                 self.renderer.error(f"Error: {exc}")
 
@@ -574,9 +585,14 @@ class Repl:
             self._session_tokens = total
 
     async def _read_stream(self, view: RequestView, *, after: int = 0) -> None:
-        async for event in self.client.request_events(
-            view.agent_id, view.request_id, after=after
-        ):
+        """Read a message's event stream, or a child's request stream."""
+        if view.event_id is not None:
+            stream = self.client.event_events(
+                self.context.session_id, view.event_id, after=after
+            )
+        else:
+            stream = self.client.request_events(view.agent_id, view.request_id, after=after)
+        async for event in stream:
             for output in reduce(view, event, self.now()):
                 self._handle(output)
             self._invalidate()
@@ -744,28 +760,13 @@ class Repl:
         return True
 
     async def retry(self) -> None:
-        """``/retry``: run the last request again as a new request."""
-        ctx = self.context
+        """``/retry``: send the last message again, as a new event."""
         if self._foreground_busy():
             return
-        if not ctx.last_request_id:
+        if not self._last_message:
             self.renderer.warn("Nothing to retry yet.")
             return
-        accepted = await asyncio.to_thread(
-            self.client.rerun_request, ctx.agent_id, ctx.last_request_id
-        )
-        request_id = str(accepted.get("request_id") or "")
-        if not request_id:
-            raise MashHostClientError("the host returned no request id")
-        ctx.last_request_id = request_id
-        self._follow_in_foreground(
-            RequestView(
-                agent_id=ctx.agent_id,
-                request_id=request_id,
-                started_at=self.now(),
-                brief="retry",
-            )
-        )
+        await self._start(self._last_message)
 
     async def compact(self) -> None:
         """``/compact``: have the agent summarize the session's history."""
@@ -872,29 +873,16 @@ class Repl:
                     printer.print(output, self.now())
         self._print_end(view)
 
-    async def cancel_subagent(self, number: str) -> None:
-        """``/subagent cancel <n>``: cancel one child; the others go on."""
-        child = self._subagent(number)
-        if child is None:
-            return
-        if child.ended:
-            self.renderer.warn(f"{child.agent_id} already ended ({child.status}).")
-            return
-        await asyncio.to_thread(
-            self.client.cancel_request, child.agent_id, child.request_id
-        )
-        self.renderer.warn(f"Cancelling {escape(child.agent_id)}.")
-
     # --- cancel ---------------------------------------------------------------
 
     def cancel_foreground(self) -> None:
-        """Ask the host to cancel the foreground request."""
+        """Ask the host to cancel the foreground message's event."""
         view = self.foreground
-        if view is None or view.ended:
+        if view is None or view.ended or view.event_id is None:
             return
         self.flash("cancelling…")
         self._spawn(
-            asyncio.to_thread(self.client.cancel_request, view.agent_id, view.request_id)
+            asyncio.to_thread(self.client.cancel_event, self.context.session_id, view.event_id)
         )
 
     # --- interactions --------------------------------------------------------
@@ -1021,7 +1009,14 @@ class Repl:
         self.renderer.section(escape(prompt))
 
         if interaction_type == "browser":
-            url = str(payload.get("url") or "")
+            # Each link is made when asked for, and lasts a few minutes.
+            link = await asyncio.to_thread(
+                self.client.handoff_link,
+                self.context.session_id,
+                str(interaction.view.event_id),
+                str(payload.get("interaction_id") or ""),
+            )
+            url = str(link.get("url") or "")
             self.renderer.link(f"  Open: {url}")
             with contextlib.suppress(Exception):
                 webbrowser.open(url)
@@ -1075,7 +1070,7 @@ class Repl:
             self.renderer.warn("  Cancelling the request.")
             try:
                 await asyncio.to_thread(
-                    self.client.cancel_request, view.agent_id, view.request_id
+                    self.client.cancel_event, self.context.session_id, str(view.event_id)
                 )
             except MashHostClientError as exc:
                 self.renderer.warn(f"  Could not cancel: {exc}")
@@ -1087,9 +1082,9 @@ class Repl:
         self.renderer.muted("  → " + escape(shown))
         try:
             await asyncio.to_thread(
-                lambda: self.client.post_interaction(
-                    view.agent_id,
-                    view.request_id,
+                lambda: self.client.answer_event(
+                    self.context.session_id,
+                    str(view.event_id),
                     interaction_id=str(interaction.payload.get("interaction_id") or ""),
                     response=response,
                 )
@@ -1146,7 +1141,7 @@ class Repl:
 
     def _banner(self) -> None:
         ctx = self.context
-        target = f"host {ctx.host_id}" if ctx.host_id else f"agent {ctx.agent_id}"
+        target = f"host {ctx.host_id}"
         title = f" · {escape(clip(self._title, 40))}" if self._title else ""
         self.renderer.muted(
             f"{self.app_name} · {ctx.app_id} · {target}{title} · /help for commands"
@@ -1270,7 +1265,9 @@ class Repl:
                         )
                         with contextlib.suppress(MashHostClientError):
                             await asyncio.to_thread(
-                                self.client.cancel_request, view.agent_id, view.request_id
+                                self.client.cancel_event,
+                                self.context.session_id,
+                                str(view.event_id),
                             )
                     await asyncio.sleep(0.02)
         finally:

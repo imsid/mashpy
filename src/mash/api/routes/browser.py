@@ -12,9 +12,11 @@ names neither.
   download into the caller's sandbox folder.
 - ``POST /browser/upload`` takes ``{request_id, target, element, path}`` and
   gives a file from that folder to the file chooser ``target`` opens.
-- ``POST /browser/handoff`` takes ``{request_id}`` and returns a live-view link
-  for the request's policy, ``{url, expires_at, timeout_seconds}``;
-  ``POST /browser/handoff/end`` revokes it and returns the page.
+- ``POST /browser/handoff`` takes ``{request_id}`` and brings the request's
+  tab to the front before its ``browser`` interaction opens;
+  ``POST /browser/handoff/end`` revokes the links minted for it since and
+  returns the page. Links are minted on the event
+  (``POST /sessions/{session_id}/events/{event_id}/interactions/{id}/handoff``).
 
 The live view is for users: ``/s/<view token>/browser/`` serves noVNC's client
 and bridges its websocket to the policy's browser. The view token names the
@@ -250,17 +252,11 @@ def build_browser_router() -> APIRouter:
         if isinstance(caller, JSONResponse):
             return caller
         browsers = caller.state.pool.get_browsers()
-        handoff = browsers.start_handoff(caller.policy_id, body["request_id"])
-        # Best effort: the view shows whatever tab is in front.
+        # Best effort: the view shows whatever tab is in front. The link is
+        # minted later, each time someone asks for one on the event.
         with contextlib.suppress(*_BROWSER_ERRORS):
             await browsers.front(caller.policy_id, body["request_id"])
-        return JSONResponse(
-            {
-                "url": view_url(caller.state.public_url, handoff.token),
-                "expires_at": handoff.expires_at,
-                "timeout_seconds": browsers.handoff_seconds,
-            }
-        )
+        return JSONResponse({})
 
     @router.post("/handoff/end")
     async def end_handoff(request: Request) -> Response:

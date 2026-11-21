@@ -130,7 +130,7 @@ class MashHostClientTests(unittest.TestCase):
     def test_non_stream_requests_keep_default_timeout(self) -> None:
         client, session = _client()
 
-        client.submit_request("primary", message="hello", session_id="s-1", app_id="app-1", policy_id="p-1")
+        client.get_event("s-1", "e-1")
 
         self.assertEqual(session.calls[-1]["timeout"], _timeout(DEFAULT_REQUEST_TIMEOUT))
 
@@ -295,17 +295,39 @@ class MashHostClientRouteTests(unittest.TestCase):
             str(session.calls[-1]["url"]),
         )
 
-    def test_submit_sends_the_message_session_app_and_policy(self) -> None:
-        client, session = self._client()
-        client.submit_request("primary", message="hi", session_id="s-1", app_id="app-1", policy_id="p-1")
+    def test_a_message_is_posted_as_an_event_in_its_session(self) -> None:
+        client, session = self._client({"data": {"event_id": "e-1", "request_id": "r"}})
+        accepted = client.post_event(
+            "s 1", event_id="e-1", host_id="assistant", app_id="app-1", policy_id="p-1", message="hi"
+        )
+        self.assertEqual(accepted["request_id"], "r")
+        [call] = session.calls
+        self.assertEqual(call["method"], "POST")
+        self.assertTrue(call["url"].endswith("/api/v1/sessions/s%201/events"))
         self.assertEqual(
-            session.calls[0]["json"], {"message": "hi", "session_id": "s-1", "app_id": "app-1", "policy_id": "p-1"}
+            call["json"],
+            {"event_id": "e-1", "host_id": "assistant", "app_id": "app-1",
+             "policy_id": "p-1", "message": "hi"},
         )
 
-        client, session = self._client({"data": {"request_id": "r", "agent_id": "primary"}})
-        client.submit_host_request("assistant", message="hi", session_id="s-1", app_id="app-1", policy_id="p-1")
-        self.assertIn("/api/v1/hosts/assistant/request", session.calls[0]["url"])
-        self.assertNotIn("mode", session.calls[0]["json"])
+    def test_answers_cancels_and_handoff_links_go_to_the_event(self) -> None:
+        client, session = self._client(
+            {"data": {"status": "running"}},
+            {"data": {"status": "cancelled"}},
+            {"data": {"url": "http://h/s/t/browser/", "expires_at": 1}},
+        )
+        client.answer_event("s-1", "e/1", interaction_id="i-1", response="done")
+        client.cancel_event("s-1", "e/1")
+        self.assertEqual(client.handoff_link("s-1", "e/1", "i-1")["expires_at"], 1)
+        answer, cancel, handoff = session.calls
+        self.assertTrue(answer["url"].endswith("/api/v1/sessions/s-1/events"))
+        self.assertEqual(
+            answer["json"], {"event_id": "e/1", "interaction_id": "i-1", "response": "done"}
+        )
+        self.assertTrue(cancel["url"].endswith("/api/v1/sessions/s-1/events/e%2F1/cancel"))
+        self.assertTrue(
+            handoff["url"].endswith("/api/v1/sessions/s-1/events/e%2F1/interactions/i-1/handoff")
+        )
 
     def test_policies_are_put_and_read_by_id(self) -> None:
         client, session = self._client(
@@ -318,13 +340,6 @@ class MashHostClientRouteTests(unittest.TestCase):
         self.assertEqual((put["method"], put["json"]), ("PUT", {"sandbox": False}))
         self.assertTrue(str(put["url"]).endswith("/api/v1/policies/acme%20ws"))
         self.assertEqual(get["method"], "GET")
-
-    def test_cancel_request_posts_to_the_cancel_route(self) -> None:
-        client, session = self._client({"data": {"status": "cancelled"}})
-        client.cancel_request("research", "r-2")
-        self.assertTrue(
-            session.calls[0]["url"].endswith("/api/v1/agent/research/request/r-2/cancel")
-        )
 
     def test_list_session_requests_passes_its_filters(self) -> None:
         client, session = self._client({"data": {"requests": [{"request_id": "r-1"}, "junk"]}})
@@ -426,16 +441,12 @@ class MashHostClientRouteTests(unittest.TestCase):
             str(session.calls[-1]["url"]),
         )
 
-    def test_rerun_and_compact_post_to_their_routes(self) -> None:
+    def test_compact_posts_to_its_route(self) -> None:
         client, session = self._client(
-            {"data": {"request_id": "r-2", "agent_id": "primary"}},
             {"data": {"summary_text": "so far", "trace_id": "t-1"}},
         )
-        self.assertEqual(client.rerun_request("primary", "r/1")["request_id"], "r-2")
         self.assertEqual(client.compact_session("primary", "s 1")["summary_text"], "so far")
-        rerun, compact = session.calls
-        self.assertEqual(rerun["method"], "POST")
-        self.assertIn("/api/v1/agent/primary/request/r%2F1/rerun", rerun["url"])
+        [compact] = session.calls
         self.assertEqual(compact["method"], "POST")
         self.assertIn("/api/v1/agent/primary/sessions/s%201/compact", compact["url"])
         self.assertEqual(compact["json"], {"reason": "manual"})

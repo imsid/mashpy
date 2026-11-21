@@ -6,10 +6,12 @@ the sandboxes' lifecycle (``mash.sandbox.containers``): a policy's browser start
 on first use and stops after ``idle_seconds`` without one.
 
 A handoff gives the user a live view of the policy's browser while a request waits
-for them to sign in. ``start_handoff`` mints a view token for the request
-(``tokens.py``) and remembers it; ``end_handoff`` forgets it, so the link stops
-working as soon as the user is done, or when it expires. A live view already
-connected closes then too (``wait_ended``).
+for them to sign in. The wait can be long, so a link is minted each time
+someone asks for one: ``mint_link`` makes a view token for the request
+(``tokens.py``), valid ``handoff_seconds``, and remembers it under the
+interaction; ``end_handoff`` forgets every token of the request, so its links
+stop working as soon as the interaction closes, or each when it expires. A
+live view already connected closes then too (``wait_ended``).
 """
 
 from __future__ import annotations
@@ -49,6 +51,8 @@ class Handoff:
     request_id: str
     token: str
     expires_at: int
+    # The browser interaction the link was minted for; "" for an operator's.
+    interaction_id: str = ""
     # Set when the handoff ends, to close the live views connected to it.
     ended: asyncio.Event = field(default_factory=asyncio.Event, compare=False, repr=False)
 
@@ -191,13 +195,19 @@ class BrowserManager(ContainerManager):
         """Stop the policy's browser and delete its volume."""
         await self.delete(policy_id)
 
-    def start_handoff(self, policy_id: str, request_id: str) -> Handoff:
+    def mint_link(self, policy_id: str, request_id: str, interaction_id: str) -> Handoff:
+        """A new live-view token for an open browser interaction of ``request_id``.
+
+        Each call mints another; the earlier ones keep working until they
+        expire or the handoff ends.
+        """
         expires_at = int(self._wall_clock()) + self.handoff_seconds
         handoff = Handoff(
             policy_id=policy_id,
             request_id=request_id,
             token=make_view_token(self._host_secret, policy_id, request_id, expires_at),
             expires_at=expires_at,
+            interaction_id=interaction_id,
         )
         self._handoffs[handoff.token] = handoff
         return handoff

@@ -75,7 +75,7 @@ def test_an_app_opens_its_repl_on_its_own_target_identity_and_look() -> None:
 
 def test_a_connection_saved_for_another_deployment_is_not_used() -> None:
     app = App(
-        name="fudge", default_agent="fudge", default_base_url="http://127.0.0.1:8001"
+        name="fudge", default_host="fudge", default_base_url="http://127.0.0.1:8001"
     )
     other = CLIConfig(
         api_base_url="http://127.0.0.1:8000",
@@ -99,15 +99,15 @@ def test_a_connection_saved_for_another_deployment_is_not_used() -> None:
     assert made.call_args.kwargs == {"api_key": "k"}
     target = shell.call_args.args[1]
     assert (target.agent_id, target.host_id, target.app_id, target.policy_id) == (
+        "companion",
         "fudge",
-        None,
         "app-1",
         "p-1",
     )
 
 
 def test_the_apps_environment_prefix_wins_over_mash(monkeypatch) -> None:
-    app = App(name="fudge", default_agent="fudge", env_prefix="FUDGE")
+    app = App(name="fudge", default_host="fudge", env_prefix="FUDGE")
     monkeypatch.setenv("MASH_API_BASE_URL", "http://mash:8000")
     monkeypatch.setenv("FUDGE_API_BASE_URL", "http://fudge:8001")
     monkeypatch.setenv("MASH_APP_ID", "app-mash")
@@ -133,11 +133,6 @@ def test_an_app_has_no_operator_commands_and_mash_does(capsys) -> None:
     assert cli_main.build_parser(app).prog == "fudge"
 
 
-def test_an_app_takes_one_default_target() -> None:
-    with pytest.raises(ValueError, match="not both"):
-        App(name="fudge", default_host="a", default_agent="b")
-
-
 def test_an_app_without_a_default_target_still_opens_the_repl() -> None:
     app = App(
         name="fudge",
@@ -145,17 +140,17 @@ def test_an_app_without_a_default_target_still_opens_the_repl() -> None:
         default_app="sam",
         default_policy="p-1",
     )
-    with patch.object(cli_main, "_resolve_target", return_value=("only-agent", None)):
+    with patch.object(cli_main, "_resolve_host", return_value="only-host"):
         code, shell, _ = _main(app, [])
     assert code == 0
-    assert shell.call_args.args[1].agent_id == "only-agent"
+    assert shell.call_args.args[1].host_id == "only-host"
 
 
 @pytest.mark.parametrize("override", ["flag", "env"])
 def test_a_url_override_does_not_reuse_another_deployments_credentials(
     override, monkeypatch
 ) -> None:
-    app = App(name="fudge", default_agent="fudge", default_app="sam", default_policy="p-1")
+    app = App(name="fudge", default_host="fudge", default_app="sam", default_policy="p-1")
     args = ["repl"]
     if override == "flag":
         args += ["--api-base-url", "http://new:8000"]
@@ -208,7 +203,7 @@ def test_explicit_flags_override_app_defaults_and_environment(monkeypatch) -> No
         app,
         [
             "repl",
-            "--agent",
+            "--host",
             "other",
             "--app-id",
             "flag-app",
@@ -222,8 +217,8 @@ def test_explicit_flags_override_app_defaults_and_environment(monkeypatch) -> No
     assert made.call_args.kwargs == {"api_key": "flag-key"}
     target = shell.call_args.args[1]
     assert (target.agent_id, target.host_id, target.app_id, target.policy_id) == (
+        "companion",
         "other",
-        None,
         "flag-app",
         "flag-policy",
     )
