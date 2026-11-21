@@ -345,18 +345,18 @@
   <h2>One integration point</h2>
   <p>All of Moma's communication with the Mash host goes through a single file: <code>lib/mash.js</code>. It implements two functions — <code>askAgent()</code> and <code>runWorkflow()</code> — each following the same submit-then-poll-SSE pattern.</p>
 
-  <p>The H2A protocol underneath both is plain HTTP and Server-Sent Events. Submit a request, get back a <code>request_id</code> or <code>run_id</code>, then stream events until <code>request.completed</code>. Any HTTP client in any language can consume a Mash host. The <code>mash connect</code> CLI speaks the same protocol — so during development, the same chat agent Moma calls in production is reachable directly from a terminal.</p>
+  <p>The H2A protocol underneath both is plain HTTP and Server-Sent Events. Post an event or start a run, get back a <code>request_id</code> or <code>run_id</code>, then stream events until <code>request.completed</code>. Any HTTP client in any language can consume a Mash host. The <code>mash connect</code> CLI speaks the same protocol, so during development the same chat agent Moma calls in production is reachable directly from a terminal.</p>
 
   <h3>Chat: agent request</h3>
-  <p><code>api/chat.js</code> calls <code>askAgent()</code>. It posts the user's latest message to the host with a session ID, and receives back a text response.</p>
+  <p><code>api/chat.js</code> calls <code>askAgent()</code>. It posts the user's latest message to the host as an event in the user's session, and receives back a text response.</p>
 
-  <pre><code><span class="cm">// 1. Submit</span>
-<span class="key">POST</span> /api/v1/agent/chat/request
-{ <span class="str">"message"</span>: <span class="str">"What is AI?"</span>, <span class="str">"session_id"</span>: <span class="str">"moma-chat-alice-2026-06-28"</span>, <span class="str">"user_id"</span>: <span class="str">"alice"</span> }
-→ 202  { data: { request_id: <span class="str">"r_abc"</span> } }
+  <pre><code><span class="cm">// 1. Post the message as an event</span>
+<span class="key">POST</span> /api/v1/sessions/moma-chat-alice-2026-06-28/events
+{ <span class="str">"event_id"</span>: <span class="str">"m-41"</span>, <span class="str">"host_id"</span>: <span class="str">"chat"</span>, <span class="str">"app_id"</span>: <span class="str">"moma"</span>, <span class="str">"policy_id"</span>: <span class="str">"moma"</span>, <span class="str">"message"</span>: <span class="str">"What is AI?"</span> }
+→ 202  { data: { request_id: <span class="str">"r_abc"</span>, status: <span class="str">"queued"</span> } }
 
 <span class="cm">// 2. Stream</span>
-<span class="key">GET</span>  /api/v1/agent/chat/request/r_abc/events
+<span class="key">GET</span>  /api/v1/sessions/moma-chat-alice-2026-06-28/events/m-41/stream
 → event: agent.trace
 → event: request.completed
   data: { response: { text: <span class="str">"Here's a simple explanation…"</span> } }
@@ -371,7 +371,7 @@
 
   <pre><code><span class="cm">// 1. Submit inputs</span>
 <span class="key">POST</span> /api/v1/workflow/deepdive/run
-{ <span class="str">"input"</span>: { <span class="str">"seed"</span>: <span class="str">"The Mughal Empire"</span>, <span class="str">"recentTitles"</span>: [...], <span class="str">"grounding"</span>: <span class="str">"…"</span> } }
+{ <span class="str">"app_id"</span>: <span class="str">"moma"</span>, <span class="str">"policy_id"</span>: <span class="str">"moma"</span>, <span class="str">"input"</span>: { <span class="str">"seed"</span>: <span class="str">"The Mughal Empire"</span>, <span class="str">"recentTitles"</span>: [...], <span class="str">"grounding"</span>: <span class="str">"…"</span> } }
 → 202  { data: { run_id: <span class="str">"run_xyz"</span> } }
 
 <span class="cm">// 2. Stream</span>
@@ -390,14 +390,15 @@
 
   <pre><code><span class="kw">class</span> <span class="fn">ChatAgent</span>(AgentSpec):
     <span class="kw">def</span> <span class="fn">get_agent_id</span>(self):       <span class="kw">return</span> <span class="str">"chat"</span>
-    <span class="kw">def</span> <span class="fn">build_llm</span>(self):          <span class="kw">return</span> AnthropicProvider(app_id=<span class="str">"chat"</span>, model=<span class="str">"claude-haiku-4-5-20251001"</span>)
-    <span class="kw">def</span> <span class="fn">build_agent_config</span>(self): <span class="kw">return</span> AgentConfig(app_id=<span class="str">"chat"</span>, system_prompt=SYSTEM_PROMPT, max_tokens=<span class="val">500</span>)
+    <span class="kw">def</span> <span class="fn">build_llm</span>(self):          <span class="kw">return</span> AnthropicProvider(agent_id=<span class="str">"chat"</span>, model=<span class="str">"claude-haiku-4-5-20251001"</span>)
+    <span class="kw">def</span> <span class="fn">build_agent_config</span>(self): <span class="kw">return</span> AgentConfig(agent_id=<span class="str">"chat"</span>, system_prompt=SYSTEM_PROMPT, max_tokens=<span class="val">500</span>)
     <span class="kw">def</span> <span class="fn">build_tools</span>(self):        <span class="kw">return</span> ToolRegistry()
     <span class="kw">def</span> <span class="fn">build_skills</span>(self):       <span class="kw">return</span> SkillRegistry()
 
 <span class="kw">def</span> <span class="fn">build_pool</span>():
     builder = <span class="fn">HostBuilder</span>()
     builder.agent(<span class="fn">ChatAgent</span>(), metadata=CHAT_METADATA)
+    builder.host(<span class="fn">Host</span>(host_id=<span class="str">"chat"</span>, agents=(<span class="str">"chat"</span>,)))
     builder.workflow(<span class="fn">WorkflowSpec</span>(
         workflow_id=<span class="str">"deepdive"</span>,
         tasks=[<span class="fn">TaskSpec</span>(task_id=<span class="str">"generate"</span>, agent_spec=<span class="fn">DeepDiveAgent</span>(),
@@ -484,7 +485,7 @@ on:
   <p>Session history, durability, streaming, and structured output come from the host. The new agent file contains only what's specific to that agent's behavior.</p>
 
   <div class="callout">
-    The <code>mash connect</code> CLI speaks the same H2A protocol as Moma's Node backend. During development, <code>mash connect --api-base-url http://127.0.0.1:8000</code> then <code>mash repl --agent chat</code> opens an interactive REPL against the local container — the same session management, streaming, and history that Moma's production users see.
+    The <code>mash connect</code> CLI speaks the same H2A protocol as Moma's Node backend. During development, <code>mash connect --api-base-url http://127.0.0.1:8000</code> then <code>mash repl --host chat</code> opens an interactive REPL against the local container, with the same session management, streaming, and history that Moma's production users see.
   </div>
 
 </div>

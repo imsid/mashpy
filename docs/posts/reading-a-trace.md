@@ -87,7 +87,7 @@ export OTEL_SERVICE_NAME=assistant
 
 The exporter runs in the host. It tails the event log and, when a request's `invoke_agent.end` is stored, projects the request and sends its spans and log records over OTLP, along with the two GenAI client metrics, `gen_ai.client.token.usage` and `gen_ai.client.operation.duration`. Its position lives in a one-row table, so a restart picks up where it stopped, and the first run starts at the end of the log, so turning the export on doesn't send the history. A `RunSubAgents` child goes out with its root, and a request a workflow step submitted goes out with the run, as a child of that step's span in a `mash.workflow <workflow_id>` trace.
 
-A caller that sends a W3C `traceparent` header on submit gets the request inside its own trace: the root `invoke_agent` span takes the caller's span as its parent.
+A caller that sends a W3C `traceparent` header when it posts an event gets the event's request inside its own trace: the root `invoke_agent` span takes the caller's span as its parent.
 
 Prompts, completions, tool arguments and results, and error messages stay out of the export unless `MASH_OTEL_CAPTURE_CONTENT=1` is set. An error's text can quote the input that caused it, so without the flag a failed span keeps its `error.type` and drops the message. With it, each model call adds a `gen_ai.client.inference.operation.details` record with its output messages, and tool spans carry `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result`.
 

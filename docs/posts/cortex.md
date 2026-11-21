@@ -1,6 +1,6 @@
 ---
 title: Cortex
-description: Per-user memory managed by the host. How a user's profile reaches every agent, how the cortex-build workflow builds it from conversations, and how apps edit it.
+description: Per-app memory managed by the host. How an app's profile reaches every agent, how the cortex-build workflow builds it from conversations, and how apps edit it.
 date: 2026-10-18
 author: imsid
 tags:
@@ -11,9 +11,9 @@ tags:
 
 # Cortex
 
-A user tells a concierge agent on Monday that they work at Acme and want distances in kilometres. On Thursday they ask a research agent in the same pool to plan a site visit. The research agent has never seen Monday's session, and its replayed history covers only the current one. Cortex is how it knows about Acme and kilometres anyway: one memory per user, kept by the host and read by every agent in the pool.
+A user tells a concierge agent on Monday that they work at Acme and want distances in kilometres. On Thursday they ask a research agent in the same pool to plan a site visit. The research agent has never seen Monday's session, and its replayed history covers only the current one. Cortex is how it knows about Acme and kilometres anyway: one memory per app, kept by the host and read by every agent in the pool.
 
-[Memory and compaction](memory-and-compaction.md) covers what one session carries forward. Cortex sits above sessions. It holds facts about a person, gathered across every agent they talked to, and it changes only when a build runs or when the application edits it.
+[Memory and compaction](memory-and-compaction.md) covers what one session carries forward. Cortex sits above sessions. It holds facts gathered across every agent and every session of an app, and it changes only when a build runs or when the application edits it.
 
 ## Turning it on
 
@@ -31,19 +31,20 @@ pool = (
 
 `enable_cortex()` does three things. It records `CortexSettings` on the pool, registers a built-in `cortex-agent`, and registers the `cortex-build` workflow. Every agent process imports the same `build_pool()`, so each one sees the setting when `mash agent serve` builds its runtime.
 
-## Who the user is
+## Which app
 
-Memory per user needs a user the runtime can trust. H2A 0.5.0 added `user_id` to requests, and 0.6.0 made it required on every one. The application sends it to the host with the message:
+Memory per app needs an app the runtime can trust. Every event names the application that posted it with an `app_id`:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/v1/hosts/assistant/request \
+curl -X POST http://127.0.0.1:8000/api/v1/sessions/s-7/events \
   -H "Content-Type: application/json" \
-  -d '{"message": "plan a site visit", "session_id": "s-7", "user_id": "u-42"}'
+  -d '{"event_id": "e-1", "host_id": "assistant", "app_id": "concierge-bot",
+       "policy_id": "acme", "message": "plan a site visit"}'
 ```
 
-The host is the trust boundary. The application authenticates to it with the API key and asserts the user, and the host passes `user_id` to the companion's process unchanged. It is stored on the request and on every turn the request saves, and it is never shown to the model.
+The host is the trust boundary. The application authenticates to it with the API key and asserts the app, and the host passes `app_id` to the companion's process unchanged. It is stored on the request and on every turn the request saves, and it is never shown to the model. An application that wants separate memory for each of its users posts each user's events under an app id of their own.
 
-The companion's calls to the host's agents are where an agent could try to act as someone else. The companion starts each child through the host's `/h2a` relay, and the relay looks up the parent request before forwarding anything:
+The companion's calls to the host's agents are where an agent could try to act for another app. The companion starts each child through the host's `/h2a` relay, and the relay looks up the parent request before forwarding anything:
 
 ```python
 # src/mash/api/routes/h2a.py
@@ -54,49 +55,50 @@ if identity.agent_id != caller:
     return h2a_error(
         403, "FORBIDDEN", f"parent request does not belong to agent '{caller}'"
     )
-if "user_id" in body and body.get("user_id") != identity.user_id:
-    return h2a_error(
-        403, "FORBIDDEN", "user_id must match the parent request's user"
-    )
+for key in ("app_id", "policy_id", "policy"):
+    if key in body and body.get(key) != getattr(identity, key):
+        return h2a_error(
+            403, "FORBIDDEN", f"{key} must match the parent request's"
+        )
 ```
 
-The forwarded request gets `identity.user_id`, read from `runtime_request`, which records each request's agent and user from its accepted event. The child works for the same user as the companion request that started it.
+The forwarded request gets `identity.app_id`, read from `runtime_request`, which records each request's agent, app and policy from its accepted event. The child works for the same app as the companion request that started it.
 
 ## What an agent sees
 
 When a request reaches an agent in a Cortex pool, the runtime does two things for that request only.
 
-The `context.load` step appends the user's profile to the system prompt:
+The `context.load` step appends the app's profile to the system prompt:
 
 ```python
 # src/mash/runtime/engine/steps.py: load_request_context
 cortex = runtime.get_cortex()
-if cortex is not None and user_id:
+if cortex is not None and app_id:
     # Read inside this checkpointed step, so a replay sees the profile the
     # request originally saw.
     system_prompt = append_context_block(
-        system_prompt, await cortex.profile_block(user_id)
+        system_prompt, await cortex.profile_block(app_id)
     )
 ```
 
-The block opens with `ABOUT THIS USER` and is capped at `profile_max_chars`, with a `[profile truncated]` marker past it. An empty profile adds nothing.
+The block opens with `APP MEMORY` and is capped at `profile_max_chars`, with a `[profile truncated]` marker past it. An empty profile adds nothing.
 
-The agent built for each turn also gets `search_cortex`, a read-only tool over the user's entries. The user comes from the request, never from the model's arguments:
+The agent built for each turn also gets `search_cortex`, a read-only tool over the app's entries. The app comes from the request, never from the model's arguments:
 
 ```python
 # src/mash/agents/cortex/tools.py: CortexReader.search_tool
-entries = await store.search_entries(user_id, query, limit=max(1, limit))
+entries = await store.search_entries(app_id, query, limit=max(1, limit))
 ```
 
-A `user_id` the model puts in the arguments is ignored, and the tool's output does not include the user id.
+An `app_id` the model puts in the arguments is ignored, and the tool's output does not include the app id.
 
-These reads run in the agent's process, which holds the database credentials. The agent's code runs in the user's sandbox, which has no database access. The only way an agent sees memory is the block and the tool, and both are cut to one user.
+These reads run in the agent's process, which holds the database credentials. The agent's code runs in the policy's sandbox, which has no database access. The only way an agent sees memory is the block and the tool, and both are cut to one app.
 
 ## The tables
 
-Cortex lives in two tables, from migrations `005_cortex.sql` and `006_cortex_last_build.sql`:
+Cortex lives in two tables, from migration `022_app_and_policy.sql`:
 
-- `cortex_user`: one row per user with the `profile`, `built_through` (the `created_at` of the newest turn the last build covered), a `version` that every write increases, and `last_build` (the last build's run id and result).
+- `cortex_app`: one row per app with the `profile`, `built_through` (the `created_at` of the newest turn the last build covered), a `version` that every write increases, and `last_build` (the last build's run id and result).
 - `cortex_entry`: the facts behind the profile. Each has a `topic`, `content`, `origin` (`build` or `app`), and `sources`, the agent, session and trace it came from.
 
 The profile is a summary for the prompt. Entries are the detail the tool searches.
@@ -108,7 +110,7 @@ Nothing writes Cortex when a request completes. A build runs only when something
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/workflow/cortex-build/run \
   -H "Content-Type: application/json" \
-  -d '{"user_id": "u-42", "input": {"limit": 200}}'
+  -d '{"app_id": "concierge-bot", "policy_id": "acme", "input": {"limit": 200}}'
 ```
 
 `cortex-build` is a three-step workflow on the same layer as [masher's](synthetic-evals.md):
@@ -116,14 +118,14 @@ curl -X POST http://127.0.0.1:8000/api/v1/workflow/cortex-build/run \
 ```mermaid
 flowchart LR
     T[("memory_turns\nruntime_event_log")] --> C["collect\n(code)"]
-    U[("cortex_user\ncortex_entry")] --> C
+    U[("cortex_app\ncortex_entry")] --> C
     C --> K{"new turns?"}
     K -- no --> W["write\n(code)"]
     K -- yes --> A["curate\ncortex-agent"] --> W
     W -->|"one transaction,\nversion check"| U
 ```
 
-**collect** loads the user's Cortex and their turns since `built_through`. `MemoryStore.list_user_turns` takes turns across every agent, oldest first, and leaves out workflow turns and child turns: the child's message is the companion's brief, and what the child did already shows in the companion's trace. For each turn, collect reads the tools it ran from the event log. Arguments come from each `execute_tool.start` event and results from its `execute_tool.end`. It clips messages to 4000 characters, arguments to 500 and results to 1000, keeps 20 tool calls per turn, and stops adding turns at 60000 characters. The rest wait for the next run. Results of `search_cortex` itself are dropped, so memory is never built from memory.
+**collect** loads the app's Cortex and its turns since `built_through`. `MemoryStore.list_app_turns` takes turns across every agent and session, oldest first, and leaves out workflow turns and child turns: the child's message is the companion's brief, and what the child did already shows in the companion's trace. For each turn, collect reads the tools it ran from the event log. Arguments come from each `execute_tool.start` event and results from its `execute_tool.end`. It clips messages to 4000 characters, arguments to 500 and results to 1000, keeps 20 tool calls per turn, and stops adding turns at 60000 characters. The rest wait for the next run. Results of `search_cortex` itself are dropped, so memory is never built from memory.
 
 **curate** sends the bundle to `cortex-agent`, a tool-less agent whose structured output is a new `profile`, a list of `upserts` and a list of `deletes`. With no new turns it passes the bundle through and the model never runs. Its prompt tells it to keep facts the user stated or confirmed, merge duplicates, delete build entries the new turns contradict, and cite each entry's sources.
 
@@ -137,35 +139,35 @@ if last_build.get("run_id") == run_id:
     return dict(last_build["result"])
 if int(row["version"]) != base_version:
     raise CortexConflictError(
-        f"cortex for user '{user_id}' changed since the build read it"
+        f"cortex for app '{app_id}' changed since the build read it"
     )
 ```
 
-The version check makes a build a compare-and-set. If the application edited the user's Cortex while the model was curating, the write raises `CortexConflictError`, the run fails, and a rerun starts from a fresh read. The `last_build` check covers the other side: a write retried after its transaction committed finds its own run id and returns the stored result.
+The version check makes a build a compare-and-set. If the application edited the app's Cortex while the model was curating, the write raises `CortexConflictError`, the run fails, and a rerun starts from a fresh read. The `last_build` check covers the other side: a write retried after its transaction committed finds its own run id and returns the stored result.
 
 The result reports `turns_covered`, `entries_written`, `entries_deleted` and `remaining`. A caller reruns until `remaining` is 0. Running it when a session ends is enough for most applications.
 
 ## What the application controls
 
-The application can read and change any user's Cortex under `/api/v1/cortex/users/{user_id}`:
+The application can read and change an app's Cortex under `/api/v1/cortex/apps/{app_id}`:
 
 | Route | Does |
 |---|---|
-| `GET /cortex/users/{user_id}` | Profile, watermark, version, entry count |
-| `GET /cortex/users/{user_id}/entries` | Entries newest first, with `q`, `origin`, `limit`, `after` |
-| `POST /cortex/users/{user_id}/entries` | Create an entry from `topic` and `content` |
-| `PATCH /cortex/users/{user_id}/entries/{entry_id}` | Change an entry's topic or content |
-| `DELETE /cortex/users/{user_id}/entries/{entry_id}` | Delete one entry |
-| `DELETE /cortex/users/{user_id}` | Delete the user's whole Cortex |
+| `GET /cortex/apps/{app_id}` | Profile, watermark, version, entry count |
+| `GET /cortex/apps/{app_id}/entries` | Entries newest first, with `q`, `origin`, `limit`, `after` |
+| `POST /cortex/apps/{app_id}/entries` | Create an entry from `topic` and `content` |
+| `PATCH /cortex/apps/{app_id}/entries/{entry_id}` | Change an entry's topic or content |
+| `DELETE /cortex/apps/{app_id}/entries/{entry_id}` | Delete one entry |
+| `DELETE /cortex/apps/{app_id}` | Delete the app's whole Cortex |
 
-An entry the application creates or edits gets `origin: app` and is pinned. Builds see pinned entries as fixed facts in the curator's input, and `apply_build` skips any upsert or delete that targets one. An application that knows the user's plan from its billing system writes it once, and no build will overwrite it.
+An entry the application creates or edits gets `origin: app` and is pinned. Builds see pinned entries as fixed facts in the curator's input, and `apply_build` skips any upsert or delete that targets one. An application that knows a customer's plan from its billing system writes it once, and no build will overwrite it.
 
 The profile has no route. Builds write it from the turns and the entries, pinned ones included, so the application shapes it by editing entries and running a build.
 
-Deletes are permanent for turns already built. The watermark is past them, so the next build does not learn a deleted fact again from the same conversation. Deleting the whole Cortex removes the row and its watermark, and the next build starts from the user's first turn.
+Deletes are permanent for turns already built. The watermark is past them, so the next build does not learn a deleted fact again from the same conversation. Deleting the whole Cortex removes the row and its watermark, and the next build starts from the app's first turn.
 
-## Conversation search follows the user
+## Conversation search follows the app
 
-The same `user_id` also scopes the older runtime tools. `search_conversations` offers scope `user`, the user's sessions with that agent, and `get_full_turn_message` returns only that user's turns. An agent in a Cortex pool reaches its own user's history and no one else's.
+The same `app_id` also scopes the older runtime tools. `search_conversations` offers scope `session`, the default, and scope `app`, every session of the app with that agent. `get_full_turn_message` returns only the agent's turns in that app. An agent reaches its own app's history and no other app's.
 
 For running a pool with Cortex in production, including the `CORTEX_AGENT_<PROVIDER>_MODEL` setting, see the [deploy guide](how-to-deploy.md).

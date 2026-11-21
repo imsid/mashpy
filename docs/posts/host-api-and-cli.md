@@ -28,32 +28,36 @@ Each group of endpoints projects one subsystem from earlier in the series.
 
 **Agents.** `GET /agent` lists every agent in the pool with their metadata. `GET /agent/{agent_id}` returns one agent's detail.
 
-**Requests.** The submit-then-stream pair from [the lifecycle post](request-lifecycle.md), plus the operational endpoints around it:
+**Policies.** `PUT /policies/{policy_id}` creates or replaces a policy: whether agents get the sandbox, which browser sites they may open, and how long an interaction may wait. `GET` reads it and `DELETE` removes it with its sandbox and browser. Every event names one.
+
+**Events.** Every input to a host is an event in a session, from [the lifecycle post](request-lifecycle.md):
 
 | Method | Path (under `/api/v1`) | Purpose |
 |---|---|---|
-| POST | `/agent/{agent_id}/request` | submit; returns `request_id`; accepts an optional `structured_output` schema |
-| GET | `/agent/{agent_id}/request/{request_id}/events` | SSE stream, a replay of persisted events |
-| GET | `/agent/{agent_id}/request/{request_id}/status` | the request's recorded status, for when the stream goes quiet |
-| POST | `/agent/{agent_id}/request/{request_id}/cancel` | stop a running request at the next step boundary |
-| POST | `/agent/{agent_id}/request/{request_id}/resume` | continue a cancelled request from its last checkpoint |
-| POST | `/agent/{agent_id}/request/{request_id}/rerun` | start a previous request over as a new request |
-| POST | `/agent/{agent_id}/request/{request_id}/interaction` | answer an approval or `AskUser` pause (`interaction_id` in the body) |
+| POST | `/sessions/{session_id}/events` | post a new event (`event_id`, `host_id`, `app_id`, `policy_id`, `message`, and optional `context`, `metadata` and `structured_output`); returns `request_id`. With `interaction_id` and `response`, it answers the event's open interaction instead |
+| GET | `/sessions/{session_id}/events/{event_id}/stream` | SSE stream of the event's request, a replay of persisted events; `?after=` resumes from a frame id |
+| GET | `/sessions/{session_id}/events/{event_id}` | the event's status, open interactions, and its response or error |
+| GET | `/sessions/{session_id}/events` | the session's ledger in arrival order |
+| GET | `/hosts/{host_id}/events` | the same across every session on the host |
+| POST | `/sessions/{session_id}/events/{event_id}/cancel` | cancel a queued event, or a running one's request and its children |
 
-**Hosts.** Host compositions are managed and used through their own group:
+Events in a session run one at a time, in arrival order, each as one request on the host's built-in companion, which routes it among the host's agents and workflows. Posting an `event_id` the session already has returns the existing row, so a retried POST runs once.
+
+**Requests.** Requests start only from a session's queue, and their routes read: `GET /agent/{agent_id}/request/{request_id}/events` streams any request, a companion's child included, `.../status` reports its recorded status, and `GET /agent/{agent_id}/sessions/{session_id}/requests` lists a session's requests.
+
+**Hosts.** Host compositions are managed through their own group:
 
 | Method | Path (under `/api/v1`) | Purpose |
 |---|---|---|
 | PUT | `/hosts/{host_id}` | define or replace a host composition (idempotent) |
 | GET | `/hosts` | list all defined hosts |
 | GET | `/hosts/{host_id}` | get one host with its agents and workflows |
-| POST | `/hosts/{host_id}/request` | submit a request through a composed host |
 
-`POST /hosts/{host_id}/request` is the submission path when routing through a host. The request runs on the built-in companion, which routes it among the host's agents and workflows; the response includes `agent_id` (`companion`) and `request_id`; events then stream from the existing `GET /agent/{agent_id}/request/{request_id}/events`. Requests snapshot the host composition at submit time, so redefining a host never affects in-flight requests.
+A request snapshots the host composition when its event starts, so redefining a host never affects running requests.
 
 **Sessions.** The [memory layer](memory-and-compaction.md), read over HTTP: `GET .../sessions` and `.../sessions/{session_id}` for listings, `.../history` for turns, `.../signals` for per-turn signal payloads with their definitions, and `POST .../compact` to trigger compaction manually. A reasoning endpoint (`GET .../session/{session_id}/trace/{trace_id}/reasoning`) returns the compact step-by-step trace for one turn.
 
-**Workflows.** `GET /workflow` lists definition summaries, `GET /workflow/{workflow_id}` returns a complete definition, `POST /workflow/{workflow_id}/run` starts a run with an optional `dedup_key` and `input`, `GET .../runs` pages through run summaries, `GET .../runs/{run_id}` returns one run with its result and step snapshots, and `GET .../runs/{run_id}/events` streams step lifecycle events over SSE.
+**Workflows.** `GET /workflow` lists definition summaries, `GET /workflow/{workflow_id}` returns a complete definition, `POST /workflow/{workflow_id}/run` starts a run under an `app_id` and a `policy_id`, with an optional `dedup_key` and `input`, `GET .../runs` pages through run summaries, `GET .../runs/{run_id}` returns one run with its result and step snapshots, and `GET .../runs/{run_id}/events` streams step lifecycle events over SSE.
 
 **Feedback.** Two routes for capturing user notes. `POST /feedback` records a free-form note with its session context, and `GET /feedback` lists notes for an agent, narrowed by a required `after` timestamp and an optional full-text `q` over the message. The runtime store keeps them in a `runtime_feedback` table beside the event log.
 
@@ -72,13 +76,13 @@ Each group of endpoints projects one subsystem from earlier in the series.
 
 ## One client underneath
 
-`MashHostClient` in `mash.cli` wraps the API one method per endpoint: `health()`, `submit_request(...)`, `stream_request(...)`, `post_interaction(...)`, `run_workflow(...)`, `stream_workflow_run(...)`, `get_trace_analysis(...)`, and so on. The streaming methods parse SSE internally and yield frames as dicts, so consumers iterate events without touching the wire format.
+`MashHostClient` in `mash.cli` wraps the API one method per endpoint: `health()`, `post_event(...)`, `event_events(...)`, `answer_event(...)`, `cancel_event(...)`, `run_workflow(...)`, `stream_workflow_run(...)`, `get_trace_analysis(...)`, and so on. The streaming methods parse SSE internally and yield frames as dicts, so consumers iterate events without touching the wire format.
 
 The `mash` CLI is built entirely on this client. Nothing in it has a private path into the runtime; `mash status` calls `GET /api/v1/health`, and every frame the REPL renders arrived on the same SSE stream your application would read. Driving the CLI against a host exercises exactly the protocol your integration will use.
 
 ## The mash command
 
-`mash connect` validates a connection against `GET /health` and persists it: base URL, API key and the user requests act for (`--user-id`), with targeting left to per-command `--agent`/`--host` flags. Later commands resolve their connection from flags first, then environment (`MASH_API_BASE_URL`, `MASH_API_KEY`), then that saved config. `mash compose --host <id> --agents a,b` (with optional `--workflows`) defines the composition on the deployment with an idempotent `PUT` and pins it as the target. With a connection in place, one-shot commands cover quick checks: `mash status`, `mash browse`, `mash agents`, `mash workflows`, `mash hosts`, `mash sessions`, and `mash history --session-id ...`.
+`mash connect` validates a connection against `GET /health` and persists it: base URL, API key, the app events act for (`--app-id`) and the policy they run under (`--policy-id`), with targeting left to the per-command `--host` flag. Later commands resolve their connection from flags first, then environment (`MASH_API_BASE_URL`, `MASH_API_KEY`), then that saved config. `mash compose --host <id> --agents a,b` (with optional `--workflows`) defines the composition on the deployment with an idempotent `PUT` and pins it as the target. `mash policy put|get|rm <id>` manages policies. With a connection in place, one-shot commands cover quick checks: `mash status`, `mash browse`, `mash agents`, `mash workflows`, `mash hosts`, `mash sessions`, and `mash history --session-id ...`. `mash run <message>` posts one event and prints its answer.
 
 `mash browse` shows the full pool in one view: agents, workflows, and defined hosts. `mash agents`, `mash workflows`, and `mash hosts` list each separately.
 
@@ -86,23 +90,24 @@ The `mash` CLI is built entirely on this client. Nothing in it has a private pat
 
 ## The REPL
 
-`mash repl` opens the interactive shell. Plain input becomes a submit-and-stream round trip; lines starting with `/` are commands that run locally:
+`mash repl` opens the interactive shell on one host. Plain input becomes an event in the REPL's session, posted and then streamed; lines starting with `/` are commands that run locally:
 
 | Command | What it does |
 |---|---|
-| `/status` | deployment and connection info |
-| `/agent` | list hosted agents (host members only when connected through a host) |
-| `/host` | list the host compositions defined on the deployment |
-| `/session`, `/sessions` | current session info, session list |
-| `/history [N]` | recent turns |
+| `/new`, `/resume` | start a new session, or pick an earlier one to go on in |
+| `/agents`, `/tools` | the host's agents, and their tools and skills |
+| `/subagent [n]` | the last request's children, or one child's steps |
+| `/retry` | send the last message again as a new event |
 | `/trace [N]` | trace analysis for recent traces |
 | `/feedback <message>` | record a note or bug report for the session |
 | `/workflow list|run|status` | workflow operations |
 | `/help`, `/clear`, `/exit` | shell basics |
 
+The input stays open while a request runs. A message sent then is posted at once and waits in the session's queue on the host; Up on an empty input takes the last queued one back and cancels its event. Ctrl-C cancels the running event.
+
 Two parts of the shell do more than print frames.
 
-Interactions render as prompts. When a `request.interaction.create` frame arrives, the shell prompts for an approval decision, a choice, or free-form input, and POSTs the answer back through the interaction endpoint, so the [human-in-the-loop flow](human-in-the-loop.md) works end to end at the terminal.
+Interactions render as prompts. When a `request.interaction.create` frame arrives, the shell prompts for an approval decision, a choice, or free-form input, and posts the answer back to the event, so the [human-in-the-loop flow](human-in-the-loop.md) works end to end at the terminal.
 
 Streaming renders as formatted markdown. The chain renderer buffers `chat.delta` chunks and flushes each completed markdown block as it finishes, so answers stream in with headings and highlighted code instead of raw text, and unterminated code fences stay buffered until they close. The shell then suppresses the end-of-turn re-render when tokens already streamed, so the response appears exactly once.
 

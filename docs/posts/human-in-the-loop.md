@@ -79,7 +79,7 @@ Every interaction, whether the runtime or the agent initiated it, is one of thre
 | `info` | `AskUser(question=...)` with no options | free-form string | `""` |
 | `choice` | `AskUser(question=..., options=[...])` | selected option(s) | `[]` |
 
-The timeout defaults are conservative: an unanswered approval is a denial, and `AskUser` waits up to an hour before giving up.
+The timeout defaults are conservative: an unanswered approval is a denial, and `AskUser` waits up to an hour before giving up. The request's policy caps both with its `wait_max_seconds`.
 
 ## The pause machinery
 
@@ -112,16 +112,16 @@ And because the stream is a replay of persisted events, a client that connects w
 
 ## Delivering the answer
 
-The response travels back through the same API surface the request came in on:
+The response travels back through the same endpoint the message came in on, naming the event that is waiting:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/v1/agent/pilot/request/7c9e…/interaction \
+curl -X POST http://127.0.0.1:8000/api/v1/sessions/s1/events \
   -H "Authorization: Bearer $MASH_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"interaction_id": "itr_a1b2c3d4e5f6", "response": "approve"}'
+  -d '{"event_id": "e-1", "interaction_id": "itr_a1b2c3d4e5f6", "response": "approve"}'
 ```
 
-The agent's process appends the answer as the `ack` event and wakes the waiting loop, which continues into the tool phase. An answer to an interaction that already has one, a timeout or a cancel gets `409 INTERACTION_CLOSED`. An answer the interaction's `schema` doesn't list gets `400 INVALID_RESPONSE`, and the interaction stays open.
+The host forwards the answer to the agent's process, which appends it as the `ack` event and wakes the waiting loop, which continues into the tool phase. An answer to an interaction that already has one, a timeout or a cancel gets `409 INTERACTION_CLOSED`. An answer the interaction's `schema` doesn't list gets `400 INVALID_INTERACTION_RESPONSE`, and the interaction stays open. A new message sent while the event waits is a new event, and it queues behind this one.
 
 ```mermaid
 sequenceDiagram
@@ -133,7 +133,7 @@ sequenceDiagram
     WF->>Log: request.interaction.create
     Log-->>User: SSE frame (prompt, options)
     Note over WF: waits until the deadline.<br/>A restart reads the log.
-    User->>API: POST .../interaction {interaction_id, response}
+    User->>API: POST .../events {event_id, interaction_id, response}
     API->>Log: request.interaction.ack
     API->>WF: wake
     Note over WF: loop continues

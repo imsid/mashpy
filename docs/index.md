@@ -17,16 +17,16 @@ Python or one run of a harnessed agent. Control flow stays in code.
 standardizes interactions between user applications and agents.
 
 Workflows run durably with a per-step audit trail. The agent harness includes
-web search, local and remote (MCP) tools, a per-user sandbox for the code
-agents write, a per-user browser for the sites they work on, skills, context and memory management, human-in-the-loop (HITL),
+web search, local and remote (MCP) tools, a per-policy sandbox for the code
+agents write, a per-policy browser for the sites they work on, skills, context and memory management, human-in-the-loop (HITL),
 synthetic evals, an API/CLI for access, and observability. It runs on both frontier and open source models.
 
 **Try it now with Pilot:**
 
 [Pilot](https://github.com/imsid/mashpy/tree/main/src/pilot) is a ready-made Mash host
 that ships in the mashpy repo. Its `pilot` agent answers questions about the Mash
-codebase from the source and searches the docs site and GitHub in the user's
-browser, and its `builder` agent builds Mash apps in the user's sandbox. It runs from a checkout with Docker Compose, which is a good way to get a
+codebase from the source and searches the docs site and GitHub in the policy's
+browser, and its `builder` agent builds Mash apps in the policy's sandbox. It runs from a checkout with Docker Compose, which is a good way to get a
 feel for the runtime before building your own.
 
 ```bash
@@ -36,9 +36,10 @@ git clone https://github.com/imsid/mashpy.git && cd mashpy
 # 2. Start Postgres and the host
 docker compose -f docker-compose.pilot.yml up -d --build
 
-# 3. Install the CLI, save who you are, and start asking
+# 3. Install the CLI, create a policy, save the connection, and start asking
 curl -fsSL https://raw.githubusercontent.com/imsid/mashpy/main/install.sh | sh
-mash connect --api-base-url http://127.0.0.1:8000 --user-id me
+echo '{}' | mash policy put me --file - --api-base-url http://127.0.0.1:8000
+mash connect --api-base-url http://127.0.0.1:8000 --app-id pilot --policy-id me
 pilot repl --host guide
 ```
 
@@ -250,15 +251,18 @@ image, `ghcr.io/imsid/mash-browser`, the first time one opens a page.
 mash host serve --host-app my_app.host:build_pool --host 127.0.0.1 --port 8000
 ```
 
-**Connect as a user and browse available agents.** Every request acts for a
-user, so the connection saves one:
+**Create a policy, connect, and browse available agents.** Every message is
+an event that names the app posting it and the policy it runs under, so the
+connection saves both:
 ```bash
-mash connect --api-base-url http://127.0.0.1:8000 --user-id u-1
+echo '{"sandbox": true}' | mash policy put dev --file - \
+  --api-base-url http://127.0.0.1:8000
+mash connect --api-base-url http://127.0.0.1:8000 --app-id my-app --policy-id dev
 mash browse
 ```
 
-**Compose an assistant host from agents and a workflow.** Every request to it
-goes to the built-in companion, which routes it:
+**Compose an assistant host from agents and a workflow.** Every event to it
+runs on the built-in companion, which routes it:
 ```bash
 mash compose --host assistant --agents support,research \
   --workflows research-brief
@@ -293,14 +297,14 @@ mash repl --host assistant
 - [**Workflows**](posts/workflows-as-step-pipelines.md): durable step pipelines mixing code steps and agent steps
 - [**Reading a trace**](posts/reading-a-trace.md): events to spans to latency answers
 - [**Synthetic evals**](posts/synthetic-evals.md): generated datasets and rubrics, experiments over the live host, read-time comparison
-- [**Cortex**](posts/cortex.md): per-user memory managed by the host, built on demand, edited by apps
+- [**Cortex**](posts/cortex.md): per-app memory managed by the host, built on demand, edited by apps
 
 ## Guides
 
 - [**Exploring Mash with Pilot**](posts/exploring-mash-with-pilot.md): ask the Pilot CLI questions about the Mash codebase
 - [**Building an agent CLI**](posts/building-agent-clis.md): custom CLI development with dynamic host composition
 - [**Building dynamic hosts over the API**](posts/building-dynamic-hosts-apis.md): compose agent teams at runtime over plain HTTP
-- [**Deploying a Mash Host**](posts/how-to-deploy.md): agent processes, per-user sandboxes and browsers, on a laptop or a server
+- [**Deploying a Mash Host**](posts/how-to-deploy.md): agent processes, per-policy sandboxes and browsers, on a laptop or a server
 - [**Release process**](posts/releasing.md): how versioning, changelogs, and releases work
 
 ## Learnings
