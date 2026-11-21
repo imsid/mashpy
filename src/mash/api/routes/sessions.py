@@ -100,7 +100,7 @@ def _limit(value: Optional[int]) -> int:
     return min(int(value), EVENTS_MAX_LIMIT)
 
 
-def _new_event(body: dict[str, Any], event_id: str) -> NewEvent:
+def _new_event(body: dict[str, Any], event_id: str, request: Request) -> NewEvent:
     for key in ("host_id", "message"):
         if not isinstance(body.get(key), str) or not body[key].strip():
             raise _invalid(f"{key} is required")
@@ -133,6 +133,8 @@ def _new_event(body: dict[str, Any], event_id: str) -> NewEvent:
         context=context,
         metadata=metadata,
         structured_output=structured_output,
+        traceparent=request.headers.get("traceparent"),
+        tracestate=request.headers.get("tracestate"),
     )
 
 
@@ -159,7 +161,7 @@ def build_sessions_router() -> APIRouter:
         existing = await service.store.get_event(resolved_session, event_id)
         if existing is not None:
             return JSONResponse(success(await service.describe(existing)), status_code=200)
-        new = _new_event(body, event_id)
+        new = _new_event(body, event_id, request)
         try:
             record, created = await service.post_event(resolved_session, new)
         except ValueError as exc:

@@ -793,6 +793,26 @@ def _accepted_payload(client, request_id: str) -> dict[str, Any]:
     return next(e.payload for e in events if e.event_type == "invoke_agent.start")
 
 
+def test_an_event_carries_its_posters_traceparent_to_the_request() -> None:
+    traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+    with tempfile.TemporaryDirectory() as tmp:
+        with _build_test_client(Path(tmp)) as client:
+            headers = {"traceparent": traceparent, "tracestate": "vendor=1"}
+            request_id = _send(client, "s-tp", "hello", headers=headers)
+            _collect_terminal_response(client, "companion", request_id)
+            payload = _accepted_payload(client, request_id)
+            assert payload["traceparent"] == traceparent
+            assert payload["tracestate"] == "vendor=1"
+
+            # An invalid header is dropped; the request starts its own trace.
+            invalid = {"traceparent": "not-a-traceparent", "tracestate": "vendor=1"}
+            invalid_id = _send(client, "s-tp2", "hello", headers=invalid)
+            _collect_terminal_response(client, "companion", invalid_id)
+            payload = _accepted_payload(client, invalid_id)
+            assert "traceparent" not in payload
+            assert "tracestate" not in payload
+
+
 def test_trace_analysis_returns_the_projection() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         with _build_test_client(Path(tmp)) as client:

@@ -72,10 +72,13 @@ class NewEvent:
     context: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
     structured_output: Optional[dict[str, Any]] = None
+    # The poster's W3C trace headers, so the request joins the caller's trace.
+    traceparent: Optional[str] = None
+    tracestate: Optional[str] = None
 
     def body(self) -> dict[str, Any]:
         stored: dict[str, Any] = {"app_id": self.app_id, "message": self.message}
-        for key in ("context", "metadata", "structured_output"):
+        for key in ("context", "metadata", "structured_output", "traceparent", "tracestate"):
             value = getattr(self, key)
             if value is not None:
                 stored[key] = value
@@ -539,6 +542,8 @@ class EventService:
             context=body.get("context"),
             metadata=body.get("metadata"),
             request_id=str(record.request_id),
+            traceparent=body.get("traceparent"),
+            tracestate=body.get("tracestate"),
         )
 
     async def _close(
