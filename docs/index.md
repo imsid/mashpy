@@ -1,6 +1,6 @@
 ---
 title: Mash
-description: Self-hosted, durable runtime for code-authored worklows with agents behind one API.
+description: Self-hosted, durable runtime for building agentic applications where users and agents work together.
 hide:
   - navigation
   - toc
@@ -8,18 +8,20 @@ hide:
 
 # Mash
 
-**A self-hosted, durable runtime for code-authored worklows with agents.**
+**A self-hosted, durable runtime for building agentic applications where users and agents work together.**
 
-A workflow is an ordered pipeline of typed steps; a step is deterministic
-Python or one run of a harnessed agent. Control flow stays in code.
-[Mash](posts/product-brief.md) is designed around the
-[Host-to-Agent Protocol (H2A)](rfcs/host-to-agent-protocol.md) that
-standardizes interactions between user applications and agents.
+You write your agents and workflows in Python, deploy them behind one API on
+your own Postgres, and connect them to the places your users already are: a
+Slack workspace, your product, a terminal. Your application sends Mash
+events, a session holds the context of one conversation, an app holds memory
+across its sessions, and a policy controls what agents can access. The
+[product brief](posts/product-brief.md) walks through a Slack team bot built
+this way.
 
-Workflows run durably with a per-step audit trail. The agent harness includes
-web search, local and remote (MCP) tools, a per-policy sandbox for the code
-agents write, a per-policy browser for the sites they work on, skills, context and memory management, human-in-the-loop (HITL),
-synthetic evals, an API/CLI for access, and observability. It runs on both frontier and open source models.
+Agents get a sandbox to run code in, a browser for the sites users sign in
+to, web search, local and remote (MCP) tools, skills, and pauses for
+approvals and questions. Mash also ships synthetic evals, an API and CLI,
+and OpenTelemetry traces, and runs on both frontier and open-source models.
 
 **Try it now with Pilot:**
 
