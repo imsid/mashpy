@@ -9,6 +9,20 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.40.1](https://github.com/imsid/mashpy/compare/mashpy-v0.40.0...mashpy-v0.40.1) (2026-11-22)
+
+
+### Bug Fixes
+
+* **runtime:** a stream waits for appends before its first read ([#291](https://github.com/imsid/mashpy/issues/291)) ([ab85d72](https://github.com/imsid/mashpy/commit/ab85d7292b591ea307a2e0708ff27403c7077e90))
+
+
+### Documentation
+
+* docs index and PyPI description match the agentic applications pitch ([#290](https://github.com/imsid/mashpy/issues/290)) ([6449726](https://github.com/imsid/mashpy/commit/64497262910ee87de3a44874c33f9057f609b2ee))
+* product brief and README pitch agentic applications ([#287](https://github.com/imsid/mashpy/issues/287)) ([77efd8f](https://github.com/imsid/mashpy/commit/77efd8f907d037ecccf1d51cc7950d652138ae79))
+* site description and brief link match the agentic applications pitch ([#289](https://github.com/imsid/mashpy/issues/289)) ([829547c](https://github.com/imsid/mashpy/commit/829547cd50eb355da5d518286c173010c3d47401))
+
 ## [0.40.0](https://github.com/imsid/mashpy/compare/mashpy-v0.39.2...mashpy-v0.40.0) (2026-11-21)
 
 
