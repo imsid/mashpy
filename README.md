@@ -5,128 +5,102 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/mashpy.svg)](https://pypi.org/project/mashpy/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-Mash is a self-hosted durable runtime for code-authored automations using workflows with agents. A workflow is an
-ordered pipeline of typed steps, a step is deterministic Python or one run of a
-harnessed agent, and control flow stays in code.
+Mash is a self-hosted, durable runtime for building agentic applications
+where users and agents work together. You write your agents and workflows in
+Python, deploy them behind one API on your own Postgres, and connect them to
+the places your users already are: a Slack workspace, your product, a
+terminal.
 
-Mash gives you a Python `AgentSpec` contract for defining agents, a
-`WorkflowSpec` for authoring step pipelines, a `HostBuilder` that composes both
-into a deployable pool, a FastAPI server for deployment, and a CLI/API for
-interacting with a running host.
+## How it works
 
-It's designed around [Host-to-Agent Protocol (H2A)](rfcs/host-to-agent-protocol.md) that 
-standardizes interactions between user applications and agents. 
+Your application sends Mash events, one for each thing a user says or does.
+A session holds the context of one conversation, so every agent in it knows
+what came before. An app holds memory across its sessions, so a new
+conversation starts with what earlier ones learned. A policy controls what
+agents can access, such as a sandbox to run code in and a browser to work on
+websites.
+
+Mash has no concept of a user. The application decides who takes part in a
+session, whether one person or a whole team, and everyone in it shares the
+same context.
+
+## Example: a team bot in Slack
+
+A team bot is a good fit. Each channel is an app, each thread is a session,
+and each message is an event.
+
+```
+Slack                                            Mash
+───────────────────────────────────────────────  ─────────────────────────────────
+#growth                                          app: growth
+│                                                (memory for the channel)
+│
+├─ Thread                                        session
+│  │                                             policy: growth
+│  │
+│  ├─ Alice: @bot pull last week's churn         event → agents
+│  ├─ bot:   Run this query on the replica?      approval from an agent
+│  │         [Approve] [Deny]
+│  ├─ Alice: Approve                             answer to the approval
+│  ├─ bot:   Churn was 2.1%, up from 1.8%        response
+│  ├─ Bob:   @bot break it down by plan          event in the same session,
+│  │                                             with Alice's context
+│  └─ bot:   Pro 1.2%, Team 3.4%                 response
+│
+└─ Thread                                        new session, same app
+   ├─ Carol: @bot what drove the Team churn?     event; knows what the
+   └─ bot:   ...                                 channel has looked at
+```
+
+Alice asks for churn numbers and the bot hands the question to the right
+agents. One of them checks with her before it touches the database, and she
+approves from the thread. Bob picks up where she left off without repeating
+anything. A week later Carol opens a new thread, and the bot already knows
+what the channel has been working on.
+
+The [product brief](docs/posts/product-brief.md) has the full pitch.
 
 ## What Mash Provides
 
-- **Workflows**: ordered pipelines of typed steps, durable and observable.
-  A step is deterministic Python or one agent run; each step's output threads
-  into the next step's input with schema checks at every edge. The pipeline is
-  code you can read, diff, test, and replay.
-- **Agent harness**: the agent loop runs inside a durable request engine with
-  tools, skills, memory, and structured output. Requests are recorded as
-  replayable runtime events; retries, restarts, and long-running work just
-  work.
-- **Sandboxes**: every request runs under a policy, a named resource many
-  sessions share, and each policy gets a sandbox, a container where the code
-  the model writes (Python, JavaScript, shell) runs as an unprivileged user.
-  It holds a folder per agent, whose files and SQLite databases persist across
-  requests, and only that policy's files: the agents' secrets and the database
-  stay with the host. Pages, files and servers the
-  code makes open at links the host serves.
-- **Browsers**: each policy also gets a browser, a Chromium in its own container
-  whose profile keeps the sites the user signed in to. An agent that lists
-  sites drives it with Playwright MCP's page tools, on those sites only. When a
-  site needs a sign-in, the agent hands the browser to the user through a
-  live-view link, and the profile keeps the session for later requests. Mash
-  never sees the password, and code in the sandbox has no route to the browser.
-- **Frontier and open-source models**: built-in adapters for Anthropic, OpenAI,
-  and Gemini, and any open-source model served over a Chat Completions endpoint,
-  self-hosted with vLLM or Ollama or hosted on OpenRouter. Each agent picks its
-  model in one line of `build_llm()`.
-- **Self-hosted interfaces**: HTTP API with streaming, CLI, and interactive REPL,
-  all on one Postgres. Deploy locally, in Docker, or on any cloud.
-- **Multi-agent composition**: put agents and workflows behind a host. The
-  built-in companion routes each message to the right agents or workflow,
-  continues an agent's earlier session on a follow-up, and writes the answer.
-- **Human-in-the-loop**: agents can pause for approval or ask users questions
-  mid-execution. Interactions survive host restarts.
-- **Observability**: span trees, trace analysis, telemetry API, built-in
-  dashboard, and CLI trace inspection. No external APM needed.
-- **Synthetic evals**: generate a test dataset and scoring rubric from a
-  host's declared capabilities, run experiments that snapshot the live host,
-  and compare quality and cost across runs before the first user message.
-  Datasets, rubrics, and experiment results live in the built-in dashboard.
-  Turn them on with `HostBuilder.enable_evals()`.
-
-```
-                               api · cli · REPL
-                                       ▲
-                                       │
-                                       ▼
-┌─ Host ──────────────────────────────────────────────────────────────────────┐
-│                                      │                                      │
-│            ┌─────────────────────────┼─────────────────────────┐            │
-│            ▼                         ▼                         ▼            │
-│      ┌───────────┐            ┌─────────────┐            ┌───────────┐      │
-│      │   agent   │            │  companion  │            │ workflow  │      │
-│      │           │            │  (events)   │            │           │      │
-│      └───────────┘            └─────────────┘            └───────────┘      │
-│            │                         ▲                         │            │
-│            │   approvals, questions  │ RunSubAgents: one or    │            │
-│            │   and answers go back   │ more subagents          │            │
-│            │           ┌─────────────┼─────────────┐           │            │
-│            │           ▼             ▼             ▼           │            │
-│            │      ┌─────────┐   ┌─────────┐   ┌─────────┐      │            │
-│            │      │  agent  │   │  agent  │   │  agent  │      │ agent step │
-│            │      └─────────┘   └─────────┘   └─────────┘      │            │
-│            │           │             │             │           │            │
-│            └───────────┴─────────────┼─────────────┴───────────┘            │
-│                                      │ every agent request                  │
-│                                      ▼                                      │
-│                 ┌─────────────────────────────────────────┐                 │
-│                 │          Durable Request                │                 │
-│                 │                                         │                 │
-│                 │   ┌─ context ─── memory ──┐             │                 │
-│                 │   │                       │             │                 │
-│                 │   │     Agent Loop        │ ─► response │                 │
-│                 │   │ think → act → observe │       ┊     │                 │
-│                 │   │                       │       ▼     │                 │
-│                 │   └─ tools ───── skills ──┘  structured │                 │
-│                 │      │                        output    │                 │
-│                 │      │ ▲ user interaction               │                 │
-│                 │      │ │ (approval / ask-user /         │                 │
-│                 │      │ ▼  browser sign-in)              │                 │
-│                 │      │                                  │                 │
-│                 │      │  resumable · replayable · traced │                 │
-│                 └──────┼──────────────────────────────────┘                 │
-└────────────────────────┼────────────────────────────────────────────────────┘
-            ┌────────────┴─────────────┬──────────────────────────┐
-            │ run_code                 │ browser                  │ MCP tools
-            ▼                          ▼                          ▼
-┌───────────────────────┐  ┌───────────────────────┐  ┌───────────────────────┐
-│ Sandbox: per policy   │  │ Browser: per policy   │  │ MCP servers: your own │
-│ workspaces/<agent_id> │  │ Chromium, own profile │  │ remote tools          │
-│ files persist         │  │ listed sites only     │  │ web search            │
-│ no secrets · no db    │  │ sign-in via live view │  │ listed at startup     │
-└───────────────────────┘  └───────────────────────┘  └───────────────────────┘
-```
-
-Every input to a host is an event in a session, such as a Slack thread.
-Events in a session run one at a time, in arrival order, and the user can
-keep sending while one runs; the rest wait in the session's queue. Each event
-runs as a request on the companion, which runs the host's agents as child
-requests, each in its own session, or starts a workflow, and then writes the
-answer. When one of those agents needs an approval or an answer, the
-companion relays it to the user. A workflow run skips the companion. Whichever
-way a request reaches an agent, it rides the same durable loop, and the code
-it runs lands in the sandbox of the policy it runs under. An agent that lists
-sites drives that policy's browser, and remote tools call the MCP servers the
-agent connects to.
+- **Events, sessions, apps and policies**: one endpoint for every input.
+  A retried or redelivered event runs once, a session's events run in order,
+  and the app follows each event's SSE stream or reads its state.
+- **Agent harness**: the agent loop runs inside a durable request with tools,
+  skills, memory and structured output. Requests are recorded as replayable
+  runtime events, so restarts and long-running work resume mid-loop.
+- **Companion routing**: every event to a host runs on the built-in
+  companion, which routes it to the host's agents, in parallel when the work
+  splits, or to a workflow, and writes the answer.
+- **Human-in-the-loop**: agents pause for approvals, questions and browser
+  sign-ins, and the pause survives a host restart. Interactions from the
+  companion's subagents come back on the event.
+- **Sandboxes**: each policy gets a container where the code the model writes
+  (Python, JavaScript, shell) runs, in a folder per agent whose files and
+  SQLite databases persist. Pages, files and servers the code makes open at
+  links the host serves. The agents' secrets and the database stay with the
+  host.
+- **Browsers**: each policy gets a Chromium whose profile keeps the sites the
+  user signed in to. An agent that lists sites drives it with Playwright MCP's
+  page tools, on those sites only. Sign-ins happen through a live-view link,
+  and Mash never sees the password.
+- **Cortex**: opt-in memory per app, built from the app's sessions by the
+  `cortex-build` workflow and shown to every request in the app.
+- **Workflows**: ordered pipelines of typed steps, a `CodeStep` of Python or an
+  `AgentStep` of one agent run, durable and resumable from the failed step.
+- **Frontier and open-source models**: adapters for Anthropic, OpenAI and
+  Gemini, and any open-source model served over a Chat Completions endpoint.
+  Each agent picks its model in `build_llm()`.
+- **API, CLI and REPL**: HTTP with SSE streaming, a `mash` CLI, and a REPL that
+  shows the companion's subagents live. `mash.cli.App` ships it as your own
+  client.
+- **Traces**: every request as OpenTelemetry spans, read by the admin UI and
+  `/trace`, and exported to any OTLP backend with `mashpy[otel]`.
+- **Synthetic evals**: a generated dataset and rubric for a host, experiments
+  that run it through the live host, and comparisons of quality and cost
+  across runs. Turn them on with `HostBuilder.enable_evals()`.
 
 See [Mash under the hood](docs/posts/mash-under-the-hood.md) for a deeper look
-at each capability, and the [product brief](docs/posts/product-brief.md) for
-the pitch.
+at each capability.
 
 ## Quick Start
 
@@ -195,11 +169,11 @@ class ResearchAgent(AgentSpec):
         )
 ```
 
-**Author the workflow:**
+**Author a workflow (optional):**
 
-The workflow is the automation: an ordered pipeline of typed steps that code
-owns end to end. Use a `CodeStep` for deterministic Python and an `AgentStep`
-when the work needs an agent.
+A workflow is an ordered pipeline of typed steps, for work that should run as
+code. Use a `CodeStep` for Python and an `AgentStep` when a step needs an
+agent. The companion can start it when a message calls for it.
 
 ```python
 ## my_app/workflows.py
@@ -351,31 +325,43 @@ mash compose --host assistant --agents support,research \
   --workflows research-brief
 ```
 
-**Talk to the host or execute `/` commands using Mash repl:**
+**Talk to the host or execute `/` commands using Mash repl.** Each message
+is an event in the REPL's session:
 ```bash
 mash repl --host assistant
+```
+
+**Post an event from your application.** The first event creates the session
+and binds it to the host and policy; follow the answer on the event's stream:
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/sessions/thread-1/events \
+  -H "Content-Type: application/json" \
+  -d '{"event_id": "msg-1", "host_id": "assistant", "app_id": "my-app",
+       "policy_id": "dev", "message": "what changed in billing last week?"}'
+
+curl -N http://127.0.0.1:8000/api/v1/sessions/thread-1/events/msg-1/stream
 ```
 
 ## Key Concepts
 
 | Concept | What it is |
 |---|---|
+| **Event and session** | Every input to a host is an event in a session; a session's events run one at a time, each as one request on the companion |
+| **App** | The application posting events, named by the `app_id` every event carries; it scopes Cortex and conversation search |
+| **Policy** | A named, durable resource many sessions share; it owns the sandbox and the browser profile and sets whether agents get the sandbox, which sites they may open, and how long an interaction may wait |
+| **Host** | A composition over the pool (agents + workflows), defined in code or dynamically over the API; the built-in companion runs every event posted to it |
 | **AgentSpec** | Abstract contract defining one agent (id, tools, skills, LLM, config) |
 | **HostBuilder** | Fluent builder that composes agents, workflows, and hosts into a Pool |
 | **Pool** | The deployed pool of agents the API server runs; each agent runs as a subprocess of the host |
-| **App** | The application posting events, named by the `app_id` every event carries; it scopes Cortex and conversation search |
-| **Policy** | A named, durable resource many sessions share; it owns the sandbox and the browser profile and sets whether agents get the sandbox, which sites they may open, and how long an interaction may wait |
-| **Session and event** | Every input to a host is an event in a session; a session's events run one at a time, each as one request on the companion |
 | **Sandbox** | A container per policy where agents' code runs, holding that policy's workspaces and nothing else |
 | **Browser** | A Chromium per policy, in its own container, whose profile keeps the sites the user signed in to; agents that list sites with `browser_sites()` drive it on those sites |
-| **Host** | A composition over the pool (agents + workflows), defined in code or dynamically over the API; the built-in companion runs every event posted to it |
+| **Cortex** | Opt-in per-app memory kept by the host and shared by every agent; each request reads its app's, the `cortex-build` workflow builds it on demand, and apps edit it over the API |
+| **WorkflowSpec** | Ordered pipeline of typed steps (`CodeStep` / `AgentStep`); runs are durable and observable |
 | **ToolRegistry** | Register callable tools; built-ins include AskUser and the companion's RunSubAgents and RunWorkflow, and the host adds `run_code` and `edit_file` when it has sandboxes, `sandbox_put` and `sandbox_get` for specs that declare file roots, and the browser tools for specs that list sites |
 | **SkillRegistry** | Markdown instruction bundles loaded on demand via a meta-tool |
 | **LLMProvider** | Adapters for Anthropic, OpenAI, and Gemini |
 | **OSSCompatibleProvider** | Runs open-source models (Gemma, Qwen, DeepSeek) over any Chat Completions endpoint, self-hosted (vLLM, Ollama) or hosted (OpenRouter); chosen in `build_llm()` like any provider |
-| **WorkflowSpec** | Ordered pipeline of typed steps (`CodeStep` / `AgentStep`); runs are durable and observable |
 | **Eval / Experiment** | A generated dataset and rubric bound to a host; an experiment runs the dataset against the host, snapshots its composition, and scores results with an LLM judge |
-| **Cortex** | Opt-in per-app memory kept by the host and shared by every agent; each request reads its app's, the `cortex-build` workflow builds it on demand, and apps edit it over the API |
 
 ## Mushy / Thoughts
 
@@ -426,7 +412,7 @@ default host, deployment URL, app and policy, then expose `app.main` as a
 console entrypoint. It includes the live REPL and one-shot commands. See the
 [CLI README](src/mash/cli/README.md#ship-your-own-client) for the app kit.
 
-- [Product brief](docs/posts/product-brief.md) — the pitch: why the application-to-agent seam needs a standard
+- [Product brief](docs/posts/product-brief.md): what Mash offers, with a Slack team bot as the example
 - [Mash under the hood](docs/posts/mash-under-the-hood.md) — what Mash offers and where it fits
 - [Synthetic evals](docs/posts/synthetic-evals.md) — datasets, rubrics, experiments, and scoring for the cold-start problem
 - [Deployment guide](docs/posts/how-to-deploy.md): agent processes, sandboxes, browsers, Docker, the host on a server
