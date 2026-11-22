@@ -1,7 +1,7 @@
 ---
 title: Mash Product Brief
-description: Mash is a self-hosted, durable runtime for code-authored worklows with agents behind one API.
-date: 2026-07-25
+description: Mash is a self-hosted, durable runtime for building agentic applications where users and agents work together.
+date: 2026-11-21
 author: imsid
 tags:
   - product
@@ -10,281 +10,104 @@ tags:
 
 # Mash Product Brief
 
-Mash is a self-hosted, durable runtime for code-authored automations. An
-automation is a workflow: an ordered pipeline of typed steps, where a step is
-deterministic Python or one run of a harnessed agent. Control flow stays in
-code. Agents and workflows deploy together behind one API, on your own
-Postgres.
+Mash is a self-hosted, durable runtime for building agentic applications
+where users and agents work together. You write your agents and workflows in
+Python, deploy them behind one API on your own Postgres, and connect them to
+the places your users already are: a Slack workspace, your product, a
+terminal.
 
-You author two things. A workflow is the pipeline itself, the shape of the
-automation as code. An agent is an LLM loop running inside a harness that gives
-it tools, skills, memory, a sandbox for the code it writes, a browser for the
-sites it works on, and a durable request lifecycle. An agent answers the messages an application posts to a host, runs as a
-step inside a workflow, or both. Either way, it works under a policy the
-application names.
+## How it works
 
-## Workflows
+Your application sends Mash events, one for each thing a user says or does.
+A session holds the context of one conversation, so every agent in it knows
+what came before. An app holds memory across its sessions, so a new
+conversation starts with what earlier ones learned. A policy controls what
+agents can access, such as a sandbox to run code in and a browser to work on
+websites.
 
-A workflow is an ordered pipeline of typed steps. Each step declares a pydantic
-input and output, each step's output threads into the next step's input, and
-the last step's output is the run result. A `CodeStep` is a deterministic
-Python function. An `AgentStep` is one run of an agent's loop with a schema on
-both edges: typed input in, structured output out, validated against the
-step's declared schema.
+Mash has no concept of a user. The application decides who takes part in a
+session, whether one person or a whole team, and everyone in it shares the
+same context.
 
-The pipeline is code you can read, diff, test, and replay. Dynamic work such as
-fan-out over rows or branching happens inside a step body; the model reasons
-inside its step and never owns the pipeline. Runs are durable. Each step body
-executes as a memoized durable step, a failed run resumes from the failed step
-under the same run id, and a per-step audit trail in Postgres records every
-step's status, inputs, outputs, and attempts.
+## Example: a team bot in Slack
 
-## The agent harness
-
-Each agent is an `AgentSpec`: a Python contract that names the agent, picks its
-LLM, and declares its system prompt, tools, and skills. The loop runs inside a
-durable request: think, act, observe, with tools executing in the agent's
-process, the code the model writes running in the policy's sandbox, skills loaded
-on demand, memory management, and structured output. Every
-request is recorded as replayable runtime events, so retries, restarts, and
-long-running work recover mid-loop instead of starting over. An agent can pause
-mid-request for a human approval or a question, and the pause survives a host
-restart.
-
-The [Host-to-Agent Protocol (H2A)](../rfcs/host-to-agent-protocol.md) is the
-contract underneath: it standardizes how a request is submitted, how its
-lifecycle streams back, how an agent pauses for a human, and how a request
-recovers from failure. Every agent behind a Mash deployment speaks it, so the
-application integrates once.
+A team bot is a good fit. Each channel is an app, each thread is a session,
+and each message is an event.
 
 ```
-                               api · cli · REPL
-                                       ▲
-                                       │
-                                       ▼
-┌─ Host ──────────────────────────────────────────────────────────────────────┐
-│                                      │                                      │
-│            ┌─────────────────────────┼─────────────────────────┐            │
-│            ▼                         ▼                         ▼            │
-│      ┌───────────┐            ┌─────────────┐            ┌───────────┐      │
-│      │   agent   │            │  companion  │            │ workflow  │      │
-│      │           │            │  (events)   │            │           │      │
-│      └───────────┘            └─────────────┘            └───────────┘      │
-│            │                         ▲                         │            │
-│            │   approvals, questions  │ RunSubAgents: one or    │            │
-│            │   and answers go back   │ more subagents          │            │
-│            │           ┌─────────────┼─────────────┐           │            │
-│            │           ▼             ▼             ▼           │            │
-│            │      ┌─────────┐   ┌─────────┐   ┌─────────┐      │            │
-│            │      │  agent  │   │  agent  │   │  agent  │      │ agent step │
-│            │      └─────────┘   └─────────┘   └─────────┘      │            │
-│            │           │             │             │           │            │
-│            └───────────┴─────────────┼─────────────┴───────────┘            │
-│                                      │ every agent request                  │
-│                                      ▼                                      │
-│                 ┌─────────────────────────────────────────┐                 │
-│                 │          Durable Request                │                 │
-│                 │                                         │                 │
-│                 │   ┌─ context ─── memory ──┐             │                 │
-│                 │   │                       │             │                 │
-│                 │   │     Agent Loop        │ ─► response │                 │
-│                 │   │ think → act → observe │       ┊     │                 │
-│                 │   │                       │       ▼     │                 │
-│                 │   └─ tools ───── skills ──┘  structured │                 │
-│                 │      │                        output    │                 │
-│                 │      │ ▲ user interaction               │                 │
-│                 │      │ │ (approval / ask-user /         │                 │
-│                 │      │ ▼  browser sign-in)              │                 │
-│                 │      │                                  │                 │
-│                 │      │  resumable · replayable · traced │                 │
-│                 └──────┼──────────────────────────────────┘                 │
-└────────────────────────┼────────────────────────────────────────────────────┘
-            ┌────────────┴─────────────┬──────────────────────────┐
-            │ run_code                 │ browser                  │ MCP tools
-            ▼                          ▼                          ▼
-┌───────────────────────┐  ┌───────────────────────┐  ┌───────────────────────┐
-│ Sandbox: per policy   │  │ Browser: per policy   │  │ MCP servers: your own │
-│ workspaces/<agent_id> │  │ Chromium, own profile │  │ remote tools          │
-│ files persist         │  │ listed sites only     │  │ web search            │
-│ no secrets · no db    │  │ sign-in via live view │  │ listed at startup     │
-└───────────────────────┘  └───────────────────────┘  └───────────────────────┘
+Slack                                            Mash
+───────────────────────────────────────────────  ─────────────────────────────────
+#growth                                          app: growth
+│                                                (memory for the channel)
+│
+├─ Thread                                        session
+│  │                                             policy: growth
+│  │
+│  ├─ Alice: @bot pull last week's churn         event → agents
+│  ├─ bot:   Run this query on the replica?      approval from an agent
+│  │         [Approve] [Deny]
+│  ├─ Alice: Approve                             answer to the approval
+│  ├─ bot:   Churn was 2.1%, up from 1.8%        response
+│  ├─ Bob:   @bot break it down by plan          event in the same session,
+│  │                                             with Alice's context
+│  └─ bot:   Pro 1.2%, Team 3.4%                 response
+│
+└─ Thread                                        new session, same app
+   ├─ Carol: @bot what drove the Team churn?     event; knows what the
+   └─ bot:   ...                                 channel has looked at
 ```
 
-Every input to a host is an event in a session, such as a Slack thread.
-Events in a session run one at a time, in arrival order, and the user can
-keep sending while one runs; the rest wait in the session's queue. Each event
-runs as a request on the companion, which runs the host's agents as child
-requests, each in its own session, or starts a workflow, and then writes the
-answer. When one of those agents needs an approval or an answer, the
-companion relays it to the user. A workflow run skips the companion. Whichever
-way a request reaches an agent, it rides the same durable loop, and the code
-it runs lands in the sandbox of the policy it runs under. An agent that lists
-sites drives that policy's browser, and remote tools call the MCP servers the
-agent connects to.
+Alice asks for churn numbers and the bot hands the question to the right
+agents. One of them checks with her before it touches the database, and she
+approves from the thread. Bob picks up where she left off without repeating
+anything. A week later Carol opens a new thread, and the bot already knows
+what the channel has been working on.
 
-## Sandboxes
+## What agents can do
 
-With a computer of its own, an agent can analyse a file, build a chart or a
-page, keep a SQLite database, run the tests of the code it produced, and keep
-the results for a later request. Mash runs that code in a sandbox, a container
-for the policy the request runs under.
+Agents in Mash work for people, and they check in with them. An agent can ask
+for approval before it acts, ask a question when it needs an answer, and hand
+a browser to the user to sign in to a site. The request waits for the person,
+through restarts, for as long as the policy allows.
 
-Every event names a policy with a `policy_id`, which the application sends and
-the host trusts. A policy is a named resource that many sessions share: it
-owns the sandbox and the browser profile, and it sets whether agents get the
-sandbox, which browser sites they may open, and how long an interaction may
-wait. The host starts a policy's sandbox on its first command and stops it
-after 15 idle minutes. With Docker on the host, every agent gets `run_code`,
-which runs Python, JavaScript or shell in the policy's sandbox, in a folder of its own (`/home/agent/workspaces/<agent_id>`). An
-agent whose spec names folders on its machine also gets `sandbox_put` and
-`sandbox_get` to copy files in and out of those folders. Its files persist
-across requests and restarts, and the user opens the pages and files it makes
-at links the host serves. Each agent's code runs as an unprivileged uid of
-its own with a clean environment. A sandbox holds only that policy's files: the agents' secrets
-and the database stay with the host.
+Each policy gives agents a computer to work on. In the sandbox, agents write
+and run code: they analyse a file, build a chart or a page, keep a database,
+and hand the user a link to what they made. In the browser, they work on the
+sites the user has signed in to, such as downloading a bill or checking an
+order. Mash never sees the password, and the sandbox holds no secrets.
 
-Each agent runs as a process of the host, with its credentials, its model
-connection, and the tools you registered. Those tools run in that process,
-and the code the model writes goes to the sandbox.
+A host puts several agents and workflows behind one conversation. A built-in
+companion reads each message, sends the work to the agents that fit it,
+running them side by side when the parts are independent, and writes one
+answer. Workflows cover the work that should run the same way every time, as
+typed steps in code with agents where they are needed.
 
-## Browsers
+## Running Mash
 
-Some work only happens in a website: downloading a bill from a utility's
-portal, checking an order's status, filling in a form. Mash gives each policy
-a browser for it, a Chromium in a container of its own next to the policy's
-sandbox. Its profile keeps the sites the user signed in to, and every agent
-and session under that policy shares it.
+Mash runs on your infrastructure: one host process, your Postgres, and Docker
+for the sandboxes and browsers. Every request is durable, so a restart picks
+up mid-conversation. Each agent picks its own model, from Anthropic, OpenAI
+and Gemini to open-source models like Gemma, Qwen and DeepSeek on your own
+hardware.
 
-An agent gets the browser tools when its spec lists sites with
-`browser_sites()`, such as `https://*.example.com`, and the policy can narrow
-that list. The tools are Playwright
-MCP's page tools: the model reads the page as an accessibility tree, clicks,
-types, and takes screenshots it can see. A URL outside the listed sites fails,
-and a click that leaves them goes back without showing the page. Downloads
-can be copied into the sandbox, where the agent's code reads them.
-
-When a site needs a sign-in, the agent calls `browser_handoff`. The request
-pauses on a durable interaction, and when the user is ready the app asks the
-host for a live-view link to the browser. The user opens it, signs in, and
-answers `done`; the REPL opens the link and waits for Enter, and an app shows
-it and posts the answer. Mash never
-sees the password, and the profile keeps the session for later requests. Code
-in the sandbox has no route to the browser, so the signed-in sessions
-stay out of reach of the code the model writes.
-
-## The pool and hosts
-
-The pool is the unit of deploy. `HostBuilder` composes agents and workflows
-into a `Pool`, and the API server runs it. Every pool also has the built-in
-`companion` agent. A pool with only workflows is a valid deploy that serves
-workflow runs alone.
-
-A host is a composition over the pool: a `host_id` and a set of agents and
-workflows. Every event to a host runs on the companion, which routes each
-message to the host's agents or workflows, continues an agent's earlier
-session on a follow-up, and writes the answer. Hosts are
-defined in code at build time or dynamically over the API, so the same pool
-serves different compositions without a redeploy.
-
-```mermaid
-flowchart TD
-    U["User application<br/>(web · api · cli · app)"] --> API["Mash API server"]
-    API --> HO["Host 'assistant'<br/>companion routes to agents"]
-    API --> WF["Workflow runs"]
-    HO --> P["Pool"]
-    WF --> P
-    P --> A1["Agent: support"]
-    P --> A2["Agent: research"]
-    P --> W1["Workflow: research-brief"]
-    A1 -- "run_code" --> S["Sandboxes<br/>one per policy"]
-    A2 -- "run_code" --> S
-    A1 -- "browser_*" --> B["Browsers<br/>one per policy"]
-```
-
-## The execution surface
-
-The runtime exposes a structured HTTP API with SSE streaming, a CLI, and an
-interactive REPL. The application tier is language-agnostic: a React frontend,
-a Go service, a mobile app, a cron job, or a terminal drives a deployment over
-plain HTTP. The agent is written once, in Python, behind the API; nothing that
-consumes it needs to share its stack.
-
-## One harness across frontier and open-source models
-
-Open-source models like Gemma, Qwen, and DeepSeek now sit near the top of
-public benchmarks for reasoning, coding, and tool use, within range of the
-frontier models on many tasks. Running them is cheap: a hosted gateway charges
-a fraction of frontier API pricing, and self-hosting on your own hardware
-removes per-token cost entirely.
-
-Mash runs these models on the same durable harness as the frontier providers.
-An agent that uses Anthropic, OpenAI, or Gemini moves to an open-source model
-served by vLLM, Ollama, or OpenRouter by swapping one provider line. The tool
-loop, human-in-the-loop pauses, workflows, observability, and durability stay
-the same across every model.
-
-Because each agent picks its own model, one deployment can mix them. A
-high-volume triage or extraction agent runs on a local open-source model while
-the agent that handles the hard reasoning runs on a frontier model, in the same
-deployment, behind the same API. You match the model to the task and the budget,
-and the harness underneath is identical.
-
-## Traces
-
-The runtime events a request writes are named after OpenTelemetry spans, so
-every request already reads as a trace in the GenAI conventions: an
-`invoke_agent` span for the run, a `chat` span for each model call with its
-token usage, an `execute_tool` span for each tool call, and the companion's
-child requests nested under the call that started them. The admin UI, the REPL's `/trace`
-and the trace analysis API all read that projection of the event log, with no
-second store to keep in sync.
-
-The same spans go to Grafana, Datadog, Honeycomb or any OTLP backend when you
-install `mashpy[otel]` and set `OTEL_EXPORTER_OTLP_ENDPOINT` on the host. A
-request is exported when it ends, with its log records and the GenAI client
-metrics, and a workflow run goes out as one trace with each agent step's
-request under its step. A W3C `traceparent` on an event puts its request inside
-your own service's trace. Prompts, completions and tool I/O stay out of the
-export unless you turn content capture on.
-
-## Evals
-
-The host is also the unit of evaluation. An event lands on the
-composition: the companion, the routing choices it makes, and the agents and
-tools behind them. Mash evals run against the host rather than any single
-agent, so what gets measured is the path the application actually takes and
-the response the user actually receives.
-
-Synthetic evals ship in the SDK and runtime, turned on per pool with
-`HostBuilder.enable_evals()`. A built-in workflow reads the
-host's declared capabilities and the developer's guidance, then generates a
-dataset of test scenarios and a weighted scoring rubric before the first user
-ever sends a message. Each scoring run is an experiment: it snapshots the live
-composition and agent specs, runs every dataset row through the host, and
-records the results.
-
-Every experiment measures two kinds of signal. Deterministic quantitative
-metrics come from each row's runtime events: latency, tokens, steps, tool
-calls, per-agent breakdowns. Qualitative criteria are non-deterministic and
-scored by the built-in eval agent against the rubric: task completion,
-agent routing, response quality, each with a rationale. Comparing two
-experiments answers three questions in one view: what changed in the agent
-specs, how quality moved per criterion and per row, and what the change costs
-in tokens and latency. See [Synthetic evals](synthetic-evals.md) for the full
-design.
+You work with it over an HTTP API from any stack, or from the `mash` CLI and
+REPL, which you can ship as your own branded client. Every request is traced
+with OpenTelemetry and can go to Grafana, Datadog or any OTLP backend. Before
+launch, synthetic evals generate test scenarios from your host's agents and
+score how well it handles them, so you can compare changes on quality and
+cost.
 
 ## Where to go next
 
-- [**Code as the Source of Truth**](code-as-the-source-of-truth.md): one
-  automation taken from a pure-code pipeline to an agent step to a deployment
-- [**Getting started**](../index.md): install, define agents and workflows,
-  and run your first host
-- [**Mash Under the Hood**](mash-under-the-hood.md): what Mash provides, one
-  host over many agents, the durable harness, observability, and the
-  self-hosted interfaces
-- [**Synthetic Evals**](synthetic-evals.md): generated datasets and rubrics,
-  experiments over the live host, read-time comparison
-- [**H2A Protocol RFC**](../rfcs/host-to-agent-protocol.md): the full
-  protocol specification
-- [**Building an agent CLI**](building-agent-clis.md): custom CLI development
-  with dynamic host composition
+- [**Getting started**](../index.md): install, define agents and a host, and
+  send your first event
+- [**Mash Under the Hood**](mash-under-the-hood.md): each capability in
+  more depth
+- [**Code as the Source of Truth**](code-as-the-source-of-truth.md): taking
+  a workflow from pure code to an agent step to a deployment
+- [**Synthetic Evals**](synthetic-evals.md): datasets, rubrics and
+  experiments over the live host
+- [**Building an agent CLI**](building-agent-clis.md): ship your own client
+  on the REPL
+- [**Deployment guide**](how-to-deploy.md): the host, agent processes,
+  sandboxes and browsers on a server
