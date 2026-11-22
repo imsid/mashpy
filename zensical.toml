@@ -2,7 +2,7 @@
 # Docs: https://zensical.org/docs/setup/basics/
 [project]
 site_name = "Mash"
-site_description = "Mash is a self-hosted, durable runtime for code-authored automations: agents and workflows behind one API, on your own Postgres."
+site_description = "Mash is a self-hosted, durable runtime for building agentic applications where users and agents work together."
 site_author = "imsid"
 site_url = "https://imsid.github.io/mashpy/"
 docs_dir = "docs"
