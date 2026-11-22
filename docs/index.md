@@ -276,7 +276,7 @@ mash repl --host assistant
 ## Learn More
 
 - [**General concepts**](posts/concepts.md): the building blocks behind every agentic platform
-- [**Product brief**](posts/product-brief.md): the pitch, why applications and agents needs a standard
+- [**Product brief**](posts/product-brief.md): what Mash offers, with a Slack team bot as the example
 - [**Mash under the hood**](posts/mash-under-the-hood.md): what Mash provides and where it fits
 - [**H2A Protocol RFC**](rfcs/host-to-agent-protocol.md): the host-to-agent boundary
 
