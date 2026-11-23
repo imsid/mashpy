@@ -249,6 +249,7 @@ class H2ARelayAuthTests(unittest.TestCase):
         parent: dict | None = None,
         host: dict | None = None,
         session_id: str = "s-1",
+        event_session_id: str | None = None,
     ) -> None:
         import asyncio
 
@@ -259,6 +260,8 @@ class H2ARelayAuthTests(unittest.TestCase):
             request_metadata["parent"] = parent
         if host is not None:
             request_metadata["host"] = host
+        if event_session_id is not None:
+            request_metadata["event_session_id"] = event_session_id
         asyncio.run(
             self.store.append_event(
                 RuntimeEvent(
@@ -303,6 +306,23 @@ class H2ARelayAuthTests(unittest.TestCase):
         self.assertEqual(
             (call["app_id"], call["policy_id"], call["policy"]), ("app-1", "p-1", DEFAULT_POLICY)
         )
+
+    def test_the_parents_stored_event_session_replaces_the_callers(self) -> None:
+        self._accept(
+            "req-ev", agent_id="primary-app", app_id="app-1", host=HOST_SNAPSHOT,
+            event_session_id="s-user",
+        )
+
+        resp = self._submit(parent={**_parent("req-ev"), "event_session_id": "s-forged"})
+
+        self.assertEqual(resp.status_code, 202, resp.text)
+        self.assertEqual(self.client_for_research.calls[0]["parent"]["event_session_id"], "s-user")
+
+    def test_a_parent_without_an_event_session_forwards_none(self) -> None:
+        resp = self._submit(parent={**_parent("req-1"), "event_session_id": "s-forged"})
+
+        self.assertEqual(resp.status_code, 202, resp.text)
+        self.assertNotIn("event_session_id", self.client_for_research.calls[0]["parent"])
 
     def test_a_matching_app_and_policy_are_forwarded(self) -> None:
         resp = self._submit(app_id="app-1", policy_id="p-1", policy=DEFAULT_POLICY)

@@ -11,6 +11,9 @@
 - `events.py`: structured event types used across Mash.
 - `logger.py`: canonical event logger implementation.
 - `trace_context.py`: trace, request, session, loop-step and call-prefix context helpers.
+  `get_session_id()` is the running request's session; `get_event_session_id()`
+  is the session of the event that started the request tree, bound by the loop
+  from the request's stored `event_session_id`.
 
 ## Role In The System
 - A request's own events (`invoke_agent.*`, `chat.*`, `execute_tool.*`, `mash.*`) are

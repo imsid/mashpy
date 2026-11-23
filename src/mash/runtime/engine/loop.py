@@ -23,6 +23,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from ...logging import (
+    bound_event_session_id,
     bound_host_id,
     bound_request_id,
     bound_request_metadata,
@@ -605,7 +606,9 @@ class RequestRun:
             self.session_id
         ), bound_host_id(host_id_from_request_metadata(metadata)), bound_workflow_ids(
             metadata.get("workflow_id"), metadata.get("workflow_run_id")
-        ), bound_request_metadata(caller_metadata_from_request_metadata(metadata)):
+        ), bound_request_metadata(
+            caller_metadata_from_request_metadata(metadata)
+        ), bound_event_session_id(metadata.get("event_session_id")):
             try:
                 await self._take_slot()
                 await self._run()

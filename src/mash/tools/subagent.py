@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from typing import Any, AsyncIterator, Callable, Dict, Iterator, Optional, Protocol
 
 from ..logging import (
+    get_event_session_id,
     get_request_id,
     get_request_metadata,
     get_subagent_id_prefix,
@@ -309,6 +310,11 @@ class RunSubAgentsTool:
             "started_by": self._caller_agent_id,
             "parent_request_id": caller_request_id,
         }
+        # The host's relay replaces this with the value stored on the caller's
+        # request; it is sent for callers that submit children directly.
+        event_session_id = get_event_session_id()
+        if event_session_id:
+            parent["event_session_id"] = event_session_id
         # The durable loop binds a prefix fixed by this call's position, so a
         # replayed or retried call resubmits the same ids and gets back the
         # children already running instead of starting new ones.

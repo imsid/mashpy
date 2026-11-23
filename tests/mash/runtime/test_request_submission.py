@@ -36,6 +36,25 @@ class ParentRequestMetadataTests(unittest.TestCase):
         self.assertEqual(metadata["subagent_id"], "research")
         self.assertEqual(metadata["subagent_invoke_opts"], {"mode": "fast"})
         self.assertEqual(metadata["parent"]["request_id"], "req_1")
+        self.assertIsNone(metadata["event_session_id"])
+
+    def test_subagent_parent_carries_the_event_session(self) -> None:
+        metadata = parent_request_metadata(
+            {
+                "kind": "subagent",
+                "request_id": "req_1",
+                "agent_id": "concierge",
+                "session_id": "req_0-sub-0-0",
+                "started_by": "concierge",
+                "parent_request_id": "req_1",
+                "event_session_id": "s-user",
+            },
+            agent_id="research",
+        )
+
+        self.assertEqual(metadata["event_session_id"], "s-user")
+        self.assertEqual(metadata["parent"]["event_session_id"], "s-user")
+        self.assertEqual(metadata["primary_session_id"], "req_0-sub-0-0")
 
     def test_workflow_parent_maps_to_workflow_keys(self) -> None:
         metadata = parent_request_metadata(
@@ -59,6 +78,8 @@ class ParentRequestMetadataTests(unittest.TestCase):
              "started_by": "user", "parent_request_id": "r"},
             {"kind": "subagent", "request_id": "r", "agent_id": "a", "session_id": "s",
              "started_by": "a", "parent_request_id": "other"},
+            {"kind": "subagent", "request_id": "r", "agent_id": "a", "session_id": "s",
+             "started_by": "a", "parent_request_id": "r", "event_session_id": ""},
         ):
             with self.subTest(parent=parent):
                 with self.assertRaises(ValueError):
@@ -141,6 +162,17 @@ class RequestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         request_metadata = accepted.payload["request_metadata"]
         self.assertEqual(request_metadata["task_id"], "summarize")
         self.assertEqual(request_metadata["parent"]["kind"], "workflow")
+        self.assertIsNone(request_metadata.get("event_session_id"))
+
+    async def test_a_request_without_a_parent_is_its_own_event_session(self) -> None:
+        runtime = await self._runtime("companion")
+
+        await runtime.submit_request(
+            message="hi", session_id="s-user", request_id="req_0", **TEST_IDENTITY
+        )
+
+        [accepted] = await self._accepted_events("req_0")
+        self.assertEqual(accepted.payload["request_metadata"]["event_session_id"], "s-user")
 
     async def test_subagent_parent_is_recorded(self) -> None:
         runtime = await self._runtime("research")
@@ -173,6 +205,31 @@ class RequestSubmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request_metadata["subagent_id"], "research")
         self.assertEqual(request_metadata["primary_agent_id"], "concierge")
         self.assertEqual(request_metadata["host"]["host_id"], "assistant")
+        self.assertIsNone(request_metadata.get("event_session_id"))
+
+    async def test_a_nested_subagent_records_the_event_session_not_its_parents(self) -> None:
+        runtime = await self._runtime("research")
+
+        await runtime.submit_request(
+            message="dig deeper",
+            session_id="req_1-sub-0-0",
+            request_id="req_1-sub-0-0",
+            parent={
+                "kind": "subagent",
+                "request_id": "req_1",
+                "agent_id": "planner",
+                "session_id": "req_0-sub-0-0",
+                "started_by": "planner",
+                "parent_request_id": "req_1",
+                "event_session_id": "s-user",
+            },
+            **TEST_IDENTITY,
+        )
+
+        [accepted] = await self._accepted_events("req_1-sub-0-0")
+        request_metadata = accepted.payload["request_metadata"]
+        self.assertEqual(request_metadata["event_session_id"], "s-user")
+        self.assertEqual(request_metadata["primary_session_id"], "req_0-sub-0-0")
 
 
 if __name__ == "__main__":

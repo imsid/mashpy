@@ -280,7 +280,11 @@ once, when it starts. Those objects live for the process and serve every
 request at once, so a tool or LLM provider keeps no per-request state on
 `self`: it reads the request's context with
 `mash.logging.get_request_metadata()`, `get_session_id()`, `get_trace_id()`
-and the other `mash.logging` helpers. The runtime calls a tool's `shutdown()`, `close()` or
+and the other `mash.logging` helpers. `get_session_id()` is the request's own
+session; inside a `RunSubAgents` child that is the child's session.
+`get_event_session_id()` is the session the user's event was posted to (the
+one `/resume` and `POST /sessions/{id}/events` use), at any subagent depth,
+and `None` in a request a workflow started. The runtime calls a tool's `shutdown()`, `close()` or
 `aclose()` once, when the process shuts down.
 
 ## AgentConfig Fields

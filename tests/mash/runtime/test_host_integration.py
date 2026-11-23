@@ -21,7 +21,13 @@ from mash.core.llm.types import (
     LLMResponse,
     LLMTokenUsage,
 )
-from mash.logging import bound_request_id, bound_subagent_id_prefix, get_request_metadata
+from mash.logging import (
+    bound_request_id,
+    bound_subagent_id_prefix,
+    get_event_session_id,
+    get_request_metadata,
+    get_session_id,
+)
 from mash.runtime.client import AgentClientError
 from mash.runtime import AgentSpec, Host, HostBuilder
 from mash.skills.registry import SkillRegistry
@@ -151,10 +157,12 @@ class _MetadataReadingTool:
 
     def __init__(self) -> None:
         self.seen: list[dict[str, Any]] = []
+        self.sessions: list[tuple[str | None, str | None]] = []
 
     async def execute(self, args: dict[str, Any]) -> ToolResult:
         del args
         self.seen.append(get_request_metadata())
+        self.sessions.append((get_session_id(), get_event_session_id()))
         return ToolResult.success("recorded")
 
     def to_llm_format(self) -> dict[str, Any]:
@@ -900,6 +908,36 @@ class PoolIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(
                         turns[-1]["metadata"]["metadata"], {"tenant": "acme"}
                     )
+                finally:
+                    await pool.close()
+
+    async def test_a_subagent_tool_reads_the_event_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}):
+                research = _MetadataReadingAgentSpec(agent_id="research")
+                pool = (
+                    HostBuilder()
+                    .agent(research, metadata=metadata())
+                    .host(Host(host_id="assistant", agents=("research",)))
+                    .build()
+                )
+                pool.configure_runtime_database_url("postgresql://test/runtime")
+                await pool.start()
+                try:
+                    accepted = await pool.submit_host_request(
+                        "assistant",
+                        message="delegate",
+                        session_id="s-1",
+                        app_id="app-1", policy_id="p-1",
+                    )
+                    client = pool.get_client("companion")
+                    await _collect_terminal_payload(client, accepted["request_id"], timeout=5)
+
+                    child_session = await _child_session(
+                        _agent_runtime(pool, "research"), accepted["request_id"]
+                    )
+                    self.assertNotEqual(child_session, "s-1")
+                    self.assertEqual(research.tool.sessions, [(child_session, "s-1")])
                 finally:
                     await pool.close()
 
