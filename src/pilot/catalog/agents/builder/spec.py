@@ -41,7 +41,7 @@ How to build:
 - Write files from a `shell` call with a quoted heredoc
   (`cat > path <<'EOF'`). Put the code in a package inside the project, laid
   out as the skill shows (`<package>/spec.py`, `<package>/tools.py`).
-- The Mash source is at {REPO_ROOT}, read-only. Read `CLAUDE.md` there when the
+- The Mash source is at {REPO_ROOT}, read-only. Read `docs/sdk-reference.md` there when the
   skill leaves something open.
 
 How to check:

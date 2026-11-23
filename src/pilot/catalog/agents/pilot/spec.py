@@ -26,7 +26,7 @@ BROWSER_SITES = ("https://imsid.github.io", "https://github.com")
 
 # Where things are documented. Paths only: the guide reads what it needs.
 DOC_MAP = (
-    ("CLAUDE.md", "the authoring guide: specs, tools, providers, hosts, workflows, Cortex"),
+    ("docs/sdk-reference.md", "the authoring guide: specs, tools, providers, hosts, workflows, Cortex"),
     ("README.md", "the project overview and quick start"),
     ("src/mash/README.md", "the package map and how the parts fit"),
     ("src/mash/<module>/README.md", "each module: core, tools, skills, runtime, workflows, api, cli, mcp, memory, evals, agents"),
