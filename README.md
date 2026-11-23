@@ -398,9 +398,9 @@ model overrides, the shipped workflow, and building your own app.
 
 ## Build with a Coding Agent
 
-This repo includes [`CLAUDE.md`](CLAUDE.md) so coding agents like Claude Code,
+This repo includes [`docs/sdk-reference.md`](docs/sdk-reference.md) so coding agents like Claude Code,
 Codex, and Cursor can scaffold a Mash-powered agent from a natural language
-prompt. Copy it into your project or point your agent at this repo to get
+prompt. Copy it into your project as `CLAUDE.md` or point your agent at this repo to get
 started. The Pilot guide (above) also carries the `build-mash-agent`,
 `build-mash-workflow`, and `build-mash-host` skills for interactive
 scaffolding from the REPL.
@@ -417,7 +417,7 @@ console entrypoint. It includes the live REPL and one-shot commands. See the
 - [Synthetic evals](docs/posts/synthetic-evals.md) — datasets, rubrics, experiments, and scoring for the cold-start problem
 - [Deployment guide](docs/posts/how-to-deploy.md): agent processes, sandboxes, browsers, Docker, the host on a server
 - [Building agent CLIs](docs/posts/building-agent-clis.md) — custom CLI development
-- [CLAUDE.md](CLAUDE.md) — full SDK reference for coding agents
+- [SDK reference](docs/sdk-reference.md) — full SDK reference for coding agents
 - [Package overview](src/mash/README.md) — subsystem boundaries and module guides
 - [Contributing](CONTRIBUTING.md) — development setup, tests, repo structure
 

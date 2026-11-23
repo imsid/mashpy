@@ -156,7 +156,7 @@ def test_guide_prompt_points_at_the_mounted_repo_and_the_builder() -> None:
     assert APP_NAME in prompt
     assert str(REPO_ROOT) in prompt
     assert "`builder`" in prompt
-    assert "`CLAUDE.md`" in prompt
+    assert "`docs/sdk-reference.md`" in prompt
     assert "https://imsid.github.io/mashpy/" in prompt
     assert "https://github.com/imsid/mashpy" in prompt
 
