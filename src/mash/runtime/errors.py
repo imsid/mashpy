@@ -36,6 +36,9 @@ _RETRYABLE_PATTERNS: Sequence[Tuple[Sequence[str], str]] = (
         "server_error",
     ),
     (("overloaded", "capacity"), "overloaded"),
+    # Gemini returns this with HTTP 400 and asks for a retry; the same request
+    # usually succeeds on a later attempt. Checked before the terminal "400".
+    (("malformed_response",), "malformed_response"),
 )
 
 _TERMINAL_PATTERNS: Sequence[Tuple[Sequence[str], str]] = (

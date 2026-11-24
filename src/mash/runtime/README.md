@@ -622,6 +622,7 @@ The runtime classifies errors as **retryable** (transient) or **terminal** (perm
 | Connection/network errors | `network_error` | `True` |
 | 502/503/504 server errors | `server_error` | `True` |
 | Overloaded/capacity | `overloaded` | `True` |
+| Malformed model response (Gemini, sent with 400) | `malformed_response` | `True` |
 | Context length exceeded | `context_length_exceeded` | `False` |
 | Auth errors, 401 | `auth_error` | `False` |
 | Permission denied, 403 | `permission_denied` | `False` |

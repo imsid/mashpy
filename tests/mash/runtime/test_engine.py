@@ -1694,6 +1694,24 @@ class ErrorClassificationTests(unittest.TestCase):
         self.assertEqual(result["error_code"], "server_error")
         self.assertTrue(result["retryable"])
 
+    def test_malformed_response_is_retryable_despite_400(self) -> None:
+        from mash.runtime.errors import is_retryable
+
+        msg = (
+            "Error code: 400 - {'error': {'message': 'Model generated a malformed "
+            "response that could not be parsed. Please retry the request.', "
+            "'code': 'malformed_response'}}"
+        )
+        result = self._classify(msg)
+        self.assertEqual(result["error_code"], "malformed_response")
+        self.assertTrue(result["retryable"])
+        self.assertTrue(is_retryable(RuntimeError(msg)))
+
+    def test_plain_400_is_not_retryable(self) -> None:
+        result = self._classify("Error code: 400 - bad request")
+        self.assertEqual(result["error_code"], "invalid_request")
+        self.assertFalse(result["retryable"])
+
     def test_401_is_not_retryable(self) -> None:
         result = self._classify("401 unauthorized")
         self.assertFalse(result["retryable"])
