@@ -17,6 +17,7 @@ from ..core.context import ToolResult as ContextToolResult
 from ..memory.compaction import compact_conversation
 from ..memory.failed_turns import format_failed_request, is_failed_turn
 from ..memory.ledger import format_ledger
+from ..tools.tool_results import context_content
 from . import sessions
 
 if TYPE_CHECKING:
@@ -232,28 +233,16 @@ def tool_calls_from_action_payload(
     return action_from_payload(payload).tool_calls
 
 
-def apply_action_to_context_payload(
-    self: "AgentRuntime",
-    context_payload: dict[str, Any],
-    action_payload: dict[str, Any],
-) -> dict[str, Any]:
-    context = deserialize_context(self, context_payload.get("context") or {})
-    assistant_blocks = list(action_payload.get("assistant_blocks") or [])
-    if assistant_blocks:
-        context.add_message(
-            MessageRole.ASSISTANT,
-            assistant_blocks,
-            stop_reason=action_payload.get("stop_reason"),
-        )
-    return {
-        "context": serialize_context(context),
-        "compaction": dict(context_payload.get("compaction") or {}),
-    }
-
-
 def result_payloads_to_context_results(
     payloads: list[dict[str, Any]],
+    *,
+    trace_id: str,
+    limit: int,
 ) -> list[ContextToolResult]:
+    """The results as the context holds them: a long one as its preview.
+
+    The payloads keep the full content, which ``execute_tool.end`` stores.
+    """
     results: list[ContextToolResult] = []
     for payload in payloads:
         result_payload = dict(payload.get("result") or {})
@@ -261,32 +250,22 @@ def result_payloads_to_context_results(
         tool_name = payload.get("tool_name")
         if tool_name is not None:
             result_metadata["tool_name"] = str(tool_name)
+        tool_call_id = str(payload.get("tool_call_id") or "")
         results.append(
             ContextToolResult(
-                tool_call_id=str(payload.get("tool_call_id") or ""),
-                content=str(result_payload.get("content") or ""),
+                tool_call_id=tool_call_id,
+                content=context_content(
+                    str(result_payload.get("content") or ""),
+                    limit=limit,
+                    trace_id=trace_id,
+                    tool_call_id=tool_call_id,
+                ),
                 is_error=bool(result_payload.get("is_error")),
                 metadata=result_metadata,
                 images=[dict(image) for image in result_payload.get("images") or []],
             )
         )
     return results
-
-
-def observe_context_payload(
-    self: "AgentRuntime",
-    context_payload: dict[str, Any],
-    action_payload: dict[str, Any],
-    result_payloads: list[dict[str, Any]],
-) -> dict[str, Any]:
-    context = deserialize_context(self, context_payload.get("context") or {})
-    action = action_from_payload(action_payload)
-    results = result_payloads_to_context_results(result_payloads)
-    observed = self.agent.observe(context, action, results)
-    return {
-        "context": serialize_context(observed),
-        "compaction": dict(context_payload.get("compaction") or {}),
-    }
 
 
 def response_from_context_payload(

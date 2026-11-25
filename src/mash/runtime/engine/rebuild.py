@@ -148,7 +148,9 @@ async def rebuild_request_state(
         state = {**state, "result_payloads": results, "tool_usage": tool_usage}
         if loop_index not in step_ends:
             return state
-        state = commit_state(runtime, state, structured_output_request)
+        state = commit_state(
+            runtime, state, structured_output_request, trace_id=str(load_end.trace_id or "")
+        )
         if state.get("done"):
             return state
         loop_index += 1

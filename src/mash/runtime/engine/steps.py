@@ -326,9 +326,14 @@ def _commit_step_payload(
     result_payloads: list[dict[str, Any]],
     step_index: int,
     tool_usage: dict[str, Any] | None,
+    trace_id: str,
 ) -> dict[str, Any]:
     action = context_helpers.action_from_payload(action_payload)
-    results = context_helpers.result_payloads_to_context_results(result_payloads)
+    results = context_helpers.result_payloads_to_context_results(
+        result_payloads,
+        trace_id=trace_id,
+        limit=runtime.agent.config.tool_result_context_chars,
+    )
     commit = runtime.agent.commit_step(
         context,
         action,
@@ -947,6 +952,8 @@ def commit_state(
     runtime: "AgentRuntime",
     workflow_state: dict[str, Any],
     structured_output_request: dict[str, Any] | None = None,
+    *,
+    trace_id: str,
 ) -> dict[str, Any]:
     """The loop state after a step's commit: its results observed into the context.
 
@@ -967,6 +974,7 @@ def commit_state(
         result_payloads=result_payloads,
         step_index=loop_index,
         tool_usage=dict(workflow_state.get("tool_usage") or {}),
+        trace_id=trace_id,
     )
     done = bool(commit_payload.get("done"))
     updated: dict[str, Any] = {
@@ -997,7 +1005,9 @@ async def commit_request_step(
 ) -> dict[str, Any]:
     loop_index = int(workflow_state.get("loop_index") or 0)
     action_payload = dict(workflow_state.get("action") or {})
-    updated = commit_state(runtime, workflow_state, structured_output_request)
+    updated = commit_state(
+        runtime, workflow_state, structured_output_request, trace_id=trace_id
+    )
     step_started_at = workflow_state.get("step_started_at")
     if step_started_at is None:
         step_duration_ms = 0

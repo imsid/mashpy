@@ -25,6 +25,10 @@ class AgentConfig:
     # How long a RunSubAgents call waits for its children, by default and at most.
     subagent_timeout_seconds: int = 3600
     compaction_token_threshold: int = 0
+    # A tool result longer than this reaches the model as a preview and a line
+    # saying how to read the rest with ReadToolResult; the full result stays in
+    # the event log.
+    tool_result_context_chars: int = 20_000
     compaction_turn_limit: int = 50
     compaction_temperature: float = 0.0
     # Sent with every model call of the agent, e.g. {"thinking_level": "low"}
@@ -54,5 +58,7 @@ class AgentConfig:
             raise ValueError("subagent_timeout_seconds must be positive")
         if self.compaction_token_threshold < 0:
             raise ValueError("compaction_token_threshold must be >= 0")
+        if self.tool_result_context_chars < 1000:
+            raise ValueError("tool_result_context_chars must be at least 1000")
         if self.compaction_turn_limit <= 0:
             raise ValueError("compaction_turn_limit must be > 0")

@@ -1397,9 +1397,10 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         session_id="s-tools",
                     )
 
+                    # ReadToolResult is offered to every agent.
                     self.assertEqual(
                         result["response"]["signals"]["unused_tools"],
-                        ["unused_tool"],
+                        ["ReadToolResult", "unused_tool"],
                     )
                     self.assertGreater(
                         int(result["response"]["signals"]["unused_tool_tokens"]),
