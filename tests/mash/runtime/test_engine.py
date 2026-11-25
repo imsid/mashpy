@@ -1333,13 +1333,19 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     ]
                     self.assertEqual(finalizer_calls, [])
 
-                    # Nothing was persisted as a completed turn either.
-                    turns = await runtime.store.get_turns(
+                    # Nothing was persisted as a completed turn either: the
+                    # only turn is the failed request's, with no reply.
+                    [turn] = await runtime.store.get_turns(
                         session_id=runtime.session_id,
                         agent_id=runtime.agent_id,
                         limit=5,
                     )
-                    self.assertEqual(turns, [])
+                    self.assertEqual(turn["metadata"]["type"], "failed_request")
+                    self.assertEqual(
+                        turn["metadata"]["error"]["error_code"], "max_steps_exhausted"
+                    )
+                    self.assertEqual(turn["agent_response"], "")
+                    self.assertNotIn("structured_output", turn["metadata"])
                 finally:
                     await runtime.shutdown()
 

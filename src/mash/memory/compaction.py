@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Tuple
 from ..core.llm import LLMProvider
 from ..core.llm.types import LLMContentBlock, LLMMessage, LLMRequest
 from ..logging import bound_session_id, bound_trace_id
+from .failed_turns import is_failed_turn
 from .ledger import merge_ledgers
 from .store import MemoryStore
 
@@ -44,8 +45,13 @@ async def compact_conversation(
 
     turns = await store.get_turns(session_id=session_id, agent_id=agent_id, limit=None)
     # Only the replayable conversation is summarized; workflow / subagent turns
-    # are recorded in the session but never part of the replayed history.
-    turns = [turn for turn in turns if turn.get("replayable", True)]
+    # are recorded in the session but never part of the replayed history. A
+    # failed request's turn holds no answer, so it is left out too.
+    turns = [
+        turn
+        for turn in turns
+        if turn.get("replayable", True) and not is_failed_turn(turn)
+    ]
     if not turns:
         return "", ""
 

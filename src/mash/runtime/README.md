@@ -645,7 +645,7 @@ There are three layers of failure handling, each covering a different scenario:
 | Failure type | Handled by | Developer action |
 |---|---|---|
 | Transient error (rate limit, timeout, network) | `retry_transient()` — in-process, immediate, with backoff | None — automatic |
-| Retries exhausted or terminal error | `REQUEST_FAILED` emitted; the event closes `failed` | Post the message again as a new event |
+| Retries exhausted or terminal error | `REQUEST_FAILED` emitted; the event closes `failed`. A request with no parent saves its message as a failed turn, which the next request replays with the error | Post the message again as a new event |
 | Cancelled | `REQUEST_CANCELLED` emitted; the event closes `cancelled` | Post the message again as a new event |
 | Step budget exhausted (`max_steps`) | `REQUEST_FAILED` with `error_code=max_steps_exhausted`, `stop_reason=max_steps` | Raise `max_steps` or narrow the task |
 | Process crash (OOM, kill, hardware) | The restarted process continues it from its checkpoint | None; after 10 recoveries it fails with `error_type=recovery_limit` |

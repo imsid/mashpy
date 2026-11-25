@@ -475,6 +475,7 @@ class PostgresStore(MemoryStore):
         app_id = %s
         AND workflow_id IS NULL
         AND NOT (metadata ? 'subagent_id')
+        AND metadata ->> 'type' IS DISTINCT FROM 'failed_request'
         AND created_at > %s
     """
 

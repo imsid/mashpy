@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
@@ -52,6 +53,7 @@ from .steps import (
     interaction_schema,
     load_request_context,
     persist_completed_turn,
+    persist_failed_turn,
     plan_request_step,
     run_step_tool_batch,
     run_step_tool_call,
@@ -62,6 +64,9 @@ from .steps import (
 if TYPE_CHECKING:
     from ..events import RuntimeEvent
     from ..service import AgentRuntime
+
+
+log = logging.getLogger(__name__)
 
 
 class RequestCancelled(Exception):
@@ -616,15 +621,39 @@ class RequestRun:
                 # The cancel path already recorded the request as cancelled.
                 return
             except Exception as exc:
+                error_payload = classify_error(exc)
+                await self._persist_failed_turn(error_payload)
                 await fail_request(
                     self.runtime,
                     self.request_id,
                     self.session_id,
                     self.checkpoint.get("trace_id"),
-                    classify_error(exc),
+                    error_payload,
                 )
             finally:
                 self._give_slot()
+
+    async def _persist_failed_turn(self, error_payload: dict[str, Any]) -> None:
+        """Save the user's message of a failed request, before the failure is
+        announced, so the next request on the session can see it.
+
+        Only a request with no parent: a subagent's failure reaches its caller
+        as a tool result, and a workflow task's turn is never replayed.
+        """
+        if self.request_metadata.get("parent"):
+            return
+        try:
+            await persist_failed_turn(
+                self.runtime,
+                self.session_id,
+                self.checkpoint.get("trace_id"),
+                self.message,
+                error_payload,
+                self.request_metadata,
+            )
+        except Exception:
+            # The failure is still recorded; only the replayed turn is lost.
+            log.exception("could not save the failed turn of request %s", self.request_id)
 
     async def _run(self) -> None:
         runtime = self.runtime

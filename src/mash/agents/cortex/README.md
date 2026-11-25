@@ -61,7 +61,7 @@ on demand: `POST /api/v1/workflow/cortex-build/run` with
 
 - **collect** loads the app's Cortex and its turns after `built_through`
   from `MemoryStore.list_app_turns`: across agents and sessions, oldest first, without
-  workflow or child turns. Each turn carries the tools it ran (arguments
+  workflow, child or failed-request turns. Each turn carries the tools it ran (arguments
   from `execute_tool.start`, results from `execute_tool.end`); `search_cortex` results are left out. Messages are
   clipped to 4000 characters, arguments to 500, results to 1000, 20 tool
   calls per turn, and turns stop at 60000 characters of bundle.
