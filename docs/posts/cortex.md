@@ -74,8 +74,8 @@ The `context.load` step appends the app's profile to the system prompt:
 # src/mash/runtime/engine/steps.py: load_request_context
 cortex = runtime.get_cortex()
 if cortex is not None and app_id:
-    # Read inside this checkpointed step, so a replay sees the profile the
-    # request originally saw.
+    # Recorded on mash.context_load.end with the rendered prompt, so a
+    # recovered request sees the profile the request originally saw.
     system_prompt = append_context_block(
         system_prompt, await cortex.profile_block(app_id)
     )

@@ -71,7 +71,7 @@ The structured-output flow from the runtime ([finalize_structured_output](durabl
 
 Two consequences show up elsewhere in the series.
 
-First, the durable loop serializes context between checkpoints, which is possible because messages and content blocks are normalized types with stable shapes. `coerce_content_blocks` even normalizes legacy forms (`tool_use` → `tool_call`) so stored context from older runs keeps deserializing.
+First, the durable loop rebuilds context from its event log and replays earlier turns from it, which is possible because messages and content blocks are normalized types with stable shapes. `coerce_content_blocks` even normalizes legacy forms (`tool_use` → `tool_call`) so stored context from older runs keeps deserializing.
 
 Second, observability gets provider-uniform events for free. The runtime records every model call the same way whichever adapter made it: `chat.start` and `chat.end` around the call, with the provider, model and token counts as GenAI attributes on `chat.end`, so the trace analysis at the end of this series, and any OpenTelemetry backend it exports to, sees uniform fields across vendors.
 

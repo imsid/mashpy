@@ -164,13 +164,15 @@ static context without any provider-specific code from the developer.
 **Compaction**
 
 Long-running sessions accumulate token cost as conversation history grows. Mash
-handles this with automatic conversation compaction: when a session's total token
-count crosses a configurable threshold, the runtime summarizes earlier turns into
-a compact summary checkpoint using the agent's own LLM. Future requests load the
-summary instead of the full history, keeping context size bounded without losing
-key decisions, constraints, or user preferences. Compaction is configurable per
-agent via `compaction_token_threshold` and `compaction_turn_limit` in
-`AgentConfig`, and is disabled by default (threshold of 0).
+handles this with automatic conversation compaction: when the latest turn's
+context (the input and output tokens of its last model call) crosses a
+configurable threshold, the runtime summarizes earlier turns, tool calls
+included, into a summary checkpoint using the agent's own LLM. Future requests
+load the summary instead of the full history, keeping context size bounded
+without losing key decisions, constraints, user preferences, or the agent
+sessions the user may come back to. The threshold is
+`compaction_token_threshold` in `AgentConfig`, 100,000 tokens by default; 0
+turns compaction off.
 
 **Tools**
 

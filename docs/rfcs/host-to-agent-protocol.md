@@ -590,7 +590,7 @@ For `POST /agent/{agent_id}/session/{session_id}/compact`, the server MUST:
 
 1. return `404 ROUTE_NOT_FOUND` if `agent_id` is not the agent it serves
 2. read the body as JSON, returning `400 INVALID_JSON` or `400 INVALID_REQUEST` for a body that does not parse or is not an object
-3. validate optional `reason` as a non-empty string (default `"manual"`) and optional `session_total_tokens_reset` as a non-negative integer (default `0`), returning `400 INVALID_REQUEST` otherwise
+3. validate optional `reason` as a non-empty string (default `"manual"`), returning `400 INVALID_REQUEST` otherwise
 4. run the runtime's compaction for the session
 5. return `200 OK` with `summary_text` and `trace_id`, each `null` when there was nothing to compact
 
@@ -609,7 +609,7 @@ The runtime execution model MAY vary internally. The reference behavior is:
 
 - every accepted request starts a durable execution immediately
 - requests that share a `session_id` run concurrently; they are not serialized
-- each step of the execution is checkpointed, so a runtime restart resumes the request from its last completed step; a request that does not finish after repeated restarts ends with `request.error` and `error_type: "recovery_limit"`
+- each step of the execution records its output as events, so a runtime restart rebuilds the request's state from them and runs only the work with no recorded end; a request that does not finish after repeated restarts ends with `request.error` and `error_type: "recovery_limit"`
 
 ## 9. Per-Agent HTTP Binding
 

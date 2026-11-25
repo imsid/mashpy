@@ -192,7 +192,7 @@ This is why reconnecting is uneventful: a client that drops mid-request reconnec
 The layering above separates two jobs:
 
 - The **event log** records the request: what happened, in what order, replayable forever.
-- The **request engine** executes the request durably, with checkpoints, surviving restarts.
+- The **request engine** executes the request durably from its event log, surviving restarts.
 
 Neither layer absorbs the other's job. The log is what this post covered. The engine is what makes a half-finished request survive a `kill -9`, and it's the subject of the next post.
 

@@ -1,6 +1,6 @@
 ---
 title: Memory and Compaction
-description: How a session's history becomes the next request's context. Recent turns, summary checkpoints, compaction, and the signals that make sessions queryable.
+description: How a session's history becomes the next request's context. Transcripts from the event log, summary checkpoints, compaction by context size, and the signals that make sessions queryable.
 date: 2026-06-10
 author: imsid
 tags:
@@ -10,25 +10,34 @@ tags:
 
 # Memory and Compaction
 
-A session that runs for weeks accumulates hundreds of turns, while the model's context window and your token budget stay fixed. Mash's memory layer is the set of rules for deciding what the next request actually sees. It's built from a small history window, summary checkpoints, and per-turn signals.
+A session that runs for weeks accumulates hundreds of turns, while the model's context window and your token budget stay fixed. Mash's memory layer is the set of rules for deciding what the next request actually sees. It's built from turns replayed as transcripts, summary checkpoints written when the context gets large, and per-turn signals.
 
 ## What context loading actually loads
 
-The `context.load` step from [the durable loop post](durable-agent-loop.md) asks the memory store for recent turns (`conversation_history_turns` in `AgentConfig`, default `3`) and looks for one special turn on the way:
+The `context.load` step from [the durable loop post](durable-agent-loop.md) asks the memory store for the session's latest **summary checkpoint** and every turn after it:
 
-```python
-# src/mash/runtime/context.py: build_context_with_history (trimmed)
-for idx, turn in enumerate(turns):
-    if turn.get("metadata", {}).get("type") == "summary_checkpoint":
-        summary_index = idx
-if summary_index is not None:
-    tail_turns = turns[summary_index + 1:]
-    turns_to_include = [turns[summary_index]] + tail_turns
+```sql
+-- memory_turns, through idx_memory_turns_session_order
+WITH summary AS (latest replayable summary_checkpoint of the session)
+SELECT ... FROM memory_turns
+WHERE session_id = $1 AND agent_id = $2 AND replayable
+  AND (no summary OR (created_at, trace_id) >= the summary's)
+ORDER BY created_at, trace_id
 ```
 
-A **summary checkpoint** is a turn whose content is a generated summary of everything before it. When one exists, context becomes the summary plus the turns after it. The full early history is still in the store, but it stops being loaded, so the session's effective context stays bounded at one summary plus a short tail.
+A summary checkpoint is a turn whose content is a generated summary of everything before it. When one exists, context becomes the summary plus the turns after it. The full early history is still in the store, but it stops being loaded.
 
-Not every turn is a candidate. A workflow run's turns share a session without being part of a conversation, so they are persisted as **non-replayable** and skipped here, and pipeline work never crowds the context. The companion's `RunSubAgents` children run in sessions of their own: each replays only its own agent's earlier work, and the companion keeps a short ledger of what they returned instead of their turns.
+Each turn after the checkpoint is replayed in the form the agent's `AgentConfig.replay` picks:
+
+| `replay` | What a turn becomes |
+|---|---|
+| `transcript` (default) | its messages rebuilt from the event log: the user message, each step's assistant blocks and tool calls as the model wrote them, and each tool result |
+| `replies` | its user message and reply, with the agent sessions behind the reply before the next message (the companion) |
+| `none` | nothing |
+
+A transcript comes from the turn's `invoke_agent.start`, `chat.end` and `execute_tool.end` events, read for every replayed turn in one query on the trace index. An agent continuing a session sees what it fetched and what it changed there, not only what it said. A tool result longer than `tool_result_context_chars` replays as the same preview the request showed, with the line telling the model how to read the rest with `ReadToolResult`.
+
+Not every turn is a candidate. A workflow run's turns share a session without being part of a conversation, so they are persisted as **non-replayable** and skipped here, and pipeline work never crowds the context. The companion's `RunSubAgents` children run in sessions of their own: each replays its own agent's earlier work, and the companion keeps the routes to their sessions instead of their turns.
 
 ```mermaid
 flowchart LR
@@ -47,26 +56,25 @@ flowchart LR
 
 Checkpoints come from compaction, the runtime summarizing earlier turns using the agent's own LLM. It triggers two ways.
 
-Automatically: each turn persists a running `session_total_tokens`, and before building context the runtime compares it to the threshold:
+Automatically: each turn records `context_tokens`, the input and output tokens of its last model call, which is the size of the context as the model last read it. Before building context the runtime compares the latest turn's to the threshold:
 
 ```python
 # src/mash/runtime/context.py: build_context_payload (trimmed)
-if self.agent.config.compaction_token_threshold > 0:
-    if session_total_tokens >= self.agent.config.compaction_token_threshold:
-        summary_text, summary_turn_id = await self.compact_session(...)
+threshold = self.agent.config.compaction_token_threshold
+if threshold > 0 and await get_context_tokens(self, session_id) >= threshold:
+    summary_text, summary_turn_id = await compact_session(self, session_id, reason="auto")
 ```
 
-Manually: `POST /api/v1/agent/{agent_id}/sessions/{session_id}/compact` does the same on demand, with an optional token-counter reset. This is useful when you know a session just finished a phase and the detail won't matter again.
+Manually: `POST /api/v1/agent/{agent_id}/sessions/{session_id}/compact` does the same on demand. This is useful when you know a session just finished a phase and the detail won't matter again.
 
-The knobs live in `AgentConfig` and default to off:
+The summary reads the history a request would replay, rendered as text: user messages, replies, tool calls and their (previewed) results. The knobs live in `AgentConfig`:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `compaction_token_threshold` | `0` (disabled) | session token count that triggers compaction |
-| `compaction_turn_limit` | `50` | how many turns one compaction pass summarizes |
+| `compaction_token_threshold` | `100_000` | the latest turn's context size that triggers compaction (`0` turns it off) |
 | `compaction_temperature` | `0.0` | sampling for the summary call |
 
-Summaries are generated at temperature zero because they are records, not prose. The summarization prompt aims to preserve decisions, constraints, and user preferences, the things a future turn might silently depend on, and discard the conversational scaffolding around them. Compaction is lossy; [the runtime store post](persistence-store.md) covered why memory can afford that and the event log can't. When the loss matters, the original turns are still in the store, and there's a path back to them.
+Summaries are generated at temperature zero because they are records, not prose. The summarization prompt aims to preserve decisions, constraints, user preferences, and the ids of agent sessions the user may come back to, the things a future turn might silently depend on, and discard the conversational scaffolding around them. Compaction is lossy; [the runtime store post](persistence-store.md) covered why memory can afford that and the event log can't. When the loss matters, the original turns are still in the store, and there's a path back to them.
 
 ## Signals
 

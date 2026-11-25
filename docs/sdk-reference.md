@@ -299,16 +299,32 @@ AgentConfig(
     skills_enabled=True,                  # register the Skill meta-tool when skills exist
     prompt_caching_enabled=True,          # provider prompt caching
     streaming_enabled=True,               # stream tokens + emit chat.delta events
-    conversation_history_turns=3,         # prior turns replayed into context
+    replay="transcript",                  # earlier turns: "transcript", "replies" or "none"
     max_parallel_tools=8,                  # cap on parallel-safe tool calls run concurrently per turn
     subagent_timeout_seconds=3600,        # RunSubAgents wait: the default and the most a call may ask for
-    compaction_token_threshold=0,         # auto-summarize history past this token count (0 = off)
-    compaction_turn_limit=50,             # recent turns the summary keeps when compaction runs
+    compaction_token_threshold=100_000,   # summarize once the last turn's context reaches this (0 = off)
+    tool_result_context_chars=20_000,     # longer tool results reach the model as a preview
     compaction_temperature=0.0,           # sampling temperature for the summary pass
     provider_options={},                  # sent with every model call, provider-specific (e.g. {"thinking_level": "low"} on Gemini)
     extra={},                             # free-form dict for provider/app-specific options
 )
 ```
+
+A request replays every turn of its session since the last summary
+checkpoint. With `replay="transcript"` each turn is rebuilt from the event log:
+the user message, the assistant's messages and tool calls as the model wrote
+them, and the tool results. `replay="replies"` replays each turn's message and
+reply only (the companion), and `replay="none"` replays nothing. Each turn
+records `context_tokens`, the input and output tokens of its last model call;
+once the latest turn's reaches `compaction_token_threshold`, the session is
+summarized before the next request, tool calls included, and replay starts
+from that summary. Lower the threshold for a model with a small context
+window.
+
+A tool result longer than `tool_result_context_chars` reaches the model as its
+first 4,000 characters and a line giving its length and how to read on. The
+event log keeps the full result, and `ReadToolResult(trace_id, tool_call_id,
+offset, limit)`, which every agent has, reads any part of it.
 
 ## LLM Providers
 
@@ -662,9 +678,14 @@ companion, with `parent_request_id` set to the companion's request. Without
 the `session_id` of an earlier entry it continues that session and replays its
 turns, so the agent sees its own earlier work there; the relay accepts only a
 session of the same agent started from the companion's session. The
-companion's saved turn keeps a ledger of its children (agent, session, trace,
-status, brief and answer, clipped), which replay shows to the model under the
-reply, so a follow-up can go back to the session that answered. The
+companion's saved turn keeps the routes of its children (agent and session,
+or workflow and run, with trace and status) in `metadata["routes"]`; it replays
+its turns as replies (`replay="replies"`), with each reply's routes before the
+next user message, so a follow-up can go back to the session that answered.
+After reading the results, the companion forwards one child's completed
+answer unchanged with `ForwardAnswer(request_id)`, which ends the request with
+that answer as the reply and no further model call, or reruns the session with
+a corrected brief, or writes its own reply. The
 companion's process starts children through the host's `/h2a` relay, which
 checks each against the host composition stored with the companion's request
 (not one the caller sends) and forwards it to the child agent's process.
@@ -697,9 +718,10 @@ last request's children or shows one (`/subagent 2`). A child stops when its
 parent's event is cancelled.
 
 The companion reads what its agents did with three tools, each keyed by an
-`agent_id` with a `session_id` and/or `trace_id` from its ledger:
-`ListAgentTraces` (an agent session's recent requests), `InspectAgentTrace`
-(one trace's analysis by default, or its events with `view="events"`) and
+`agent_id` with a `session_id` and/or `trace_id` from its routes or a
+`RunSubAgents` result: `ListAgentTraces` (an agent session's recent requests),
+`InspectAgentTrace` (one trace's analysis by default, its messages, tool calls
+and results with `view="transcript"`, or its events with `view="events"`) and
 `GetAgentTurns` (what an agent was asked and answered). Each refuses a trace or
 session that is not a child of the companion in the request's session.
 
@@ -1114,7 +1136,8 @@ rest wait for a slot, and a request waiting on the user or on its children
 holds none. Nothing is deleted
 until `MASH_RETENTION_DAYS` is set; then the host deletes, every hour,
 finished requests with their event logs and finished workflow runs older
-than that, skipping a request whose session event is still running. The
+than that, skipping a request whose session event is still running or whose
+turn a session still replays (replay rebuilds turns from their events). The
 sessions and events ledger, conversation turns, Cortex, feedback and evals
 are kept.
 

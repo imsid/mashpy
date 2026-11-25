@@ -77,7 +77,7 @@ Naming is the one place it diverges. These tools register under their plain name
 
 Remote calls add failure modes like an unreachable server or expired auth, and the integration keeps all of them inside the existing tool contract. A tool call that fails returns an error `ToolResult`, the same shape a local tool produces, and the model reasons about it on the next think phase. A server that fails during startup discovery is logged as a warning and skipped, and the agent starts with the tools that did resolve. It stays skipped until the agent restarts.
 
-Because an MCP call is just a tool call, the durability machinery from [the durable loop post](durable-agent-loop.md) applies unchanged: each call is its own checkpoint, completed calls are skipped on resume, and transient failures get the standard retry treatment.
+Because an MCP call is just a tool call, the durability machinery from [the durable loop post](durable-agent-loop.md) applies unchanged: each call records its result as its own event, completed calls are skipped on resume, and transient failures get the standard retry treatment.
 
 ## Beyond tools
 
