@@ -159,6 +159,9 @@ class ForwardTests(unittest.IsolatedAsyncioTestCase):
         forward = await self._tool_end(done["request_id"], "ForwardAnswer")
         self.assertEqual(forward.payload["reply"], "built it")
         self.assertFalse(forward.payload["result"]["is_error"])
+        # ForwardAnswer ran, so the signals do not list it as unused.
+        self.assertNotIn("ForwardAnswer", done["response"]["signals"]["unused_tools"])
+        self.assertNotIn("RunSubAgents", done["response"]["signals"]["unused_tools"])
 
         # The rebuild from the events reaches the same end.
         events = await self.companion.runtime_store.list_request_events(done["request_id"])

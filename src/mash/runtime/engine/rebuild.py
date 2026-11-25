@@ -25,11 +25,10 @@ from .. import context as context_helpers
 from ..events import RuntimeEvent, RuntimeEventType
 from ..events.types import event_attributes
 from .steps import (
-    _record_tool_invocation,
     apply_plan,
     commit_state,
-    counts_as_invocation,
     initial_state,
+    record_invocation,
     with_approval,
 )
 
@@ -134,7 +133,6 @@ async def rebuild_request_state(
             runtime, state, action_payload, step_started_at=float(started.created_at)
         )
         results: list[dict[str, Any]] = []
-        tool_usage = state.get("tool_usage")
         for tool_call in list(action_payload.get("tool_calls") or []):
             if not isinstance(tool_call, dict):
                 continue
@@ -143,9 +141,8 @@ async def rebuild_request_state(
                 continue
             result_payload = result_payload_from_tool_end(tool_call, end.payload or {})
             results.append(result_payload)
-            if counts_as_invocation(result_payload):
-                tool_usage = _record_tool_invocation(tool_usage, str(tool_call.get("name") or ""))
-        state = {**state, "result_payloads": results, "tool_usage": tool_usage}
+            state = record_invocation(state, result_payload)
+        state = {**state, "result_payloads": results}
         if loop_index not in step_ends:
             return state
         state = commit_state(

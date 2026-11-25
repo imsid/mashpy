@@ -734,17 +734,26 @@ def apply_plan(
     }
 
 
-# Results the loop makes itself rather than by running a tool: they are not
-# counted as the tool's invocations.
-_LOOP_HANDLED_TOOLS = frozenset({"AskUser", "browser_handoff", "ForwardAnswer"})
-
-
 def counts_as_invocation(result_payload: dict[str, Any]) -> bool:
-    """Whether a result came from running its tool, for the tool-usage signals."""
-    if str(result_payload.get("tool_name") or "") in _LOOP_HANDLED_TOOLS:
-        return False
+    """Whether a call was invoked, for the tool-usage signals: a call the user
+    denied was not; every other call was, the ones the loop answers itself
+    (AskUser, browser_handoff, ForwardAnswer) included."""
     metadata = (result_payload.get("result") or {}).get("metadata") or {}
     return not (isinstance(metadata, dict) and metadata.get("denied"))
+
+
+def record_invocation(
+    workflow_state: dict[str, Any], result_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """The state with the call counted in ``tool_usage`` when it was invoked."""
+    if not counts_as_invocation(result_payload):
+        return workflow_state
+    return {
+        **workflow_state,
+        "tool_usage": _record_tool_invocation(
+            workflow_state.get("tool_usage"), str(result_payload.get("tool_name") or "")
+        ),
+    }
 
 
 async def record_tool_start(

@@ -58,6 +58,7 @@ from .steps import (
     persist_completed_turn,
     persist_failed_turn,
     plan_request_step,
+    record_invocation,
     record_tool_end,
     record_tool_start,
     run_step_tool_batch,
@@ -533,10 +534,13 @@ class RequestRun:
         await record_tool_start(self.runtime, **ids)
         result_payload = await run()
         await record_tool_end(self.runtime, **ids, result_payload=result_payload)
-        return {
-            **state,
-            "result_payloads": list(state.get("result_payloads") or []) + [result_payload],
-        }
+        return record_invocation(
+            {
+                **state,
+                "result_payloads": list(state.get("result_payloads") or []) + [result_payload],
+            },
+            result_payload,
+        )
 
     async def _tool_call(
         self,
