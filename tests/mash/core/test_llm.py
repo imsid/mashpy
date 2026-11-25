@@ -2282,6 +2282,20 @@ class AnthropicReasoningTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.input_tokens, 100)
         self.assertEqual(result.output_tokens, 50)
 
+    def test_usage_context_tokens_add_back_cached_input(self) -> None:
+        provider = object.__new__(AnthropicProvider)
+        usage = SimpleNamespace(
+            input_tokens=20,
+            output_tokens=50,
+            cache_creation_input_tokens=300,
+            cache_read_input_tokens=4000,
+        )
+
+        result = provider._anthropic_usage(usage)
+
+        # Anthropic's input_tokens leaves out cached input; the context holds it.
+        self.assertEqual(result.context_tokens, 20 + 300 + 4000 + 50)
+
     # --- extended thinking wiring: betas and thinking param ---
 
     async def test_send_routes_to_beta_endpoint_when_betas_present(self) -> None:
@@ -2544,6 +2558,19 @@ class OpenAIReasoningTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.reasoning_tokens, 480)
         self.assertEqual(result.output_tokens, 600)
+
+    def test_usage_context_tokens_count_cached_input_once(self) -> None:
+        provider = object.__new__(OpenAIProvider)
+        usage = SimpleNamespace(
+            input_tokens=5000,
+            output_tokens=60,
+            total_tokens=5060,
+            input_tokens_details=SimpleNamespace(cached_tokens=4000),
+            output_tokens_details=None,
+        )
+
+        # OpenAI's input_tokens already counts the cached input.
+        self.assertEqual(provider._openai_usage(usage).context_tokens, 5060)
 
     def test_usage_reasoning_tokens_none_when_output_details_missing(self) -> None:
         provider = object.__new__(OpenAIProvider)

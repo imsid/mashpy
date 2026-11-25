@@ -315,7 +315,8 @@ checkpoint. With `replay="transcript"` each turn is rebuilt from the event log:
 the user message, the assistant's messages and tool calls as the model wrote
 them, and the tool results. `replay="replies"` replays each turn's message and
 reply only (the companion), and `replay="none"` replays nothing. Each turn
-records `context_tokens`, the input and output tokens of its last model call;
+records `context_tokens`, the context its last model call read and wrote
+(all input, cached included, plus output, as the provider reports it);
 once the latest turn's reaches `compaction_token_threshold`, the session is
 summarized before the next request, tool calls included, and replay starts
 from that summary. Lower the threshold for a model with a small context

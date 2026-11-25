@@ -289,6 +289,10 @@ async def _plan_step_payload(
             for tool_call in action.tool_calls
         ],
         "token_usage": dict(plan.token_usage or {}),
+        # The context this call read and wrote: the turn compacts on it. On
+        # chat.end beside the usage attributes, since providers differ in
+        # whether input tokens count cached input.
+        "context_tokens": _context_size(plan.token_usage),
         "tool_usage": dict(plan.tool_usage or {}),
         "duration_ms": int(plan.duration_ms),
         "trace_id": plan.trace_id or trace_id,
@@ -364,6 +368,14 @@ def _commit_step_payload(
         "done": bool(commit.done),
         "signals": dict(commit.signals or {}),
     }
+
+
+def _context_size(token_usage: dict[str, Any] | None) -> int:
+    """A call's context size: the provider's count, or input plus output."""
+    usage = dict(token_usage or {})
+    if usage.get("context") is not None:
+        return int(usage["context"])
+    return int(usage.get("input", 0) or 0) + int(usage.get("output", 0) or 0)
 
 
 def forwarded_reply(result_payloads: list[dict[str, Any]]) -> str | None:
@@ -705,8 +717,11 @@ def apply_plan(
         "context": context_helpers.serialize_context(context),
         "aggregate_usage": aggregate_usage,
         # The context as the model last read it: the turn compacts on this.
-        "context_tokens": int(token_usage.get("input", 0) or 0)
-        + int(token_usage.get("output", 0) or 0),
+        "context_tokens": int(
+            action_payload["context_tokens"]
+            if action_payload.get("context_tokens") is not None
+            else _context_size(token_usage)
+        ),
         "tool_usage": _merge_tool_usage(
             workflow_state.get("tool_usage"),
             action_payload.get("tool_usage"),

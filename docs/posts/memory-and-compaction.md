@@ -56,7 +56,7 @@ flowchart LR
 
 Checkpoints come from compaction, the runtime summarizing earlier turns using the agent's own LLM. It triggers two ways.
 
-Automatically: each turn records `context_tokens`, the input and output tokens of its last model call, which is the size of the context as the model last read it. Before building context the runtime compares the latest turn's to the threshold:
+Automatically: each turn records `context_tokens`, the size of the context its last model call read and wrote: all of its input, cached included, plus its output. Each provider reports it, since they differ in whether their input count includes cached input (Anthropic's does not). Before building context the runtime compares the latest turn's to the threshold:
 
 ```python
 # src/mash/runtime/context.py: build_context_payload (trimmed)

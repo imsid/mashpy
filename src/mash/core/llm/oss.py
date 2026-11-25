@@ -31,6 +31,7 @@ from .types import (
     LLMRequest,
     LLMResponse,
     LLMTokenUsage,
+    token_sum,
     LLMToolDefinition,
     tool_result_images,
 )
@@ -544,12 +545,16 @@ class OSSCompatibleProvider(BaseLLMProvider):
             if completion_details is not None
             else None
         )
+        input_tokens = block_value(usage, "prompt_tokens")
+        output_tokens = block_value(usage, "completion_tokens")
         return LLMTokenUsage(
-            input_tokens=block_value(usage, "prompt_tokens"),
-            output_tokens=block_value(usage, "completion_tokens"),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             total_tokens=block_value(usage, "total_tokens"),
             cache_read_tokens=cache_read_tokens,
             reasoning_tokens=int(reasoning_tokens) if reasoning_tokens is not None else None,
+            # prompt_tokens counts cached input.
+            context_tokens=token_sum(input_tokens, output_tokens),
         )
 
     # -- streaming -----------------------------------------------------------

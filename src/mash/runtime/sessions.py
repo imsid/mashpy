@@ -24,7 +24,7 @@ async def session_usage(
 
 
 async def context_tokens(store: MemoryStore, *, agent_id: str, session_id: str) -> int:
-    """The latest turn's context size: input and output tokens of its last model call."""
+    """The latest turn's context size: its last model call's input, cached included, plus output."""
     turns = await store.get_turns(session_id=session_id, agent_id=agent_id, limit=1)
     if not turns:
         return 0

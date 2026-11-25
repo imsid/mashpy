@@ -165,7 +165,8 @@ static context without any provider-specific code from the developer.
 
 Long-running sessions accumulate token cost as conversation history grows. Mash
 handles this with automatic conversation compaction: when the latest turn's
-context (the input and output tokens of its last model call) crosses a
+context (all input of its last model call, cached included, plus output)
+crosses a
 configurable threshold, the runtime summarizes earlier turns, tool calls
 included, into a summary checkpoint using the agent's own LLM. Future requests
 load the summary instead of the full history, keeping context size bounded

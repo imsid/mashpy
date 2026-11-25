@@ -52,9 +52,10 @@ class _Fetch:
 class _Provider(LLMProvider):
     """Per request: fetch what the message names, then answer. Records each call."""
 
-    def __init__(self, usage: int = 10) -> None:
+    def __init__(self, usage: int = 10, context: int | None = None) -> None:
         self.requests: list[LLMRequest] = []
         self.usage = usage
+        self.context = context
         self.summaries: list[str] = []
 
     @property
@@ -71,7 +72,12 @@ class _Provider(LLMProvider):
             )
         self.requests.append(copy.deepcopy(request))
         last = request.messages[-1]
-        usage = LLMTokenUsage(input_tokens=self.usage, output_tokens=1, total_tokens=self.usage + 1)
+        usage = LLMTokenUsage(
+            input_tokens=self.usage,
+            output_tokens=1,
+            total_tokens=self.usage + 1,
+            context_tokens=self.context,
+        )
         if last.role == "user":
             what = "".join(b.data.get("text", "") for b in last.content if b.type == "text")
             what = what.rsplit("\n\n", 1)[-1]
@@ -315,6 +321,22 @@ class CompactionTests(ReplayTestCase):
         checkpoint = next(t for t in turns if t["metadata"].get("type") == "summary_checkpoint")
         self.assertEqual(checkpoint["metadata"]["turn_ids"], [first.trace_id])
         self.assertEqual(checkpoint["context_tokens"], 0)
+
+    async def test_the_provider_context_size_decides_when_cached_input_is_left_out(self) -> None:
+        # Like Anthropic: few uncached input tokens, a large cached context.
+        provider = _Provider(usage=10, context=900)
+        runtime = await self._runtime(_Spec(provider, compaction_token_threshold=500))
+        first = await self._ask(runtime, "small")
+        self.assertEqual(first.payload["context_tokens"], 900)
+        chat_end = next(
+            e
+            for e in await self.runtime_store.list_request_events(first.request_id)
+            if e.event_type == RuntimeEventType.CHAT_END.value
+        )
+        self.assertEqual(chat_end.payload["context_tokens"], 900)
+
+        await self._ask(runtime, "next")
+        self.assertEqual(len(provider.summaries), 1)
 
     async def test_a_threshold_of_zero_never_compacts(self) -> None:
         provider = _Provider(usage=600)

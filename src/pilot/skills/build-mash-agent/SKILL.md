@@ -308,8 +308,9 @@ AgentConfig(
 ```
 
 A request replays every turn since the session's last summary checkpoint.
-Once the latest turn's context (the input and output tokens of its last model
-call) reaches `compaction_token_threshold`, the session is summarized before
+Once the latest turn's context (all input of its last model call, cached
+included, plus its output, as the provider reports it) reaches
+`compaction_token_threshold`, the session is summarized before
 the next request. Lower it for a model with a small context window.
 
 ### System Prompt Tips

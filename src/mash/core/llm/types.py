@@ -126,7 +126,18 @@ class LLMTokenUsage:
     cache_read_tokens: Optional[int] = None
     cache_write_tokens: Optional[int] = None
     reasoning_tokens: Optional[int] = None
+    # The context the call read and wrote: all of its input, cached included,
+    # plus its output. Providers differ in whether input_tokens counts cached
+    # input (Anthropic's does not), so each provider sets this itself.
+    context_tokens: Optional[int] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+def token_sum(*values: Optional[int]) -> Optional[int]:
+    """The sum of the counts given, or None when the first two are missing."""
+    if values[0] is None or values[1] is None:
+        return None
+    return sum(int(value or 0) for value in values)
 
 
 @dataclass

@@ -353,6 +353,8 @@ class Agent:
                 token_usage["cache_write"] = response.usage.cache_write_tokens
             if response.usage.reasoning_tokens is not None:
                 token_usage["reasoning"] = response.usage.reasoning_tokens
+            if response.usage.context_tokens is not None:
+                token_usage["context"] = response.usage.context_tokens
         if token_usage:
             input_tokens = token_usage.get("input")
             output_tokens = token_usage.get("output")
