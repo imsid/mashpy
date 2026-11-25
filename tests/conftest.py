@@ -83,7 +83,6 @@ class _RequestState:
     started_at: float | None = None
     parent_request_id: str | None = None
     updated_at: float = 0.0
-    checkpoint: dict[str, Any] | None = None
     recoveries: int = 0
 
 
@@ -296,22 +295,6 @@ class _TestRuntimeStore:
         async with self._lock:
             state = self._request_state.get(request_id)
         return state.status if state is not None else None
-
-    async def save_checkpoint(self, request_id: str, checkpoint: dict[str, Any]) -> None:
-        import json
-
-        async with self._lock:
-            state = self._request_state.get(request_id)
-            if state is not None:
-                # Round-trip through JSON, as the jsonb column does.
-                state.checkpoint = json.loads(json.dumps(checkpoint, default=str))
-
-    async def get_checkpoint(self, request_id: str) -> dict[str, Any] | None:
-        async with self._lock:
-            state = self._request_state.get(request_id)
-        if state is None or state.checkpoint is None:
-            return None
-        return dict(state.checkpoint)
 
     async def list_running_requests(self, agent_id: str) -> list[str]:
         async with self._lock:
@@ -785,8 +768,23 @@ class _TestMemoryStore:
         return None
 
     async def get_replay_turns(
-        self, session_id: str, agent_id: str, turns: int
+        self,
+        session_id: str,
+        agent_id: str,
+        turns: int,
+        *,
+        trace_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
+        if trace_ids is not None:
+            wanted = set(trace_ids)
+            rows = [
+                row
+                for row in await self.get_turns(session_id=session_id, agent_id=agent_id)
+                if row["trace_id"] in wanted
+            ]
+            for row in rows:
+                row.pop("signals", None)
+            return rows
         rows = [
             row
             for row in await self.get_turns(session_id=session_id, agent_id=agent_id)

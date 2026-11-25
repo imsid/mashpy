@@ -109,11 +109,15 @@ class MemoryStore(Protocol):
         session_id: str,
         agent_id: str,
         turns: int,
+        *,
+        trace_ids: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """The turns a request replays into its context, oldest first.
 
         The latest replayable ``summary_checkpoint`` turn, if any, then up to
-        ``turns`` replayable turns after it. Turns carry no signals.
+        ``turns`` replayable turns after it. With ``trace_ids``, those turns of
+        the session instead: the ones a request recorded at its context load,
+        so a recovered request replays the same turns. Turns carry no signals.
         """
         ...
 

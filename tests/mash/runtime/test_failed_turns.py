@@ -206,14 +206,15 @@ class FailedTurnCompactionTests(unittest.IsolatedAsyncioTestCase):
 
 class FailedTurnScopeTests(unittest.IsolatedAsyncioTestCase):
     def _run(self, request_metadata: dict[str, Any]) -> RequestRun:
-        return RequestRun(
+        run = RequestRun(
             MagicMock(),
             request_id="r1",
             message="hello",
             session_id="s",
             request_metadata=request_metadata,
-            checkpoint={"trace_id": "t1"},
         )
+        run.trace_id = "t1"
+        return run
 
     async def test_a_request_with_a_parent_saves_no_failed_turn(self) -> None:
         for parent in (

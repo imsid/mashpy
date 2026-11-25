@@ -641,8 +641,10 @@ class Agent:
             action_metadata["stop_reason"] = stop_reason
 
         # Store the assistant's response in context
+        phase = response.provider_metadata.get("phase")
+        if phase:
+            action_metadata["phase"] = phase
         if blocks:
-            phase = response.provider_metadata.get("phase")
             msg_kwargs: Dict[str, Any] = {"phase": phase} if phase else {}
             context.add_message(MessageRole.ASSISTANT, blocks, **msg_kwargs)
 

@@ -91,12 +91,19 @@ async def build_context_with_history(
     message: str,
     *,
     system_prompt: Any = None,
-) -> Context:
+    trace_ids: list[str] | None = None,
+) -> tuple[Context, list[str]]:
+    """The request's context, and the trace ids of the turns it replays.
+
+    With ``trace_ids``, those turns: the ones a request recorded at its
+    context load, so a recovered request rebuilds the same context.
+    """
     context = Context(
         system_prompt=system_prompt if system_prompt is not None else self.system_prompt
     )
+    history: list[str] = []
 
-    if self.agent.config.conversation_history_turns > 0:
+    if self.agent.config.conversation_history_turns > 0 or trace_ids:
         # The latest summary checkpoint and the replayable turns after it.
         # Workflow, subagent and command turns share the session but are not
         # part of the user's conversation, so the store leaves them out.
@@ -104,7 +111,9 @@ async def build_context_with_history(
             session_id=session_id,
             agent_id=self.agent_id,
             turns=self.agent.config.conversation_history_turns,
+            trace_ids=trace_ids,
         )
+        history = [str(turn.get("trace_id")) for turn in turns_to_include]
         # A reply's ledger goes before the user message that follows it. In
         # the reply itself the model reads it as its own writing and copies
         # it into new replies. Only the model sees it: stored turns keep
@@ -146,7 +155,7 @@ async def build_context_with_history(
         message = _blocks(ledger_text, failed_text, message)
 
     context.add_user_message(message)
-    return context
+    return context, history
 
 
 def _blocks(*parts: str) -> str:
@@ -183,11 +192,12 @@ async def build_context_payload(
                 reason="auto",
                 session_total_tokens_reset=0,
             )
-    context = await build_context_with_history(
+    context, history = await build_context_with_history(
         self, session_id, message, system_prompt=system_prompt
     )
     return {
         "context": serialize_context(context),
+        "history": history,
         "compaction": {
             "compaction_summary_text": compaction_summary_text,
             "compaction_summary_trace_id": compaction_summary_trace_id,

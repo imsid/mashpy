@@ -1,17 +1,16 @@
-"""The request loop: one agent request, continued from its checkpoint.
+"""The request loop: one agent request, continued from its events.
 
 The loop runs the same steps in the same order whether a request is new or
-recovered after a crash. Its state is one dict, the checkpoint,
-saved to ``runtime_request.checkpoint`` after every step:
+recovered after a crash. Its state is one dict the steps thread through each
+other (context, loop index, the model's action, the tool results so far),
+held in memory. The event log is the only record of it: each step appends its
+output as events with dedupe keys, and a recovered request rebuilds the state
+from them (``rebuild.py``).
 
-- ``trace_id``: the request's trace, read from its accepted event
-- ``state``: the loop state the steps thread through each other (context,
-  loop index, the model's action, the tool results so far)
-- ``memo``: small results inside the current step, by name, such as an
-  interaction's id or a browser handoff's link. Cleared on commit.
-
-A step that was running when the process died runs again; the events it
-appends are deduped by key.
+Work with no end event runs again: a model call with no ``chat.end``, a tool
+call with no ``execute_tool.end``. Its events are deduped by key, and an
+interaction's id is derived from its place in the request, so a rerun finds
+the interaction already open and its answer if it has one.
 """
 
 from __future__ import annotations
@@ -23,6 +22,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from ...core.context import ToolCall
 from ...logging import (
     bound_event_session_id,
     bound_host_id,
@@ -41,6 +41,7 @@ from ..requests import (
     caller_metadata_from_request_metadata,
     host_id_from_request_metadata,
 )
+from .rebuild import rebuild_request_state
 from .steps import (
     commit_request_step,
     complete_request,
@@ -55,6 +56,8 @@ from .steps import (
     persist_completed_turn,
     persist_failed_turn,
     plan_request_step,
+    record_tool_end,
+    record_tool_start,
     run_step_tool_batch,
     run_step_tool_call,
     start_browser_handoff,
@@ -74,6 +77,18 @@ class RequestCancelled(Exception):
 
 
 _CANCELLED = object()
+
+
+async def _resolved(value: Any) -> Any:
+    return value
+
+
+def _tool_call(payload: dict[str, Any]) -> ToolCall:
+    return ToolCall(
+        id=str(payload.get("id") or ""),
+        name=str(payload.get("name") or ""),
+        arguments=dict(payload.get("arguments") or {}),
+    )
 
 
 def _interaction_timeout_default(interaction_type: str) -> Any:
@@ -97,7 +112,6 @@ class RequestRun:
         message: str,
         session_id: str,
         request_metadata: dict[str, Any],
-        checkpoint: dict[str, Any] | None,
         slots: asyncio.Semaphore | None = None,
     ) -> None:
         self.runtime = runtime
@@ -105,8 +119,8 @@ class RequestRun:
         self.message = message
         self.session_id = session_id
         self.request_metadata = dict(request_metadata or {})
-        self.checkpoint: dict[str, Any] = dict(checkpoint or {})
-        self.checkpoint.setdefault("memo", {})
+        # Read from the accepted request when the loop starts.
+        self.trace_id: str | None = None
         self.cancelled = asyncio.Event()
         self._interaction_waiters: dict[str, asyncio.Event] = {}
         # The agent's running-request slots (MASH_AGENT_MAX_RUNNING). The loop
@@ -147,31 +161,6 @@ class RequestRun:
             yield
         finally:
             await self._take_slot()
-
-    # --- checkpoint ----------------------------------------------------------
-
-    @property
-    def state(self) -> dict[str, Any] | None:
-        return self.checkpoint.get("state")
-
-    async def _save(self, state: dict[str, Any] | None = None) -> None:
-        if state is not None:
-            self.checkpoint["state"] = state
-        await self.runtime.runtime_store.save_checkpoint(
-            self.request_id, self.checkpoint
-        )
-
-    async def _step(
-        self, name: str, fn: Callable[..., Awaitable[Any]], *args: Any, **kwargs: Any
-    ) -> Any:
-        """Run ``fn`` once per checkpoint: a recovered loop gets the stored result."""
-        memo = self.checkpoint["memo"]
-        if name in memo:
-            return memo[name]
-        result = await fn(*args, **kwargs)
-        memo[name] = result
-        await self._save()
-        return result
 
     def _check_cancelled(self) -> None:
         if self.cancelled.is_set():
@@ -221,7 +210,7 @@ class RequestRun:
                         self.runtime,
                         self.request_id,
                         self.session_id,
-                        self.checkpoint.get("trace_id"),
+                        self.trace_id,
                         interaction_id=interaction_id,
                         response=_interaction_timeout_default(interaction_type),
                         timed_out=True,
@@ -261,9 +250,7 @@ class RequestRun:
         attempt = 0
         while True:
             step_name = f"{step_prefix}.open.{loop_index}.{attempt}"
-            opened = await self._step(
-                step_name,
-                self._open_interaction,
+            opened = await self._open_interaction(
                 interaction_id=derive_interaction_id(f"{self.request_id}:{step_name}"),
                 interaction_type=interaction_type,
                 prompt=prompt,
@@ -294,20 +281,25 @@ class RequestRun:
         timeout_seconds: int | None,
         extra: dict[str, Any] | None,
     ) -> dict[str, Any]:
+        """Open the interaction, or find it open; its id and deadline.
+
+        The id is derived from the interaction's place in the request, so a
+        recovered request finds the one it opened. The deadline is the stored
+        open time plus the stored timeout, so a recovery does not extend it.
+        """
         # The policy caps every interaction's deadline; an interaction with no
         # timeout of its own (a browser handoff) takes the cap, and with no
-        # cap waits until answered or cancelled. Read here, inside the
-        # checkpointed step, so a recovered request keeps it.
+        # cap waits until answered or cancelled.
         wait_max = (self.request_metadata.get("policy") or {}).get("wait_max_seconds")
         if wait_max is not None:
             timeout_seconds = (
                 int(wait_max) if timeout_seconds is None else min(int(timeout_seconds), int(wait_max))
             )
-        await emit_interaction_create(
+        stored = await emit_interaction_create(
             self.runtime,
             self.request_id,
             self.session_id,
-            self.checkpoint["trace_id"],
+            self.trace_id,
             interaction_id=interaction_id,
             interaction_type=interaction_type,
             prompt=prompt,
@@ -315,9 +307,14 @@ class RequestRun:
             timeout_seconds=timeout_seconds,
             extra=extra,
         )
+        stored_timeout = (stored.payload or {}).get("timeout_seconds")
         return {
             "interaction_id": interaction_id,
-            "deadline": None if timeout_seconds is None else time.time() + timeout_seconds,
+            "deadline": (
+                None
+                if stored_timeout is None
+                else float(stored.created_at) + float(stored_timeout)
+            ),
         }
 
     async def _await_close(self, interaction_id: str) -> dict[str, Any]:
@@ -345,13 +342,12 @@ class RequestRun:
 
     async def _ask_user(
         self,
-        state: dict[str, Any],
         *,
         tool_call: dict[str, Any],
         loop_index: int,
         call_index: int,
     ) -> dict[str, Any]:
-        """Turn an AskUser tool call into an interaction."""
+        """Turn an AskUser tool call into an interaction; the call's result payload."""
         from ...tools.ask_user import ASK_USER_DEFAULT_TIMEOUT_SECONDS
 
         arguments = dict(tool_call.get("arguments") or {})
@@ -368,7 +364,7 @@ class RequestRun:
             content = ", ".join(str(item) for item in response)
         else:
             content = str(response)
-        result_payload = {
+        return {
             "tool_call_id": tool_call.get("id", ""),
             "tool_name": "AskUser",
             "duration_ms": 0,
@@ -378,34 +374,26 @@ class RequestRun:
                 "metadata": {"interaction_id": interaction_id, "timed_out": timed_out},
             },
         }
-        return {
-            **state,
-            "result_payloads": list(state.get("result_payloads") or []) + [result_payload],
-        }
 
     async def _browser_handoff(
         self,
-        state: dict[str, Any],
         *,
         tool_call: dict[str, Any],
         loop_index: int,
         call_index: int,
     ) -> dict[str, Any]:
-        """Turn browser_handoff into a ``browser`` interaction.
+        """Turn browser_handoff into a ``browser`` interaction; the call's result payload.
 
         The interaction carries no link: one is made each time someone asks
         for it on the event, and lasts a few minutes, while the interaction
         may wait as long as the policy allows. Ending the handoff revokes
-        every link and returns the page as the user left it.
+        every link and returns the page as the user left it. A recovered
+        request that has not recorded the result yet brings the tab to the
+        front again and finds its interaction open.
         """
         arguments = dict(tool_call.get("arguments") or {})
         reason = str(arguments.get("reason") or "The page needs you.").strip()
-        started = await self._step(
-            f"browser.handoff.start.{loop_index}.{call_index}",
-            start_browser_handoff,
-            self.runtime,
-            self.request_id,
-        )
+        started = await start_browser_handoff(self.runtime, self.request_id)
         metadata: dict[str, Any] = {}
         images: list[dict[str, Any]] = []
         if "error" in started:
@@ -425,12 +413,7 @@ class RequestRun:
                 with contextlib.suppress(Exception):
                     await end_browser_handoff(self.runtime, self.request_id)
                 raise
-            page = await self._step(
-                f"browser.handoff.end.{loop_index}.{call_index}",
-                end_browser_handoff,
-                self.runtime,
-                self.request_id,
-            )
+            page = await end_browser_handoff(self.runtime, self.request_id)
             metadata = {"interaction_id": interaction_id, "timed_out": timed_out}
             if response == "done" and not timed_out:
                 content = (
@@ -447,12 +430,36 @@ class RequestRun:
         result: dict[str, Any] = {"content": content, "is_error": is_error, "metadata": metadata}
         if images:
             result["images"] = images
-        result_payload = {
+        return {
             "tool_call_id": tool_call.get("id", ""),
             "tool_name": "browser_handoff",
             "duration_ms": 0,
             "result": result,
         }
+
+    async def _loop_handled_call(
+        self,
+        state: dict[str, Any],
+        *,
+        tool_call: dict[str, Any],
+        loop_index: int,
+        run: Callable[[], Awaitable[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        """A call the loop answers itself, recorded like a tool's.
+
+        Its ``execute_tool.start`` and ``execute_tool.end`` are what a
+        recovered request reads the result from.
+        """
+        ids = {
+            "request_id": self.request_id,
+            "session_id": self.session_id,
+            "trace_id": self.trace_id,
+            "loop_index": loop_index,
+            "tool_call": _tool_call(tool_call),
+        }
+        await record_tool_start(self.runtime, **ids)
+        result_payload = await run()
+        await record_tool_end(self.runtime, **ids, result_payload=result_payload)
         return {
             **state,
             "result_payloads": list(state.get("result_payloads") or []) + [result_payload],
@@ -467,13 +474,15 @@ class RequestRun:
         tool_call: dict[str, Any],
     ) -> dict[str, Any]:
         name = str(tool_call.get("name") or "")
-        if name == "AskUser":
-            return await self._ask_user(
-                state, tool_call=tool_call, loop_index=loop_index, call_index=call_index
-            )
-        if name == "browser_handoff":
-            return await self._browser_handoff(
-                state, tool_call=tool_call, loop_index=loop_index, call_index=call_index
+        handler = {"AskUser": self._ask_user, "browser_handoff": self._browser_handoff}.get(name)
+        if handler is not None:
+            return await self._loop_handled_call(
+                state,
+                tool_call=tool_call,
+                loop_index=loop_index,
+                run=lambda: handler(
+                    tool_call=tool_call, loop_index=loop_index, call_index=call_index
+                ),
             )
         # A RunSubAgents or RunWorkflow call derives its child ids or run
         # dedup key from its position, so a rerun gets back the children or
@@ -490,7 +499,7 @@ class RequestRun:
                         self.runtime,
                         self.request_id,
                         self.session_id,
-                        self.checkpoint["trace_id"],
+                        self.trace_id,
                         state,
                         tool_call,
                     )
@@ -507,9 +516,9 @@ class RequestRun:
         """Answer the action's interaction, then run its tool calls in order.
 
         A maximal run of consecutive parallel-safe calls runs concurrently as
-        one batch; any other call runs alone. The checkpoint is saved after
-        each call or batch, and a recovered loop skips the calls whose results
-        it already has.
+        one batch; any other call runs alone. A call whose result the state
+        already holds is skipped: a recovered loop runs only the calls with no
+        ``execute_tool.end``.
         """
         loop_index = int(state.get("loop_index") or 0)
         action = dict(state.get("action") or {})
@@ -526,7 +535,6 @@ class RequestRun:
                 step_prefix="interaction",
             )
             state = {**state, "interaction_response": response}
-            await self._save(state)
 
         tool_calls = context_helpers.tool_calls_from_action_payload(action)
         raw_tool_calls = list(action.get("tool_calls") or [])
@@ -537,6 +545,10 @@ class RequestRun:
             and interaction.get("type") == "approval"
             and state.get("interaction_response") != "approve"
         )
+        done = {
+            str(result.get("tool_call_id") or "")
+            for result in list(state.get("result_payloads") or [])
+        }
 
         def parallel_safe(index: int) -> bool:
             raw = raw_tool_calls[index] if index < len(raw_tool_calls) else None
@@ -547,10 +559,12 @@ class RequestRun:
             return {"id": call.id, "name": call.name, "arguments": dict(call.arguments or {})}
 
         total = len(tool_calls)
-        index = len(list(state.get("result_payloads") or []))
+        index = 0
         while index < total:
+            if tool_calls[index].id in done:
+                index += 1
+                continue
             self._check_cancelled()
-            results = list(state.get("result_payloads") or [])
             if approval_denied:
                 call = tool_calls[index]
                 denied = {
@@ -566,12 +580,17 @@ class RequestRun:
                         "metadata": {"denied": True},
                     },
                 }
-                state = {**state, "result_payloads": results + [denied]}
+                state = await self._loop_handled_call(
+                    state,
+                    tool_call=payload(index),
+                    loop_index=loop_index,
+                    run=lambda denied=denied: _resolved(denied),
+                )
                 index += 1
                 continue
             end = index + 1
             if parallel_safe(index):
-                while end < total and parallel_safe(end):
+                while end < total and parallel_safe(end) and tool_calls[end].id not in done:
                     end += 1
             if end - index == 1:
                 state = await self._tool_call(
@@ -594,14 +613,19 @@ class RequestRun:
                             self.runtime,
                             self.request_id,
                             self.session_id,
-                            self.checkpoint["trace_id"],
+                            self.trace_id,
                             state,
                             batch,
                         )
                     )
             index = end
-            await self._save(state)
-        return state
+        # Results in call order, whichever ran first, so each maps back to its call.
+        order = {call.id: position for position, call in enumerate(tool_calls)}
+        results = sorted(
+            list(state.get("result_payloads") or []),
+            key=lambda result: order.get(str(result.get("tool_call_id") or ""), total),
+        )
+        return {**state, "result_payloads": results}
 
     # --- the loop ------------------------------------------------------------
 
@@ -627,7 +651,7 @@ class RequestRun:
                     self.runtime,
                     self.request_id,
                     self.session_id,
-                    self.checkpoint.get("trace_id"),
+                    self.trace_id,
                     error_payload,
                 )
             finally:
@@ -646,7 +670,7 @@ class RequestRun:
             await persist_failed_turn(
                 self.runtime,
                 self.session_id,
-                self.checkpoint.get("trace_id"),
+                self.trace_id,
                 self.message,
                 error_payload,
                 self.request_metadata,
@@ -659,22 +683,25 @@ class RequestRun:
         runtime = self.runtime
         request_id = self.request_id
         session_id = self.session_id
-        if not self.checkpoint.get("trace_id"):
-            self.checkpoint["trace_id"] = await start_request_trace(
-                runtime, request_id, session_id, self.message
-            )
-            await self._save()
-        trace_id = self.checkpoint["trace_id"]
+        # The trace was minted when the request was accepted; a recovered
+        # request reads the same one.
+        self.trace_id = await start_request_trace(runtime, request_id, session_id, self.message)
+        trace_id = self.trace_id
         # The provider, tools and event logger read the trace from context.
         with bound_trace_id(trace_id):
             structured_output_request = self.request_metadata.get("structured_output_request")
 
-            state = self.state
+            state = await rebuild_request_state(
+                runtime,
+                session_id=session_id,
+                message=self.message,
+                request_metadata=self.request_metadata,
+                events=await runtime.runtime_store.list_request_events(request_id),
+            )
             if state is None:
                 state = await load_request_context(
                     runtime, request_id, session_id, trace_id, self.message, self.request_metadata
                 )
-                await self._save(state)
 
             while not state.get("done"):
                 self._check_cancelled()
@@ -685,26 +712,23 @@ class RequestRun:
                             runtime, request_id, session_id, trace_id, planned
                         )
                     )
-                    await self._save(state)
                 state = await self._act(state)
                 self._check_cancelled()
                 state = await commit_request_step(
                     runtime, request_id, session_id, trace_id, state, structured_output_request
                 )
-                self.checkpoint["memo"] = {}
-                await self._save(state)
 
             if (
                 isinstance(structured_output_request, dict)
                 and state.get("structured_output") is None
             ):
+                # Not recorded: a recovered request runs the finalizer again.
                 state = await finalize_structured_output(
                     runtime, request_id, session_id, trace_id, state, structured_output_request
                 )
-                await self._save(state)
-            turn_payload = await self._step(
-                "turn.persist",
-                persist_completed_turn,
+            # Saving a turn twice stores it once, so a recovered request that
+            # saved it already gets the stored turn back.
+            turn_payload = await persist_completed_turn(
                 runtime,
                 request_id,
                 session_id,
@@ -746,7 +770,7 @@ class ChildInteractionRelay:
             run.runtime,
             run.request_id,
             run.session_id,
-            run.checkpoint["trace_id"],
+            run.trace_id,
             interaction_id=interaction_id,
             interaction_type=interaction_type,
             prompt=str(interaction.get("prompt") or ""),
@@ -765,7 +789,7 @@ class ChildInteractionRelay:
             run.runtime,
             run.request_id,
             run.session_id,
-            run.checkpoint["trace_id"],
+            run.trace_id,
             interaction_id=interaction_id,
             response=ack.get("response"),
             timed_out=bool(ack.get("timed_out")),

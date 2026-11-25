@@ -1,8 +1,8 @@
 """The request engine: runs an agent's requests in its process.
 
 Each request runs as an asyncio task over a ``RequestRun``. Its durable state
-is the request's row in ``runtime_request`` (status and checkpoint) and its
-events, so the engine holds nothing that a restart would lose:
+is the request's row in ``runtime_request`` (its status) and its events, so
+the engine holds nothing that a restart would lose:
 
 - ``open`` continues every request of the agent whose status is ``running``.
   That one query is all recovery costs; an idle engine makes no others.
@@ -11,7 +11,7 @@ events, so the engine holds nothing that a restart would lose:
   slot back while it waits on the user or on its ``RunSubAgents`` children.
 - ``cancel_request`` records the request cancelled and stops its loop at the
   next step boundary.
-- ``continue_request`` runs a request on from its checkpoint; recovery
+- ``continue_request`` runs a request on from its events; recovery
   calls it for each running request when the engine opens.
 - ``answer_interaction`` checks the answer against the interaction's schema,
   stores it and wakes the loop waiting on it.
@@ -119,17 +119,16 @@ class RequestEngine:
             message=message,
             session_id=session_id,
             request_metadata=request_metadata,
-            checkpoint=None,
             slots=self._slots,
         )
         self._runs[request_id] = run
         self._spawn(request_id, run.run())
 
     async def continue_request(self, request_id: str) -> None:
-        """Run the request again from its checkpoint, once it is recorded running.
+        """Run the request again from its events, once it is recorded running.
 
         A cancelled loop may still be finishing its last step; the new loop
-        starts after it, from the checkpoint that step leaves.
+        starts after it, from the events that step leaves.
         """
         previous = self._tasks.get(request_id)
         run = self._runs.get(request_id)
@@ -278,7 +277,6 @@ class RequestEngine:
             message=accepted["message"],
             session_id=accepted["session_id"],
             request_metadata=accepted["request_metadata"],
-            checkpoint=await self._store.get_checkpoint(request_id),
             slots=self._slots,
         )
         self._runs[request_id] = run

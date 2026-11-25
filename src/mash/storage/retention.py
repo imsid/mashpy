@@ -8,9 +8,7 @@ statement holds locks for long:
   their events and their seq counter;
 - events that belong to no request, created before the window;
 - finished workflow runs before the window, with their steps and step
-  events, unless an eval experiment points at the run;
-- checkpoint images (``runtime_blob``) that no remaining request references
-  and no checkpoint save used within the window.
+  events, unless an eval experiment points at the run.
 
 Conversation turns (``memory_turns``), Cortex, feedback and evals are kept.
 A deleted request can no longer be read or shown in traces.
@@ -30,7 +28,7 @@ MASH_RETENTION_DAYS_ENV = "MASH_RETENTION_DAYS"
 PURGE_INTERVAL_SECONDS = 3600.0
 # Requests and runs per statement; each takes all of its events with it.
 OWNER_BATCH = 100
-# Rows per statement for events without a request, and for blobs.
+# Rows per statement for events without a request.
 ROW_BATCH = 1000
 
 logger = logging.getLogger(__name__)
@@ -117,25 +115,6 @@ _PURGE_WORKFLOW_RUNS = """
     RETURNING run_id
 """
 
-# A checkpoint save bumps last_used_at before it writes the reference, and the
-# outer filter is checked again against a row a save just bumped, so a blob a
-# save is about to use is never deleted.
-_PURGE_BLOBS = """
-    DELETE FROM runtime_blob
-    WHERE last_used_at < %(cutoff)s
-      AND sha256 IN (
-          SELECT blob.sha256 FROM runtime_blob AS blob
-          WHERE blob.last_used_at < %(cutoff)s
-            AND NOT EXISTS (
-                SELECT 1 FROM runtime_request
-                WHERE runtime_request.blob_refs @> ARRAY[blob.sha256]
-            )
-          LIMIT %(batch)s
-      )
-    RETURNING sha256
-"""
-
-
 async def _drain(pool: Any, sql: str, *, cutoff: float, batch: int) -> int:
     """Run one batched delete until a batch comes back short; rows deleted."""
     total = 0
@@ -159,8 +138,6 @@ async def purge(pool: Any, *, cutoff: float) -> dict[str, int]:
         "workflow_runs": await _drain(
             pool, _PURGE_WORKFLOW_RUNS, cutoff=cutoff, batch=OWNER_BATCH
         ),
-        # Last: the requests deleted above no longer hold their blobs.
-        "blobs": await _drain(pool, _PURGE_BLOBS, cutoff=cutoff, batch=ROW_BATCH),
     }
     return counts
 
@@ -209,12 +186,11 @@ class Retention:
         if any(counts.values()):
             logger.info(
                 "retention (%g days) deleted %d requests, %d events without a "
-                "request, %d workflow runs and %d images",
+                "request and %d workflow runs",
                 self.days,
                 counts["requests"],
                 counts["unowned_events"],
                 counts["workflow_runs"],
-                counts["blobs"],
             )
         return counts
 

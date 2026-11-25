@@ -62,7 +62,7 @@ The runtime is intentionally split into four layers:
    - `engine/engine.py`
    - `engine/loop.py`
    - `engine/steps.py`
-   - runs each request as a loop that checkpoints to `runtime_request` after every step
+   - runs each request as a loop whose only record is the event log
 
 4. **Supporting internal helpers**
    - `factory.py`
@@ -171,9 +171,9 @@ A request's lifecycle state is one such record, not an inference: the events tha
 ### Runtime Durability
 
 Durability in this package means an accepted request survives its process.
-Each request runs as a loop whose state is checkpointed to its
-`runtime_request` row after every step; a restarted process continues the
-agent's running requests from their checkpoints. See
+Each request runs as a loop that keeps its state in memory and appends each
+step's output as events; a restarted process rebuilds each running request's
+state from its events and continues it. See
 [`engine/README.md`](./engine/README.md).
 
 - [`engine/engine.py`](./engine/engine.py)
@@ -181,7 +181,7 @@ agent's running requests from their checkpoints. See
     `continue_request(...)`, `get_request_status(...)`, `cancel_request(...)`,
     `answer_interaction(...)`
 - [`engine/loop.py`](./engine/loop.py)
-  - `RequestRun`: one request's loop and checkpoint
+  - `RequestRun`: one request's loop
 - [`engine/steps.py`](./engine/steps.py)
   - the steps the loop runs
 
@@ -344,7 +344,7 @@ lifecycle.
   - `RequestEngine`: starts, recovers, cancels and continues requests, stores interaction answers; works on at most `MASH_AGENT_MAX_RUNNING` requests at once (default 32), and a request gives its slot back while it waits on an interaction or on its `RunSubAgents` children
 
 - [`engine/loop.py`](./engine/loop.py)
-  - `RequestRun`: the request loop and its checkpoint
+  - `RequestRun`: the request loop
 
 - [`engine/steps.py`](./engine/steps.py)
   - the loop's steps
@@ -417,7 +417,7 @@ At a high level, one request flows like this:
    policy snapshot go into the request metadata, and a `subagent` parent's
    `started_by` and `parent_request_id` into the accepted event's payload.
 3. `AgentRuntime` delegates execution start to the configured `RequestEngine`.
-4. The request engine runs the loop in `engine/loop.py` over the steps in `engine/steps.py`, checkpointing after each.
+4. The request engine runs the loop in `engine/loop.py` over the steps in `engine/steps.py`; each step appends its output as events.
 5. Those steps load/build context, run think/tool phases, persist turns, and append `RuntimeEvent`s.
 6. API clients stream those events from `runtime_store` through SSE replay in `server.py`; an append wakes the stream in memory.
 7. Terminal state is represented by `request.completed` or `request.error`.
@@ -552,7 +552,7 @@ Interactions allow an agent to pause mid-execution and request information or ap
 ### How Interactions Work
 
 1. During the request loop, after `plan_request_step`, if the action payload contains an `interaction` field, the loop opens an interaction.
-2. The loop emits a `mash.interaction.start` event (visible on SSE as `request.interaction.create`) and records the interaction's id and deadline in its checkpoint.
+2. The loop emits a `mash.interaction.start` event (visible on SSE as `request.interaction.create`) under an id derived from the interaction's place in the request; its deadline is the stored open time plus its `timeout_seconds`.
 3. The loop waits in process until the deadline: the interaction type's
    timeout, capped by the policy's `wait_max_seconds`. A browser handoff has
    no timeout of its own and waits for the cap; with no cap it waits until
@@ -562,7 +562,7 @@ Interactions allow an agent to pause mid-execution and request information or ap
 
 ### Durability
 
-An interaction's answer is its `mash.interaction.end` event. If the process restarts while a request waits, the recovered loop finds the interaction in its checkpoint, reads the answer from the log if one arrived, and otherwise waits out the rest of the deadline. An answer to an interaction that is already closed returns `409 INTERACTION_CLOSED`, and an answer its `schema` does not allow returns `400 INVALID_RESPONSE` and leaves it open. An approval runs its tools only on `"approve"`.
+An interaction's answer is its `mash.interaction.end` event. If the process restarts while a request waits, the recovered loop derives the same id, finds the interaction, reads the answer from the log if one arrived, and otherwise waits out the rest of the deadline. An answer to an interaction that is already closed returns `409 INTERACTION_CLOSED`, and an answer its `schema` does not allow returns `400 INVALID_RESPONSE` and leaves it open. An approval runs its tools only on `"approve"`.
 
 ### Timeout Defaults
 
@@ -648,13 +648,13 @@ There are three layers of failure handling, each covering a different scenario:
 | Retries exhausted or terminal error | `REQUEST_FAILED` emitted; the event closes `failed`. A request with no parent saves its message as a failed turn, which the next request replays with the error | Post the message again as a new event |
 | Cancelled | `REQUEST_CANCELLED` emitted; the event closes `cancelled` | Post the message again as a new event |
 | Step budget exhausted (`max_steps`) | `REQUEST_FAILED` with `error_code=max_steps_exhausted`, `stop_reason=max_steps` | Raise `max_steps` or narrow the task |
-| Process crash (OOM, kill, hardware) | The restarted process continues it from its checkpoint | None; after 10 recoveries it fails with `error_type=recovery_limit` |
+| Process crash (OOM, kill, hardware) | The restarted process continues it from its events | None; after 10 recoveries it fails with `error_type=recovery_limit` |
 
 **Step-level retry** covers transient errors during normal operation. If retries exhaust or the error is non-retryable, the workflow emits `REQUEST_FAILED` with `error_code` and `retryable` fields from `classify_error()` so the developer knows what happened.
 
 **Budget exhaustion is a failure, not a completion.** An agent that spends its whole `max_steps` budget without finishing raises `MaxStepsExhaustedError`, so the request fails before turn persistence, structured-output finalization, or `REQUEST_COMPLETED`. This keeps an unfinished turn from being finalized into a schema-valid but empty business result that a workflow would thread into its next step.
 
-**Process crash recovery** covers the case where an agent process dies mid-step (killed, OOM, hardware failure). No exception handler runs, so no `REQUEST_FAILED` is emitted, and the request stays `running` in `runtime_request`. The host restarts the process, and on startup its engine reads the agent's `running` requests and continues each from its checkpoint; the step that was running runs again. Only the agent's own process continues its requests, since recovery selects by `agent_id`. A host restart restarts every agent the same way, and a disabled agent's running requests continue when it is enabled. This is one query at startup; an idle process makes no others. Recovered requests take running slots like new ones, so at most `MASH_AGENT_MAX_RUNNING` continue at once.
+**Process crash recovery** covers the case where an agent process dies mid-step (killed, OOM, hardware failure). No exception handler runs, so no `REQUEST_FAILED` is emitted, and the request stays `running` in `runtime_request`. The host restarts the process, and on startup its engine reads the agent's `running` requests and continues each from its events; work with no end event runs again. Only the agent's own process continues its requests, since recovery selects by `agent_id`. A host restart restarts every agent the same way, and a disabled agent's running requests continue when it is enabled. This is one query at startup; an idle process makes no others. Recovered requests take running slots like new ones, so at most `MASH_AGENT_MAX_RUNNING` continue at once.
 
 ### Request Status and Cancel
 
@@ -662,7 +662,7 @@ There are three layers of failure handling, each covering a different scenario:
 
 - `get_request_status(request_id)` reads the request's status from `runtime_request`: `running`, `completed`, `failed` or `cancelled`. A `running` request whose stream has gone quiet after a crash continues when its agent's process restarts.
 
-- `cancel_request(request_id)` acks a pending interaction as cancelled, emits `REQUEST_CANCELLED`, and stops the loop at the next step boundary; the step in flight finishes and checkpoints. Idempotent on a request that is already terminal.
+- `cancel_request(request_id)` acks a pending interaction as cancelled, emits `REQUEST_CANCELLED`, and stops the loop at the next step boundary; the step in flight finishes and appends its events. Idempotent on a request that is already terminal.
 
 On the host, `GET /api/v1/agent/{agent_id}/request/{request_id}/status` and `GET /api/v1/agent/{agent_id}/trace/{trace_id}/status` read a request's status. Cancelling goes through the event (`POST /api/v1/sessions/{session_id}/events/{event_id}/cancel`): `Pool.cancel_with_children` cancels the companion's request and its running `RunSubAgents` children, each through its own agent, skipping a child whose agent is disabled. The request, parked in its `RunSubAgents` step, stops at the step boundary once they end. `GET /api/v1/agent/{agent_id}/sessions/{session_id}/requests` lists a session's requests newest first, filtered by `status` and `started_by`.
 
@@ -693,7 +693,7 @@ Use this when you need to change how durable work is started or recovered:
 Questions that belong here:
 
 - How is a request started durably?
-- What does the checkpoint hold, and when is it saved?
+- What do the events record, and how is a request rebuilt from them?
 - How are recovery and cancel handled?
 
 ## Design Rules

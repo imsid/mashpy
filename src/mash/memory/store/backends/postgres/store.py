@@ -420,12 +420,34 @@ class PostgresStore(MemoryStore):
         session_id: str,
         agent_id: str,
         turns: int,
+        *,
+        trace_ids: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         await self.open()
         async with self._pool.connection() as conn:
-            rows = await self._fetchall(
-                conn,
-                """
+            if trace_ids is not None:
+                # The turns a request recorded at its context load, by primary key.
+                rows = await self._fetchall(
+                    conn,
+                    """
+                    SELECT trace_id, user_message, agent_response, session_total_tokens,
+                           replayable, metadata, created_at
+                    FROM memory_turns
+                    WHERE trace_id = ANY(%s) AND session_id = %s AND agent_id = %s
+                    ORDER BY created_at ASC, trace_id ASC
+                    """,
+                    (list(trace_ids), session_id, agent_id),
+                )
+            else:
+                rows = await self._replay_rows(conn, session_id, agent_id, turns)
+        return self._replay_turns_from_rows(rows)
+
+    async def _replay_rows(
+        self, conn: Any, session_id: str, agent_id: str, turns: int
+    ) -> List[Any]:
+        return await self._fetchall(
+            conn,
+            """
                 WITH summary AS (
                     SELECT trace_id, created_at FROM memory_turns
                     WHERE session_id = %s AND agent_id = %s
@@ -453,6 +475,8 @@ class PostgresStore(MemoryStore):
                 """,
                 (session_id, agent_id, session_id, agent_id, max(0, int(turns))),
             )
+
+    def _replay_turns_from_rows(self, rows: List[Any]) -> List[Dict[str, Any]]:
         replay: List[Dict[str, Any]] = []
         for row in rows:
             metadata = self._load_json_value(row["metadata"])

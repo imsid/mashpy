@@ -1,4 +1,4 @@
-"""The request engine: checkpoints, crash recovery, interactions, cancel and resume.
+"""The request engine: crash recovery from the event log, interactions, cancel.
 
 A crash is an engine closed mid-request: its tasks are cancelled and the
 request stays ``running``, as when the agent process dies. A second runtime
@@ -137,7 +137,7 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
     def _ask_spec(self) -> _Spec:
         return _Spec(AskUserTool(), tool_name="AskUser", arguments={"question": "Which one?"})
 
-    async def test_a_crashed_request_continues_from_its_checkpoint(self) -> None:
+    async def test_a_crashed_request_continues_from_its_events(self) -> None:
         tool = _BlockingTool()
         spec = _Spec(tool, tool_name="work", arguments={})
         first = await self._runtime(spec)
@@ -156,8 +156,8 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(end.payload["status"], "ok")
         self.assertEqual(end.payload["response"]["text"], "worked")
-        # The tool was mid-call, so it runs again; the model's first turn was
-        # checkpointed, so the model is asked only for its final answer.
+        # The tool was mid-call, so it runs again; the model's first turn has
+        # its chat.end, so the model is asked only for its final answer.
         self.assertEqual(tool.runs, 2)
         self.assertEqual(spec.model_calls, 2)
 
@@ -178,6 +178,20 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
             await runtime.answer_interaction(request_id, "itr_unknown", "x")
 
     async def test_the_policy_caps_an_interactions_deadline(self) -> None:
+        from mash.runtime.engine.loop import RequestRun
+
+        deadlines: dict[str, float] = {}
+        await_answer = RequestRun._await_answer
+
+        async def _recorded(run, interaction_id, *, deadline, interaction_type):
+            deadlines[run.request_id] = deadline
+            return await await_answer(
+                run, interaction_id, deadline=deadline, interaction_type=interaction_type
+            )
+
+        patcher = patch.object(RequestRun, "_await_answer", _recorded)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         runtime = await self._runtime(self._ask_spec())
         for wait_max, expected in ((60, 60), (86400, 3600), (None, 3600)):
             with self.subTest(wait_max=wait_max):
@@ -193,14 +207,13 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
                     request_id, RuntimeEventType.INTERACTION_START.value
                 )
                 self.assertEqual(opened.payload["timeout_seconds"], expected)
-                # The deadline the loop waits on, recorded in the checkpoint.
-                checkpoint = await self.runtime_store.get_checkpoint(request_id)
-                [deadline] = [
-                    step["deadline"]
-                    for name, step in checkpoint["memo"].items()
-                    if name.startswith("ask_user.0.open.")
-                ]
-                self.assertAlmostEqual(deadline - opened.created_at, expected, delta=5)
+                # The deadline the loop waits on: the stored open time plus the
+                # stored timeout.
+                for _ in range(300):
+                    if request_id in deadlines:
+                        break
+                    await asyncio.sleep(0.01)
+                self.assertEqual(deadlines[request_id], opened.created_at + expected)
                 await runtime.cancel_request(request_id)
 
     async def test_a_child_asks_the_user_under_a_derived_id(self) -> None:

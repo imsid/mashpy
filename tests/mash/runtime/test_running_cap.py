@@ -176,15 +176,16 @@ class RunningCapTests(unittest.IsolatedAsyncioTestCase):
 
 class SlotHandoffTests(unittest.IsolatedAsyncioTestCase):
     def _run(self, slots: asyncio.Semaphore) -> RequestRun:
-        return RequestRun(
+        run = RequestRun(
             object(),  # type: ignore[arg-type]
             request_id="req-1",
             message="hi",
             session_id="s-1",
             request_metadata={},
-            checkpoint={"trace_id": "trace-1"},
             slots=slots,
         )
+        run.trace_id = "trace-1"
+        return run
 
     async def test_run_subagents_gives_the_slot_back_while_children_run(self) -> None:
         slots = asyncio.Semaphore(1)
