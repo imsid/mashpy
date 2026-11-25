@@ -9,6 +9,24 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.41.0](https://github.com/imsid/mashpy/compare/mashpy-v0.40.1...mashpy-v0.41.0) (2026-11-25)
+
+
+### Features
+
+* **runtime:** tools read the event's session id inside subagents ([#295](https://github.com/imsid/mashpy/issues/295)) ([167d9b1](https://github.com/imsid/mashpy/commit/167d9b1e46413383608bb26094ebf885c360a6fd))
+
+
+### Bug Fixes
+
+* **runtime:** a failed request leaves a turn, so "try again" retries it ([#299](https://github.com/imsid/mashpy/issues/299)) ([bb3012b](https://github.com/imsid/mashpy/commit/bb3012bdfa9e50add2a3d03c536a9621956c2773))
+* **runtime:** retry Gemini malformed_response instead of failing the request ([#298](https://github.com/imsid/mashpy/issues/298)) ([e4a7a16](https://github.com/imsid/mashpy/commit/e4a7a1630f3eae7c259dbdb43544cb3d9c1e1149))
+
+
+### Documentation
+
+* move the SDK reference out of CLAUDE.md into docs/sdk-reference.md ([#293](https://github.com/imsid/mashpy/issues/293)) ([ac016f4](https://github.com/imsid/mashpy/commit/ac016f40e08181ce3f8e7b712b63473a79c1badc))
+
 ## [0.40.1](https://github.com/imsid/mashpy/compare/mashpy-v0.40.0...mashpy-v0.40.1) (2026-11-22)
 
 
