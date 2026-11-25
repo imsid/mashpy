@@ -15,6 +15,7 @@ from ..core.context import (
 )
 from ..core.context import ToolResult as ContextToolResult
 from ..memory.compaction import compact_conversation
+from ..memory.failed_turns import format_failed_request, is_failed_turn
 from ..memory.ledger import format_ledger
 from . import sessions
 
@@ -108,18 +109,28 @@ async def build_context_with_history(
         # the reply itself the model reads it as its own writing and copies
         # it into new replies. Only the model sees it: stored turns keep
         # their text.
+        # A failed request has no reply to replay. Its message and error go
+        # before the next user message too, after the ledger, so "try again"
+        # refers to it.
         ledger_text = ""
+        failed_text = ""
         for turn in turns_to_include:
             meta = turn.get("metadata") or {}
             user_text = turn.get("user_message")
+            if is_failed_turn(turn):
+                failed_text = _blocks(
+                    failed_text, format_failed_request(str(user_text or ""), meta)
+                )
+                continue
             if user_text and meta.get("type") != "summary_checkpoint":
                 context.add_message(
                     MessageRole.USER,
-                    _with_ledger(ledger_text, user_text),
+                    _blocks(ledger_text, failed_text, user_text),
                     source="history",
                     trace_id=turn.get("trace_id"),
                 )
                 ledger_text = ""
+                failed_text = ""
 
             agent_text = turn.get("agent_response")
             if agent_text:
@@ -132,15 +143,14 @@ async def build_context_with_history(
             turn_ledger = format_ledger(meta.get("ledger") or [])
             if turn_ledger:
                 ledger_text = turn_ledger
-        if ledger_text:
-            message = _with_ledger(ledger_text, message)
+        message = _blocks(ledger_text, failed_text, message)
 
     context.add_user_message(message)
     return context
 
 
-def _with_ledger(ledger_text: str, message: str) -> str:
-    return f"{ledger_text}\n\n{message}" if ledger_text else message
+def _blocks(*parts: str) -> str:
+    return "\n\n".join(part for part in parts if part)
 
 
 def compute_turn_tokens(response_metadata: Dict[str, Any]) -> int:

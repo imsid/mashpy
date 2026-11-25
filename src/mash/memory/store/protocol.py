@@ -126,8 +126,8 @@ class MemoryStore(Protocol):
     ) -> List[Dict[str, Any]]:
         """The app's turns after ``after``, oldest first, across agents and sessions.
 
-        Leaves out workflow and subagent turns: these are the turns where the
-        app spoke to the pool. Each row has ``trace_id``, ``session_id``,
+        Leaves out workflow and subagent turns, and turns of failed requests:
+        these are the turns where the app spoke to the pool and got a reply. Each row has ``trace_id``, ``session_id``,
         ``agent_id``, ``user_message``, ``agent_response`` and ``created_at``.
         """
         ...

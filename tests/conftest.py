@@ -814,6 +814,7 @@ class _TestMemoryStore:
             if t.get("app_id") == app_id
             and t.get("workflow_id") is None
             and "subagent_id" not in (t.get("metadata") or {})
+            and (t.get("metadata") or {}).get("type") != "failed_request"
             and float(t.get("created_at") or 0.0) > after
         ]
         return sorted(rows, key=lambda t: (float(t.get("created_at") or 0.0), t["trace_id"]))

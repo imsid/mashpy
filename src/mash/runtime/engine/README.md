@@ -89,11 +89,16 @@ deduped by key, so a rerun appends nothing twice.
    whether the request is done, and appends `mash.step.end`. It clears
    `action` and `result_payloads` and advances `loop_index`.
 7. Once done: `finalize_structured_output` when a schema was requested and no
-   tool set it, `persist_completed_turn` (the only write to conversation
+   tool set it, `persist_completed_turn` (the turn's write to conversation
    memory), and `complete_request`.
 
 An exception from any step ends the request with `fail_request`, whose payload
 is `classify_error(...)`: `error`, `error_type`, `error_code`, `retryable`.
+Before that, a request with no parent saves its user message as a failed turn
+with `persist_failed_turn`: no reply, and the error in its metadata. Replay
+shows it to the model in a `<failed_request>` block before the next user
+message, so "try again" refers to it. A subagent's or workflow task's failure
+saves no turn.
 Planning and tool steps first retry transient errors in process with
 `retry_transient(...)` from [`../errors.py`](../errors.py).
 

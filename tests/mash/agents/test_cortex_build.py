@@ -434,7 +434,8 @@ class PostgresCortexBuildTests(unittest.IsolatedAsyncioTestCase):
         [pinned] = (await self.store.load(self.app_id)).entries
         self.assertEqual(pinned.content, "Acme")
 
-    async def test_list_user_turns_skips_workflow_subagent_and_other_users(self) -> None:
+    async def test_list_user_turns_skips_workflow_subagent_failed_and_other_users(self) -> None:
+        from mash.memory.failed_turns import failed_turn_metadata
         from mash.memory.store import PostgresStore
 
         memory_store = PostgresStore(self.url)
@@ -444,6 +445,7 @@ class PostgresCortexBuildTests(unittest.IsolatedAsyncioTestCase):
                 ("own", {}),
                 ("wf", {"workflow_id": "wf"}),
                 ("sub", {"metadata": {"subagent_id": "research"}}),
+                ("failed", {"metadata": failed_turn_metadata({"error": "boom"})}),
             ):
                 await memory_store.save_turn(
                     trace_id=f"{self.app_id}-{trace}", session_id="s", agent_id="assistant",

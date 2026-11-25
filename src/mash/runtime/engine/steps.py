@@ -14,6 +14,7 @@ import httpx
 from ...core.context import Context, Response, ToolCall
 from ...core.context import ToolResult as ContextToolResult
 from ...core.llm.types import LLMContentBlock, LLMMessage, LLMRequest
+from ...memory.failed_turns import failed_turn_metadata
 from ...memory.ledger import build_ledger
 from ...logging.trace_context import (
     bound_loop_index,
@@ -929,6 +930,49 @@ async def persist_completed_turn(
         extra_metadata=request_metadata,
     )
     return turn_payload
+
+
+async def persist_failed_turn(
+    runtime: "AgentRuntime",
+    session_id: str,
+    trace_id: str | None,
+    message: str,
+    error_payload: dict[str, Any],
+    request_metadata: dict[str, Any],
+) -> None:
+    """Save a failed request's user message as a turn with no reply.
+
+    Replay shows the message and the error before the next user message, so
+    "try again" refers to this request. The session's token total is carried
+    over unchanged.
+    """
+    resolved_trace_id = str(trace_id or uuid.uuid4())
+    latest_turns = await runtime.store.get_turns(
+        session_id=session_id, agent_id=runtime.agent_id, limit=1
+    )
+    latest_turn = latest_turns[-1] if latest_turns else None
+    if latest_turn is not None and str(latest_turn.get("trace_id")) == resolved_trace_id:
+        # The request failed after its turn was saved.
+        return
+    metadata = dict(request_metadata or {})
+    metadata.update(failed_turn_metadata(error_payload))
+    metadata["trace_id"] = resolved_trace_id
+    metadata["token_usage"] = {}
+    await runtime.store.save_turn(
+        app_id=app_id_from_request_metadata(metadata),
+        trace_id=resolved_trace_id,
+        session_id=session_id,
+        agent_id=runtime.agent_id,
+        user_message=message,
+        agent_response="",
+        signals={},
+        session_total_tokens=(
+            _int_or_zero(latest_turn.get("session_total_tokens"))
+            if latest_turn is not None
+            else 0
+        ),
+        metadata=metadata,
+    )
 
 
 async def finalize_structured_output(
