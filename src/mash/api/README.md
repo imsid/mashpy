@@ -297,6 +297,10 @@ the event, which keeps them after retention deletes the request.
   bound for the duration of the run so tools can read it via
   `mash.logging.get_request_metadata()`, and inherited by `RunSubAgents`
   children.
+- Tools in the event's request and in every `RunSubAgents` child under it
+  read the event's session with `mash.logging.get_event_session_id()`. The
+  H2A relay sets a child's value from the parent request as stored, never
+  from the caller's body.
 
 `POST /api/v1/sessions/{session_id}/events` with `interaction_id`
 - An answer: `{event_id, interaction_id, response}` and nothing else, else

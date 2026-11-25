@@ -53,16 +53,21 @@ def bearer_token(request: Request) -> str:
     return header[7:].strip()
 
 
-async def _stored_host(store, request_id: str) -> dict | None:
-    """The host snapshot stored with a request's accepted event, or None."""
+async def _stored_metadata(store, request_id: str) -> dict:
+    """The request metadata stored with a request's accepted event, or {}."""
     events = await store.list_request_events(request_id)
     accepted = next(
         (e for e in events if e.event_type == RuntimeEventType.INVOKE_AGENT_START.value),
         None,
     )
     if accepted is None:
-        return None
-    host = dict((accepted.payload or {}).get("request_metadata") or {}).get("host")
+        return {}
+    return dict((accepted.payload or {}).get("request_metadata") or {})
+
+
+async def _stored_host(store, request_id: str) -> dict | None:
+    """The host snapshot stored with a request's accepted event, or None."""
+    host = (await _stored_metadata(store, request_id)).get("host")
     return dict(host) if isinstance(host, dict) else None
 
 
@@ -151,7 +156,8 @@ def build_h2a_router() -> APIRouter:
             )
         # The composition the parent was submitted with, as stored; the body's
         # "host" is the caller's copy and is not trusted.
-        host = await _stored_host(store, parent_request_id)
+        stored = await _stored_metadata(store, parent_request_id)
+        host = stored.get("host") if isinstance(stored.get("host"), dict) else None
         agents = host.get("agents") if host is not None else None
         if not isinstance(agents, list) or agent_id not in agents:
             return h2a_error(
@@ -189,6 +195,13 @@ def build_h2a_router() -> APIRouter:
             )
             if refused is not None:
                 return refused
+
+        # The event session is the parent's, as stored; the caller's copy is
+        # not trusted.
+        parent = {k: v for k, v in parent.items() if k != "event_session_id"}
+        event_session_id = stored.get("event_session_id")
+        if isinstance(event_session_id, str) and event_session_id:
+            parent["event_session_id"] = event_session_id
 
         try:
             client = state.pool.get_client(agent_id)

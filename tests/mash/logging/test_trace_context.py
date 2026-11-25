@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import unittest
 
-from mash.logging import bound_request_metadata, get_request_metadata
+from mash.logging import (
+    bound_event_session_id,
+    bound_request_metadata,
+    get_event_session_id,
+    get_request_metadata,
+)
 
 
 class RequestMetadataContextTests(unittest.TestCase):
@@ -40,6 +45,16 @@ class RequestMetadataContextTests(unittest.TestCase):
             with bound_request_metadata({"tenant": "inner"}):
                 self.assertEqual(get_request_metadata(), {"tenant": "inner"})
             self.assertEqual(get_request_metadata(), {"tenant": "outer"})
+
+
+class EventSessionContextTests(unittest.TestCase):
+    def test_unbound_is_none(self) -> None:
+        self.assertIsNone(get_event_session_id())
+
+    def test_bound_value_is_readable_and_reset(self) -> None:
+        with bound_event_session_id("s-user"):
+            self.assertEqual(get_event_session_id(), "s-user")
+        self.assertIsNone(get_event_session_id())
 
 
 if __name__ == "__main__":

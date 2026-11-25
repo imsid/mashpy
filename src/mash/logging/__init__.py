@@ -8,6 +8,7 @@ from .events import (
 )
 from .logger import EventLogger
 from .trace_context import (
+    bound_event_session_id,
     bound_host_id,
     bound_request_id,
     bound_request_metadata,
@@ -16,6 +17,7 @@ from .trace_context import (
     bound_trace_id,
     clear_request_id,
     clear_trace_id,
+    get_event_session_id,
     get_host_id,
     get_request_id,
     get_request_metadata,
@@ -33,12 +35,14 @@ __all__ = [
     "MCPEvent",
     "LLMEvent",
     "EventLogger",
+    "bound_event_session_id",
     "bound_host_id",
     "bound_request_id",
     "bound_request_metadata",
     "bound_session_id",
     "bound_subagent_id_prefix",
     "bound_trace_id",
+    "get_event_session_id",
     "get_host_id",
     "get_request_metadata",
     "get_session_id",

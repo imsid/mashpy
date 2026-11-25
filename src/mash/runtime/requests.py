@@ -105,8 +105,14 @@ def parent_request_metadata(parent: Any, *, agent_id: str) -> dict[str, Any]:
             raise ValueError("parent.started_by must be parent.agent_id")
         if normalized["parent_request_id"] != normalized["request_id"]:
             raise ValueError("parent.parent_request_id must be parent.request_id")
+        event_session_id = parent.get("event_session_id")
+        if event_session_id is not None:
+            if not isinstance(event_session_id, str) or not event_session_id.strip():
+                raise ValueError("parent.event_session_id must be a non-empty string")
+            normalized["event_session_id"] = event_session_id.strip()
         return {
             "parent": normalized,
+            "event_session_id": normalized.get("event_session_id"),
             "primary_session_id": normalized["session_id"],
             "primary_agent_id": normalized["agent_id"],
             "subagent_id": agent_id,
@@ -191,6 +197,9 @@ async def submit_request(
     }
     if parent is not None:
         request_metadata.update(parent_request_metadata(parent, agent_id=self.agent_id))
+    else:
+        # Only an event's request has no parent: its session is the event's.
+        request_metadata["event_session_id"] = session_id
     if normalized_structured_output is not None:
         request_metadata["structured_output_request"] = normalized_structured_output
     if host_snapshot is not None:

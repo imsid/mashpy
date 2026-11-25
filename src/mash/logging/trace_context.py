@@ -22,6 +22,10 @@ _session_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "mash_session_id",
     default=None,
 )
+_event_session_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "mash_event_session_id",
+    default=None,
+)
 _workflow_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "mash_workflow_id",
     default=None,
@@ -153,6 +157,28 @@ def bound_session_id(session_id: Optional[str]) -> Iterator[None]:
         yield
     finally:
         _session_id.reset(token)
+
+
+def get_event_session_id() -> Optional[str]:
+    """Get the session of the event that started the current request tree.
+
+    It is the session an event was posted to (the one ``/resume`` and
+    ``POST /sessions/{id}/events`` use). A request posted for an event gets
+    its own session; a ``RunSubAgents`` child, at any depth, gets the session
+    of the event that started the tree. ``None`` for a request a workflow
+    started.
+    """
+    return _event_session_id.get()
+
+
+@contextmanager
+def bound_event_session_id(event_session_id: Optional[str]) -> Iterator[None]:
+    """Temporarily bind the event session ID for the current task context."""
+    token = _event_session_id.set(event_session_id)
+    try:
+        yield
+    finally:
+        _event_session_id.reset(token)
 
 
 def get_host_id() -> Optional[str]:
