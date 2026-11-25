@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -33,6 +34,7 @@ from ...logging import (
     bound_trace_id,
 )
 from ...logging.trace_context import bound_workflow_ids
+from ...tools.forward import FORWARD_ANSWER
 from ...tools.subagent import bound_interaction_relay
 from .. import context as context_helpers
 from ..errors import classify_error, retry_transient
@@ -437,6 +439,77 @@ class RequestRun:
             "result": result,
         }
 
+    async def _forward_answer(
+        self, state: dict[str, Any], *, tool_call: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Check a ForwardAnswer call; its result payload, with the reply when accepted.
+
+        The child is looked up in the full ``RunSubAgents`` results this request
+        recorded on ``execute_tool.end``, so an answer the context shows as a
+        preview still forwards whole. A refusal is an error result, and the
+        model goes on.
+        """
+
+        def refused(message: str) -> dict[str, Any]:
+            return {
+                "tool_call_id": tool_call.get("id", ""),
+                "tool_name": FORWARD_ANSWER,
+                "duration_ms": 0,
+                "result": {"content": message, "is_error": True, "metadata": {}},
+            }
+
+        calls = list((state.get("action") or {}).get("tool_calls") or [])
+        if len(calls) != 1:
+            return refused(
+                "ForwardAnswer must be the only tool call in its step; call it alone "
+                "after RunSubAgents has returned."
+            )
+        request_id = str((tool_call.get("arguments") or {}).get("request_id") or "").strip()
+        if not request_id:
+            return refused("request_id is required")
+        entry = None
+        for event in await self.runtime.runtime_store.list_request_events(self.request_id):
+            payload = event.payload or {}
+            if (
+                event.event_type != RuntimeEventType.EXECUTE_TOOL_END.value
+                or (payload.get("attributes") or {}).get("gen_ai.tool.name") != "RunSubAgents"
+            ):
+                continue
+            result = payload.get("result") or {}
+            if result.get("is_error"):
+                continue
+            try:
+                entries = json.loads(str(result.get("content") or ""))
+            except ValueError:
+                continue
+            for candidate in entries if isinstance(entries, list) else []:
+                if isinstance(candidate, dict) and candidate.get("request_id") == request_id:
+                    entry = candidate
+        if entry is None:
+            return refused(
+                f"no RunSubAgents entry with request_id '{request_id}' in this turn"
+            )
+        status = entry.get("status")
+        if status != "completed":
+            return refused(
+                f"the child request is {status}, not completed: inspect it with "
+                "InspectAgentTrace and report what happened instead of forwarding"
+            )
+        response = entry.get("response")
+        if not isinstance(response, str) or not response.strip():
+            return refused("the child has no text response to forward; write your own reply")
+        return {
+            "tool_call_id": tool_call.get("id", ""),
+            "tool_name": FORWARD_ANSWER,
+            "duration_ms": 0,
+            "result": {
+                "content": json.dumps({"forwarded": request_id}),
+                "is_error": False,
+                "metadata": {"forwarded": request_id},
+            },
+            "reply": response,
+        }
+
     async def _loop_handled_call(
         self,
         state: dict[str, Any],
@@ -474,6 +547,13 @@ class RequestRun:
         tool_call: dict[str, Any],
     ) -> dict[str, Any]:
         name = str(tool_call.get("name") or "")
+        if name == FORWARD_ANSWER:
+            return await self._loop_handled_call(
+                state,
+                tool_call=tool_call,
+                loop_index=loop_index,
+                run=lambda: self._forward_answer(state, tool_call=tool_call),
+            )
         handler = {"AskUser": self._ask_user, "browser_handoff": self._browser_handoff}.get(name)
         if handler is not None:
             return await self._loop_handled_call(

@@ -290,19 +290,29 @@ lifecycle.
     runtime (the spec's tools, skills and LLM, then the sandbox, browser and
     MCP tools), and `build_turn_agent` for each step, a cheap agent over a copy
     of the base registry plus the tools bound to the request (conversation
-    tools, `search_cortex`, and for the companion `RunSubAgents` and
-    `RunWorkflow`); tools shut down once, with the runtime
+    tools, `search_cortex`, `ReadToolResult`, and for the companion
+    `RunSubAgents`, `ForwardAnswer` and `RunWorkflow`); tools shut down once,
+    with the runtime
   - runtime tool wiring
   - MCP tool wiring
   - web search tool wiring (reuses the MCP manager, registers plain tool names)
-  - `RunSubAgents` and `RunWorkflow` wiring for the companion on a request that runs an event, over the host's agents and workflows; no other agent routes
+  - `RunSubAgents`, `ForwardAnswer` and `RunWorkflow` wiring for the companion on a request that runs an event, over the host's agents and workflows; no other agent routes
 
 - [`context.py`](./context.py)
-  - session history loading
-  - compaction
-  - token accounting
+  - session history loading, in the agent's `AgentConfig.replay` form:
+    `transcript` (each turn rebuilt from the event log, tool calls and
+    results included), `replies` (each turn's message and reply, with routes
+    before the next message) or `none`
+  - compaction once the latest turn's `context_tokens` reaches
+    `compaction_token_threshold`
   - context serialization/deserialization
-  - action/result payload conversion
+  - action/result payload conversion; a tool result over
+    `tool_result_context_chars` enters the context as a preview
+
+- [`transcript.py`](./transcript.py)
+  - `turn_messages(events, ...)`: one turn's messages from its
+    `invoke_agent.start`, `chat.end` and `execute_tool.end` events, read for
+    every replayed turn in one `list_trace_events` query
 
 - [`requests.py`](./requests.py)
   - request submission helpers

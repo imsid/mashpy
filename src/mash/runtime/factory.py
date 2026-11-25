@@ -22,6 +22,7 @@ from ..tools.browser import (
 )
 from ..tools.sandbox import SANDBOX_TOOL_NAMES, build_sandbox_tools
 from ..tools.runtime import RuntimeToolBuilder
+from ..tools.forward import ForwardAnswerTool
 from ..tools.subagent import RunSubAgentsTool
 from ..tools.tool_results import ReadToolResultTool
 from ..tools.workflow import RunWorkflowTool
@@ -207,7 +208,7 @@ def build_turn_agent(
             )
         )
     apply_policy(self, agent, policy)
-    for name in ("RunSubAgents", "RunWorkflow"):
+    for name in ("RunSubAgents", "ForwardAnswer", "RunWorkflow"):
         if name in agent.tools:
             agent.tools.unregister(name)
     if parent_kind != "subagent":
@@ -295,7 +296,8 @@ def configure_run_subagents(
     host: dict[str, Any] | None,
     agents: dict[str, AgentMetadata],
 ) -> None:
-    """Register ``RunSubAgents`` for the companion, over the host's agents."""
+    """Register ``RunSubAgents`` for the companion, over the host's agents, and
+    ``ForwardAnswer`` to pass one child's answer to the user unchanged."""
     if not agents:
         return
     access = self.get_host_access()
@@ -315,6 +317,8 @@ def configure_run_subagents(
             timeout_seconds=agent.config.subagent_timeout_seconds,
         )
     )
+    # Passes one child's answer to the user unchanged; the loop handles it.
+    agent.tools.register(ForwardAnswerTool())
 
 
 def configure_run_workflow(

@@ -16,16 +16,16 @@ the companion started from the user's current session.
 from __future__ import annotations
 
 import json
+import sys
 from typing import Any, Dict, Optional
 
 from mash.logging import get_session_id
 from mash.otel.loading import load_request_tree
 from mash.otel.projection import project_request
 from mash.runtime.events import RuntimeEventType, analyze_projection, serialize_runtime_event
+from mash.runtime.transcript import turn_messages
 from mash.tools.base import ToolResult
 
-TURN_CHARS = 8000
-PAYLOAD_CHARS = 2000
 DEFAULT_EVENTS = 50
 MAX_EVENTS = 200
 DEFAULT_TRACES = 10
@@ -34,9 +34,28 @@ DEFAULT_TURNS = 5
 MAX_TURNS = 20
 
 
-def _clip(text: Any, limit: int) -> str:
-    value = text if isinstance(text, str) else json.dumps(text, ensure_ascii=False, default=str)
-    return value if len(value) <= limit else value[: limit - 1] + "…"
+def _transcript_message(message: Any) -> Dict[str, Any]:
+    """A transcript message as the companion reads it: text, calls and results."""
+    content = message.content
+    if isinstance(content, str):
+        return {"role": message.role.value, "text": content}
+    parts: list[Dict[str, Any]] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        kind = block.get("type")
+        if kind == "text" and block.get("text"):
+            parts.append({"text": block["text"]})
+        elif kind == "tool_call":
+            parts.append({"tool_call": block.get("name"), "arguments": block.get("arguments")})
+        elif kind == "tool_result":
+            part: Dict[str, Any] = {"tool_result": block.get("content")}
+            if block.get("is_error"):
+                part["is_error"] = True
+            if block.get("images"):
+                part["images"] = len(block["images"])
+            parts.append(part)
+    return {"role": message.role.value, "parts": parts}
 
 
 def _limit(value: Any, default: int, maximum: int) -> int:
@@ -168,16 +187,18 @@ class InspectAgentTraceTool(_LogTool):
     description = (
         "Read one trace of an agent. view='summary' (the default) gives its "
         "status, error, timing, tool call and error counts, steps, slowest "
-        "operations and token usage. view='events' gives its events newest "
-        "first, filtered by event_type_prefix (for example 'execute_tool' for "
-        "tool calls) and capped by limit."
+        "operations and token usage. view='transcript' gives what the agent was "
+        "asked, each message it wrote, each tool it called and each tool result, "
+        "in order. view='events' gives its events newest first, filtered by "
+        "event_type_prefix (for example 'execute_tool' for tool calls) and "
+        "capped by limit."
     )
     parameters = {
         "type": "object",
         "properties": {
             "agent_id": {"type": "string"},
             "trace_id": {"type": "string"},
-            "view": {"type": "string", "enum": ["summary", "events"]},
+            "view": {"type": "string", "enum": ["summary", "transcript", "events"]},
             "event_type_prefix": {"type": "string"},
             "limit": {
                 "type": "integer",
@@ -192,8 +213,8 @@ class InspectAgentTraceTool(_LogTool):
         if not agent_id or not trace_id:
             return ToolResult.error("agent_id and trace_id are required")
         view = str(args.get("view") or "summary")
-        if view not in {"summary", "events"}:
-            return ToolResult.error("view must be 'summary' or 'events'")
+        if view not in {"summary", "transcript", "events"}:
+            return ToolResult.error("view must be 'summary', 'transcript' or 'events'")
         request_id, refused = await self._reader.check_trace(agent_id, trace_id)
         if refused:
             return ToolResult.error(refused)
@@ -211,12 +232,28 @@ class InspectAgentTraceTool(_LogTool):
                     "trace_id": trace_id,
                     "request_id": request_id,
                     "status": analysis.status,
-                    "error": _clip(error, PAYLOAD_CHARS) if error else None,
+                    "error": error or None,
                     "total_duration_ms": round(analysis.total_duration_ms, 3),
                     "tool_error_count": analysis.tool_error_count,
                     **analysis.to_digest_dict(),
                 }
             )
+        if view == "transcript":
+            events = await store.list_events(agent_id, trace_id=trace_id)
+            turn = await self._reader.memory_store.get_turn(trace_id, agent_id)
+            messages = turn_messages(
+                events,
+                # Whole results: a long answer is previewed as this tool's own
+                # result, and ReadToolResult reads on from there.
+                limit=sys.maxsize,
+                reply=str((turn or {}).get("agent_response") or ""),
+            )
+            if messages is None:
+                return ToolResult.error(
+                    f"trace '{trace_id}' has no complete transcript yet: the request "
+                    "is running or failed. Read it with view='summary' or 'events'."
+                )
+            return self._json([_transcript_message(message) for message in messages])
         prefix = str(args.get("event_type_prefix") or "").strip() or None
         events = await store.list_events(
             agent_id,
@@ -224,12 +261,12 @@ class InspectAgentTraceTool(_LogTool):
             event_type_prefix=prefix,
             limit=_limit(args.get("limit"), DEFAULT_EVENTS, MAX_EVENTS),
         )
-        rows = []
-        for event in sorted(events, key=lambda e: int(e.event_id or 0), reverse=True):
-            row = serialize_runtime_event(event)
-            row["payload"] = _clip(row.get("payload") or {}, PAYLOAD_CHARS)
-            rows.append(row)
-        return self._json(rows)
+        return self._json(
+            [
+                serialize_runtime_event(event)
+                for event in sorted(events, key=lambda e: int(e.event_id or 0), reverse=True)
+            ]
+        )
 
 
 class GetAgentTurnsTool(_LogTool):
@@ -256,8 +293,8 @@ class GetAgentTurnsTool(_LogTool):
         return {
             "trace_id": turn["trace_id"],
             "created_at": turn.get("created_at"),
-            "user_message": _clip(turn.get("user_message") or "", TURN_CHARS),
-            "agent_response": _clip(turn.get("agent_response") or "", TURN_CHARS),
+            "user_message": turn.get("user_message") or "",
+            "agent_response": turn.get("agent_response") or "",
         }
 
     async def execute(self, args: Dict[str, Any]) -> ToolResult:

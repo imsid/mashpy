@@ -152,6 +152,8 @@ def _tool_end_payload(
     }
     if "structured_output" in result_payload:
         payload["structured_output"] = result_payload["structured_output"]
+    if "reply" in result_payload:
+        payload["reply"] = result_payload["reply"]
     return payload
 
 
@@ -334,6 +336,22 @@ def _commit_step_payload(
         trace_id=trace_id,
         limit=runtime.agent.config.tool_result_context_chars,
     )
+    reply = forwarded_reply(result_payloads)
+    if reply is not None:
+        # A forwarded answer ends the request: it is the reply, appended as
+        # the final assistant message, with no further model call.
+        agent = runtime.agent
+        context = agent.observe(context, action, results)
+        context.add_message(MessageRole.ASSISTANT, [{"type": "text", "text": reply}])
+        signals = agent.collect_signals(context, action, results, tool_usage=tool_usage)
+        if signals:
+            context.signals.update(signals)
+        context.mark_complete()
+        return {
+            "context": context_helpers.serialize_context(context),
+            "done": True,
+            "signals": dict(signals or {}),
+        }
     commit = runtime.agent.commit_step(
         context,
         action,
@@ -346,6 +364,14 @@ def _commit_step_payload(
         "done": bool(commit.done),
         "signals": dict(commit.signals or {}),
     }
+
+
+def forwarded_reply(result_payloads: list[dict[str, Any]]) -> str | None:
+    """The reply a step's only result forwards (``ForwardAnswer``), or None."""
+    if len(result_payloads) != 1:
+        return None
+    reply = result_payloads[0].get("reply")
+    return reply if isinstance(reply, str) else None
 
 
 def _int_or_zero(value: Any) -> int:
@@ -695,7 +721,7 @@ def apply_plan(
 
 # Results the loop makes itself rather than by running a tool: they are not
 # counted as the tool's invocations.
-_LOOP_HANDLED_TOOLS = frozenset({"AskUser", "browser_handoff"})
+_LOOP_HANDLED_TOOLS = frozenset({"AskUser", "browser_handoff", "ForwardAnswer"})
 
 
 def counts_as_invocation(result_payload: dict[str, Any]) -> bool:
