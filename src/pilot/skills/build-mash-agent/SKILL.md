@@ -296,19 +296,21 @@ AgentConfig(
     skills_enabled=True,                  # set False to disable the Skill meta-tool
     prompt_caching_enabled=True,          # cache the system prompt + tools with the provider
     streaming_enabled=True,               # stream tokens and emit chat.delta events
-    conversation_history_turns=3,         # prior turns replayed into context
+    replay="transcript",                  # earlier turns: "transcript" (with tool calls and results), "replies" or "none"
     max_parallel_tools=8,                 # cap on parallel-safe tool calls run concurrently per turn
     subagent_timeout_seconds=3600,       # RunSubAgents wait: the default and the most a call may ask for
-    compaction_token_threshold=0,         # summarize history past this token count (0 = off)
-    compaction_turn_limit=50,             # how many recent turns the summary keeps when compaction runs
+    compaction_token_threshold=100_000,   # summarize history once the last turn's context reaches this (0 = off)
+    tool_result_context_chars=20_000,     # longer tool results reach the model as a preview plus ReadToolResult
     compaction_temperature=0.0,           # sampling temperature for the summary pass
     provider_options={},                  # sent with every model call, provider-specific (e.g. {"thinking_level": "low"} on Gemini)
     extra={},                             # free-form dict for provider/app-specific options
 )
 ```
 
-Compaction is off by default; set `compaction_token_threshold` to a positive
-value to have long sessions summarized automatically.
+A request replays every turn since the session's last summary checkpoint.
+Once the latest turn's context (the input and output tokens of its last model
+call) reaches `compaction_token_threshold`, the session is summarized before
+the next request. Lower it for a model with a small context window.
 
 ### System Prompt Tips
 

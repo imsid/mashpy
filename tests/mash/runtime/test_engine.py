@@ -878,7 +878,8 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 await runtime.open()
                 _, _, result = await self._invoke_request(runtime, message="hi")
 
-                self.assertEqual(result["session_total_tokens"], 3)
+                # The context of the last model call: 2 input and 1 output tokens.
+                self.assertEqual(result["context_tokens"], 3)
                 turns = await runtime.store.get_turns(
                     session_id=runtime.session_id,
                     agent_id=runtime.agent_id,
@@ -1167,9 +1168,18 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 )
                 await runtime.open()
                 runtime.agent.config.compaction_token_threshold = 10
+                await runtime.store.save_turn(
+                    trace_id="turn-0",
+                    session_id=runtime.session_id,
+                    agent_id=runtime.agent_id,
+                    user_message="earlier",
+                    agent_response="answer",
+                    signals={},
+                    context_tokens=11,
+                )
 
-                with patch.object(
-                    runtime, "get_session_total_tokens", side_effect=[11, 0]
+                with patch(
+                    "mash.runtime.context.get_context_tokens", return_value=11
                 ):
                     with patch(
                         "mash.runtime.context.compact_conversation",
@@ -1363,7 +1373,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         user_message="hello",
                         agent_response="world",
                         signals={},
-                        session_total_tokens=4,
+                        context_tokens=4,
                         metadata={},
                     )
 

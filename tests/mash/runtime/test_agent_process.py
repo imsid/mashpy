@@ -447,7 +447,7 @@ class H2ARelayAuthTests(unittest.TestCase):
                 user_message="earlier brief",
                 agent_response="earlier answer",
                 signals={},
-                session_total_tokens=0,
+                context_tokens=0,
                 metadata={"subagent_id": agent_id, "primary_session_id": primary_session_id},
             )
         )

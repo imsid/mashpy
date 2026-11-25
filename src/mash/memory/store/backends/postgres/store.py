@@ -220,7 +220,7 @@ class PostgresStore(MemoryStore):
         user_message: str,
         agent_response: str,
         signals: Dict[str, Any],
-        session_total_tokens: int,
+        context_tokens: int,
         metadata: Optional[Dict[str, Any]] = None,
         *,
         workflow_id: Optional[str] = None,
@@ -247,7 +247,7 @@ class PostgresStore(MemoryStore):
                             agent_id,
                             user_message,
                             agent_response,
-                            session_total_tokens,
+                            context_tokens,
                             workflow_id,
                             workflow_run_id,
                             task_id,
@@ -258,22 +258,24 @@ class PostgresStore(MemoryStore):
                         )
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
                         ON CONFLICT (trace_id) DO NOTHING
-                        RETURNING agent_id, session_id, created_at, session_total_tokens
+                        RETURNING agent_id, session_id, created_at, context_tokens
                         )
                         INSERT INTO memory_session AS s (
                             agent_id, session_id, turn_count, last_activity_at,
-                            session_total_tokens
+                            context_tokens
                         )
-                        SELECT agent_id, session_id, 1, created_at, session_total_tokens
+                        SELECT agent_id, session_id, 1, created_at, context_tokens
                         FROM turn
                         ON CONFLICT (agent_id, session_id) DO UPDATE
                         SET turn_count = s.turn_count + 1,
                             last_activity_at = GREATEST(
                                 s.last_activity_at, EXCLUDED.last_activity_at
                             ),
-                            session_total_tokens = GREATEST(
-                                s.session_total_tokens, EXCLUDED.session_total_tokens
-                            )
+                            context_tokens = CASE
+                                WHEN EXCLUDED.last_activity_at >= s.last_activity_at
+                                THEN EXCLUDED.context_tokens
+                                ELSE s.context_tokens
+                            END
                         """,
                         (
                             trace_id,
@@ -281,7 +283,7 @@ class PostgresStore(MemoryStore):
                             agent_id,
                             user_message,
                             agent_response,
-                            int(session_total_tokens),
+                            int(context_tokens),
                             workflow_id,
                             workflow_run_id,
                             task_id,
@@ -330,7 +332,7 @@ class PostgresStore(MemoryStore):
                 rows = await self._fetchall(
                     conn,
                     """
-                    SELECT trace_id, user_message, agent_response, session_total_tokens, replayable, metadata, created_at
+                    SELECT trace_id, user_message, agent_response, context_tokens, replayable, metadata, created_at
                     FROM memory_turns
                     WHERE session_id = %s AND agent_id = %s
                     ORDER BY created_at ASC, trace_id ASC
@@ -341,7 +343,7 @@ class PostgresStore(MemoryStore):
                 rows = await self._fetchall(
                     conn,
                     """
-                    SELECT trace_id, user_message, agent_response, session_total_tokens, replayable, metadata, created_at
+                    SELECT trace_id, user_message, agent_response, context_tokens, replayable, metadata, created_at
                     FROM memory_turns
                     WHERE session_id = %s AND agent_id = %s
                     ORDER BY created_at DESC, trace_id DESC
@@ -368,7 +370,7 @@ class PostgresStore(MemoryStore):
                         if row["agent_response"] is None
                         else str(row["agent_response"])
                     ),
-                    "session_total_tokens": int(row["session_total_tokens"] or 0),
+                    "context_tokens": int(row["context_tokens"] or 0),
                     "replayable": bool(row.get("replayable", True)),
                     "signals": signals_by_trace.get(str(row["trace_id"]), {}),
                     "metadata": metadata if isinstance(metadata, dict) else {},
@@ -419,7 +421,6 @@ class PostgresStore(MemoryStore):
         self,
         session_id: str,
         agent_id: str,
-        turns: int,
         *,
         trace_ids: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
@@ -430,7 +431,7 @@ class PostgresStore(MemoryStore):
                 rows = await self._fetchall(
                     conn,
                     """
-                    SELECT trace_id, user_message, agent_response, session_total_tokens,
+                    SELECT trace_id, user_message, agent_response, context_tokens,
                            replayable, metadata, created_at
                     FROM memory_turns
                     WHERE trace_id = ANY(%s) AND session_id = %s AND agent_id = %s
@@ -439,42 +440,31 @@ class PostgresStore(MemoryStore):
                     (list(trace_ids), session_id, agent_id),
                 )
             else:
-                rows = await self._replay_rows(conn, session_id, agent_id, turns)
-        return self._replay_turns_from_rows(rows)
-
-    async def _replay_rows(
-        self, conn: Any, session_id: str, agent_id: str, turns: int
-    ) -> List[Any]:
-        return await self._fetchall(
-            conn,
-            """
-                WITH summary AS (
-                    SELECT trace_id, created_at FROM memory_turns
-                    WHERE session_id = %s AND agent_id = %s
-                      AND replayable AND metadata ->> 'type' = 'summary_checkpoint'
-                    ORDER BY created_at DESC, trace_id DESC
-                    LIMIT 1
-                ),
-                tail AS (
-                    SELECT trace_id FROM memory_turns AS turn
+                rows = await self._fetchall(
+                    conn,
+                    """
+                    WITH summary AS (
+                        SELECT trace_id, created_at FROM memory_turns
+                        WHERE session_id = %s AND agent_id = %s
+                          AND replayable AND metadata ->> 'type' = 'summary_checkpoint'
+                        ORDER BY created_at DESC, trace_id DESC
+                        LIMIT 1
+                    )
+                    SELECT trace_id, user_message, agent_response, context_tokens,
+                           replayable, metadata, created_at
+                    FROM memory_turns AS turn
                     WHERE session_id = %s AND agent_id = %s
                       AND replayable
                       AND (
                           NOT EXISTS (SELECT 1 FROM summary)
                           OR (turn.created_at, turn.trace_id)
-                              > (SELECT created_at, trace_id FROM summary)
+                              >= (SELECT created_at, trace_id FROM summary)
                       )
-                    ORDER BY created_at DESC, trace_id DESC
-                    LIMIT %s
+                    ORDER BY created_at ASC, trace_id ASC
+                    """,
+                    (session_id, agent_id, session_id, agent_id),
                 )
-                SELECT trace_id, user_message, agent_response, session_total_tokens,
-                       replayable, metadata, created_at
-                FROM memory_turns
-                WHERE trace_id IN (SELECT trace_id FROM summary UNION ALL SELECT trace_id FROM tail)
-                ORDER BY created_at ASC, trace_id ASC
-                """,
-                (session_id, agent_id, session_id, agent_id, max(0, int(turns))),
-            )
+        return self._replay_turns_from_rows(rows)
 
     def _replay_turns_from_rows(self, rows: List[Any]) -> List[Dict[str, Any]]:
         replay: List[Dict[str, Any]] = []
@@ -487,7 +477,7 @@ class PostgresStore(MemoryStore):
                     "agent_response": (
                         "" if row["agent_response"] is None else str(row["agent_response"])
                     ),
-                    "session_total_tokens": int(row["session_total_tokens"] or 0),
+                    "context_tokens": int(row["context_tokens"] or 0),
                     "replayable": bool(row["replayable"]),
                     "metadata": metadata if isinstance(metadata, dict) else {},
                     "created_at": float(row["created_at"] or 0.0),
@@ -679,7 +669,7 @@ class PostgresStore(MemoryStore):
                 conn,
                 f"""
                 SELECT s.session_id, s.turn_count, s.last_activity_at,
-                       s.session_total_tokens,
+                       s.context_tokens,
                        (
                            SELECT LEFT(t.user_message, {FIRST_MESSAGE_CHARS})
                            FROM memory_turns AS t
@@ -700,7 +690,7 @@ class PostgresStore(MemoryStore):
                 "session_id": str(row["session_id"]),
                 "turn_count": int(row["turn_count"] or 0),
                 "last_activity_at": float(row["last_activity_at"] or 0.0),
-                "session_total_tokens": int(row["session_total_tokens"] or 0),
+                "context_tokens": int(row["context_tokens"] or 0),
                 "first_message": str(row["first_message"] or ""),
             }
             for row in rows

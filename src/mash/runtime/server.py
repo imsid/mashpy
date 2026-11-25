@@ -299,18 +299,9 @@ class AgentServer:
         reason = payload.get("reason", "manual")
         if not isinstance(reason, str) or not reason.strip():
             return _json_error(400, "INVALID_REQUEST", "reason must be a non-empty string")
-        tokens_reset = payload.get("session_total_tokens_reset", 0)
-        if not isinstance(tokens_reset, int) or isinstance(tokens_reset, bool) or tokens_reset < 0:
-            return _json_error(
-                400,
-                "INVALID_REQUEST",
-                "session_total_tokens_reset must be a non-negative integer",
-            )
-
         summary_text, trace_id = await self.runtime.compact_session(
             session_id=session_id,
             reason=reason.strip(),
-            session_total_tokens_reset=tokens_reset,
         )
         return JSONResponse({"summary_text": summary_text, "trace_id": trace_id})
 

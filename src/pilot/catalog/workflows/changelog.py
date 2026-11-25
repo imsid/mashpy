@@ -163,7 +163,7 @@ class ChangelogSummarizerSpec(AgentSpec):
                 }
             ],
             skills_enabled=False,
-            conversation_history_turns=0,
+            replay="none",
             max_steps=12,
             temperature=0.2,
         )

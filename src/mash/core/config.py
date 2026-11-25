@@ -7,6 +7,14 @@ from typing import Any, Dict, List
 
 SystemPrompt = str | List[Dict[str, Any]]
 
+# How a request replays its session's earlier turns:
+# - "transcript": each turn's messages, rebuilt from the event log: the user
+#   message, the assistant's messages and tool calls, and the tool results
+# - "replies": each turn's user message and reply, with the agents and
+#   workflows that handled it (the companion)
+# - "none": no history
+REPLAY_MODES = ("transcript", "replies", "none")
+
 
 @dataclass
 class AgentConfig:
@@ -20,16 +28,18 @@ class AgentConfig:
     skills_enabled: bool = True
     prompt_caching_enabled: bool = True
     streaming_enabled: bool = True
-    conversation_history_turns: int = 3
+    replay: str = "transcript"
     max_parallel_tools: int = 8
     # How long a RunSubAgents call waits for its children, by default and at most.
     subagent_timeout_seconds: int = 3600
-    compaction_token_threshold: int = 0
+    # The session compacts before a request once the latest turn's context
+    # (the input and output tokens of its last model call) reaches this. 0
+    # turns compaction off, and the history then grows without bound.
+    compaction_token_threshold: int = 100_000
     # A tool result longer than this reaches the model as a preview and a line
     # saying how to read the rest with ReadToolResult; the full result stays in
     # the event log.
     tool_result_context_chars: int = 20_000
-    compaction_turn_limit: int = 50
     compaction_temperature: float = 0.0
     # Sent with every model call of the agent, e.g. {"thinking_level": "low"}
     # for Gemini. Options are provider-specific: OpenAI, Anthropic and the
@@ -50,8 +60,8 @@ class AgentConfig:
             raise ValueError("max_steps must be positive")
         if self.max_tokens <= 0:
             raise ValueError("max_tokens must be positive")
-        if self.conversation_history_turns < 0:
-            raise ValueError("conversation_history_turns must be >= 0")
+        if self.replay not in REPLAY_MODES:
+            raise ValueError(f"replay must be one of {', '.join(REPLAY_MODES)}")
         if self.max_parallel_tools < 1:
             raise ValueError("max_parallel_tools must be >= 1")
         if isinstance(self.subagent_timeout_seconds, bool) or self.subagent_timeout_seconds <= 0:
@@ -60,5 +70,3 @@ class AgentConfig:
             raise ValueError("compaction_token_threshold must be >= 0")
         if self.tool_result_context_chars < 1000:
             raise ValueError("tool_result_context_chars must be at least 1000")
-        if self.compaction_turn_limit <= 0:
-            raise ValueError("compaction_turn_limit must be > 0")

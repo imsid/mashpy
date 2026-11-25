@@ -69,7 +69,6 @@ class AgentClientLike(Protocol):
         session_id: str,
         *,
         reason: str = "manual",
-        session_total_tokens_reset: int = 0,
         timeout: float = 120.0,
     ) -> dict[str, Any]: ...
 
@@ -280,17 +279,13 @@ class AgentClient:
         session_id: str,
         *,
         reason: str = "manual",
-        session_total_tokens_reset: int = 0,
         timeout: float = 120.0,
     ) -> dict[str, Any]:
         try:
             async with self._session() as client:
                 response = await client.post(
                     self._compact_url(session_id),
-                    json={
-                        "reason": reason,
-                        "session_total_tokens_reset": session_total_tokens_reset,
-                    },
+                    json={"reason": reason},
                     timeout=timeout,
                 )
         except httpx.HTTPError as exc:

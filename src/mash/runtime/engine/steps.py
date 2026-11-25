@@ -15,7 +15,7 @@ from ...core.context import Context, MessageRole, Response, ToolCall
 from ...core.context import ToolResult as ContextToolResult
 from ...core.llm.types import LLMContentBlock, LLMMessage, LLMRequest
 from ...memory.failed_turns import failed_turn_metadata
-from ...memory.ledger import build_ledger
+from ...memory.routes import build_routes
 from ...logging.trace_context import (
     bound_loop_index,
     bound_subagent_id_prefix,
@@ -363,6 +363,7 @@ async def _persist_turn_payload(
     response: Response,
     signals: dict[str, Any],
     compaction_payload: dict[str, Any],
+    context_tokens: int,
     extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     response_metadata = dict(response.metadata or {})
@@ -376,48 +377,31 @@ async def _persist_turn_payload(
     )
     if extra_metadata:
         response_metadata.update(dict(extra_metadata))
-    total_tokens = context_helpers.compute_turn_tokens(response_metadata)
     trace_id = response_metadata.get("trace_id")
     resolved_trace_id = str(trace_id or uuid.uuid4())
-    latest_turns = await runtime.store.get_turns(
-        session_id=session_id, agent_id=runtime.agent_id, limit=1
+    # Workflow task turns (their request_metadata carries
+    # workflow_id/run_id/task_id) are kept out of the model's replayed
+    # conversation history. Subagent turns run in sessions of their own,
+    # so a continued child session replays them. Saving the turn again (a
+    # recovered request) stores nothing new.
+    workflow_id = response_metadata.get("workflow_id") or None
+    workflow_run_id = response_metadata.get("workflow_run_id") or None
+    task_id = response_metadata.get("task_id") or None
+    await runtime.store.save_turn(
+        app_id=app_id_from_request_metadata(response_metadata),
+        trace_id=resolved_trace_id,
+        session_id=session_id,
+        agent_id=runtime.agent_id,
+        user_message=message,
+        agent_response=response.text,
+        signals=signals,
+        context_tokens=int(context_tokens),
+        metadata=response_metadata,
+        workflow_id=workflow_id,
+        workflow_run_id=workflow_run_id,
+        task_id=task_id,
+        replayable=workflow_id is None,
     )
-    latest_turn = latest_turns[-1] if latest_turns else None
-    if latest_turn is not None and str(latest_turn.get("trace_id")) == resolved_trace_id:
-        # This step is being replayed after its insert committed but before
-        # the loop checkpointed it. The turn is already stored, and its
-        # session total already counts this turn, so reuse it instead of
-        # adding the turn's tokens a second time.
-        session_total_tokens = _int_or_zero(latest_turn.get("session_total_tokens"))
-    else:
-        previous_total = (
-            _int_or_zero(latest_turn.get("session_total_tokens"))
-            if latest_turn is not None
-            else 0
-        )
-        session_total_tokens = previous_total + total_tokens
-        # Workflow task turns (their request_metadata carries
-        # workflow_id/run_id/task_id) are kept out of the model's replayed
-        # conversation history. Subagent turns run in sessions of their own,
-        # so a continued child session replays them.
-        workflow_id = response_metadata.get("workflow_id") or None
-        workflow_run_id = response_metadata.get("workflow_run_id") or None
-        task_id = response_metadata.get("task_id") or None
-        await runtime.store.save_turn(
-            app_id=app_id_from_request_metadata(response_metadata),
-            trace_id=resolved_trace_id,
-            session_id=session_id,
-            agent_id=runtime.agent_id,
-            user_message=message,
-            agent_response=response.text,
-            signals=signals,
-            session_total_tokens=session_total_tokens,
-            metadata=response_metadata,
-            workflow_id=workflow_id,
-            workflow_run_id=workflow_run_id,
-            task_id=task_id,
-            replayable=workflow_id is None,
-        )
     response_payload = {
         "text": response.text,
         "signals": dict(signals or {}),
@@ -430,7 +414,7 @@ async def _persist_turn_payload(
     return {
         "trace_id": resolved_trace_id,
         "response": response_payload,
-        "session_total_tokens": session_total_tokens,
+        "context_tokens": int(context_tokens),
         "signals": dict(signals or {}),
         "response_metadata": dict(response_metadata or {}),
         "compaction_summary_text": compaction_payload.get("compaction_summary_text"),
@@ -694,6 +678,9 @@ def apply_plan(
         **dict(workflow_state or {}),
         "context": context_helpers.serialize_context(context),
         "aggregate_usage": aggregate_usage,
+        # The context as the model last read it: the turn compacts on this.
+        "context_tokens": int(token_usage.get("input", 0) or 0)
+        + int(token_usage.get("output", 0) or 0),
         "tool_usage": _merge_tool_usage(
             workflow_state.get("tool_usage"),
             action_payload.get("tool_usage"),
@@ -1059,11 +1046,9 @@ async def persist_completed_turn(
     structured_output = workflow_state.get("structured_output")
     if structured_output is not None:
         response.metadata["structured_output"] = structured_output
-    # What this request's RunSubAgents and RunWorkflow calls returned, read
-    # from the context the save already holds; replay shows it to the model.
-    ledger = build_ledger(dict(workflow_state.get("context") or {}), session_id)
-    if ledger:
-        response.metadata["ledger"] = ledger
+    routes = await _request_routes(runtime, request_id, workflow_state)
+    if routes:
+        response.metadata["routes"] = routes
     turn_payload = await _persist_turn_payload(
         runtime,
         message=message,
@@ -1071,9 +1056,43 @@ async def persist_completed_turn(
         response=response,
         signals=dict(workflow_state.get("signals") or {}),
         compaction_payload=dict(workflow_state.get("compaction") or {}),
+        context_tokens=int(workflow_state.get("context_tokens") or 0),
         extra_metadata=request_metadata,
     )
     return turn_payload
+
+
+_ROUTED_TOOLS = ("RunSubAgents", "RunWorkflow")
+
+
+async def _request_routes(
+    runtime: "AgentRuntime", request_id: str, workflow_state: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """The agent sessions and workflow runs the request's calls ran in.
+
+    Read from the calls' ``execute_tool`` events, which hold their arguments
+    and full results; only a request that ran ``RunSubAgents`` or
+    ``RunWorkflow`` reads them.
+    """
+    usage = dict(workflow_state.get("tool_usage") or {})
+    if not any(int((usage.get(name) or {}).get("invocations") or 0) for name in _ROUTED_TOOLS):
+        return []
+    arguments: dict[str, dict[str, Any]] = {}
+    calls: list[tuple[str, dict[str, Any], str]] = []
+    for event in await runtime.runtime_store.list_request_events(request_id):
+        payload = dict(event.payload or {})
+        name = str((payload.get("attributes") or {}).get(semconv.GEN_AI_TOOL_NAME) or "")
+        if name not in _ROUTED_TOOLS:
+            continue
+        key = str(event.step_key or "").split(".", 2)[-1]
+        if event.event_type == RuntimeEventType.EXECUTE_TOOL_START.value:
+            arguments[key] = dict(payload.get("arguments") or {})
+        elif event.event_type == RuntimeEventType.EXECUTE_TOOL_END.value:
+            result = dict(payload.get("result") or {})
+            if result.get("is_error"):
+                continue
+            calls.append((name, arguments.get(key, {}), str(result.get("content") or "")))
+    return build_routes(calls)
 
 
 async def persist_failed_turn(
@@ -1087,8 +1106,9 @@ async def persist_failed_turn(
     """Save a failed request's user message as a turn with no reply.
 
     Replay shows the message and the error before the next user message, so
-    "try again" refers to this request. The session's token total is carried
-    over unchanged.
+    "try again" refers to this request. It carries over the latest turn's
+    context size, since the failed request leaves the session's context as it
+    was.
     """
     resolved_trace_id = str(trace_id or uuid.uuid4())
     latest_turns = await runtime.store.get_turns(
@@ -1110,8 +1130,9 @@ async def persist_failed_turn(
         user_message=message,
         agent_response="",
         signals={},
-        session_total_tokens=(
-            _int_or_zero(latest_turn.get("session_total_tokens"))
+        # The session's context is still the size its latest turn left it.
+        context_tokens=(
+            _int_or_zero(latest_turn.get("context_tokens"))
             if latest_turn is not None
             else 0
         ),

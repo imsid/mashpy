@@ -106,8 +106,10 @@ class CompanionSpec(AgentSpec):
         return AgentConfig(
             agent_id=COMPANION_AGENT_ID,
             system_prompt=COMPANION_PROMPT,
-            # Ledger entries are short, so the companion keeps more turns.
-            conversation_history_turns=10,
+            # The companion replays each turn as the user's message, the agent
+            # sessions and workflow runs that handled it, and the reply. What
+            # its agents did stays in the event log, read with its log tools.
+            replay="replies",
             provider_options=_routing_provider_options(),
         )
 

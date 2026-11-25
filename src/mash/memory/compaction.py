@@ -1,4 +1,10 @@
-"""Conversation compaction utilities."""
+"""Conversation compaction: a summary checkpoint replaces a session's history.
+
+The runtime renders the history a request would replay (every turn since the
+last checkpoint, tool calls and previewed results included) and passes it here
+as text. The summary is saved as a ``summary_checkpoint`` turn; replay starts
+from the latest one.
+"""
 
 from __future__ import annotations
 
@@ -8,8 +14,6 @@ from typing import Any, Dict, List, Tuple
 from ..core.llm import LLMProvider
 from ..core.llm.types import LLMContentBlock, LLMMessage, LLMRequest
 from ..logging import bound_session_id, bound_trace_id
-from .failed_turns import is_failed_turn
-from .ledger import merge_ledgers
 from .store import MemoryStore
 
 COMPACTION_SYSTEM_PROMPT = """You are a conversation compactor.
@@ -19,82 +23,40 @@ Requirements:
 - Keep it concise and factual.
 - Capture key decisions, constraints, and open questions.
 - Include any user preferences or stated goals.
-- Do NOT include tool outputs or raw logs.
+- State what tool calls and their results established, not their raw output.
+- Keep, exactly, the agent id and session id of each agent session, and the
+  workflow id and run id of each workflow run, that the user may come back to.
 - Output plain text with these sections:
   Summary:
   Decisions:
   Open Questions:
   User Preferences:
+  Agent Sessions:
 """
 
 
 async def compact_conversation(
     store: MemoryStore,
     llm: LLMProvider,
+    *,
     agent_id: str,
     session_id: str,
+    conversation_text: str,
+    turn_ids: List[str],
     max_tokens: int,
     temperature: float,
-    turn_limit: int,
     reason: str,
-    session_total_tokens_reset: int,
 ) -> Tuple[str, str]:
-    """Summarize conversation history and save a summary checkpoint turn."""
-    if turn_limit <= 0:
-        raise ValueError("turn_limit must be > 0")
+    """Summarize ``conversation_text`` and save it as a summary checkpoint turn.
 
-    turns = await store.get_turns(session_id=session_id, agent_id=agent_id, limit=None)
-    # Only the replayable conversation is summarized; workflow / subagent turns
-    # are recorded in the session but never part of the replayed history. A
-    # failed request's turn holds no answer, so it is left out too.
-    turns = [
-        turn
-        for turn in turns
-        if turn.get("replayable", True) and not is_failed_turn(turn)
-    ]
-    if not turns:
-        return "", ""
-
-    summary_index = None
-    for idx in range(len(turns) - 1, -1, -1):
-        meta = turns[idx].get("metadata") or {}
-        if meta.get("type") == "summary_checkpoint":
-            summary_index = idx
-            break
-
-    # The checkpoint replaces every turn from the previous one on, and keeps
-    # their ledgers so the session ids they name stay exact.
-    replaced = turns[summary_index:] if summary_index is not None else turns
-    ledger = merge_ledgers(
-        (turn.get("metadata") or {}).get("ledger") or [] for turn in replaced
-    )
-
-    if summary_index is not None:
-        base_turns = turns[summary_index:]
-        if len(base_turns) > turn_limit:
-            if turn_limit == 1:
-                base_turns = [base_turns[0]]
-            else:
-                base_turns = [base_turns[0]] + base_turns[-(turn_limit - 1) :]
-    else:
-        base_turns = turns[-turn_limit:]
-
-    lines: List[str] = []
-    turn_ids: List[str] = []
-    for turn in base_turns:
-        turn_ids.append(turn.get("trace_id", ""))
-        user_message = turn.get("user_message") or ""
-        agent_response = turn.get("agent_response") or ""
-        if user_message:
-            lines.append(f"User: {user_message}")
-        if agent_response:
-            lines.append(f"Assistant: {agent_response}")
-
-    if not lines:
+    ``turn_ids`` are the trace ids of the turns it replaces. Returns the summary
+    and the checkpoint's trace id, or empty strings when there is nothing to
+    summarize.
+    """
+    if not conversation_text.strip():
         return "", ""
 
     trace_id = str(uuid.uuid4())
-    conversation_text = "\n".join(lines)
     # The summary pass is its own trace in the session; the provider reads
     # both from context.
     with bound_trace_id(trace_id), bound_session_id(session_id):
@@ -119,13 +81,10 @@ async def compact_conversation(
     metadata: Dict[str, Any] = {
         "type": "summary_checkpoint",
         "reason": reason,
-        "turn_limit": turn_limit,
-        "turn_ids": turn_ids,
+        "turn_ids": list(turn_ids),
         "agent_id": agent_id,
         "token_usage": {"input": 0, "output": 0},
     }
-    if ledger:
-        metadata["ledger"] = ledger
     saved_trace_id = await store.save_turn(
         trace_id=trace_id,
         session_id=session_id,
@@ -133,7 +92,7 @@ async def compact_conversation(
         user_message=f"[summary checkpoint:{reason}]",
         agent_response=summary_text,
         signals={},
-        session_total_tokens=session_total_tokens_reset,
+        context_tokens=0,
         metadata=metadata,
     )
 

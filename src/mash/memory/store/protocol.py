@@ -61,7 +61,7 @@ class MemoryStore(Protocol):
         user_message: str,
         agent_response: str,
         signals: Dict[str, Any],
-        session_total_tokens: int,
+        context_tokens: int,
         metadata: Optional[Dict[str, Any]] = None,
         *,
         workflow_id: Optional[str] = None,
@@ -72,8 +72,10 @@ class MemoryStore(Protocol):
     ) -> str:
         """Save a conversation turn with signals.
 
-        Saving a ``trace_id`` that is already stored is a no-op, so a replayed
-        persist step never fails on the existing row.
+        ``context_tokens`` is the size of the turn's context: the input and
+        output tokens of its last model call. Saving a ``trace_id`` that is
+        already stored is a no-op, so a replayed persist step never fails on
+        the existing row.
 
         Workflow task turns carry their ``workflow_id`` / ``workflow_run_id`` /
         ``task_id`` and are marked ``replayable=False`` so they are excluded from
@@ -108,16 +110,15 @@ class MemoryStore(Protocol):
         self,
         session_id: str,
         agent_id: str,
-        turns: int,
         *,
         trace_ids: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """The turns a request replays into its context, oldest first.
 
-        The latest replayable ``summary_checkpoint`` turn, if any, then up to
-        ``turns`` replayable turns after it. With ``trace_ids``, those turns of
-        the session instead: the ones a request recorded at its context load,
-        so a recovered request replays the same turns. Turns carry no signals.
+        The latest replayable ``summary_checkpoint`` turn, if any, then every
+        replayable turn after it. With ``trace_ids``, those turns of the session
+        instead: the ones a request recorded at its context load, so a recovered
+        request replays the same turns. Turns carry no signals.
         """
         ...
 

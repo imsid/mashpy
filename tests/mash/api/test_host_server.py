@@ -171,7 +171,7 @@ def _save_workflow_turn(
             user_message=user_message,
             agent_response=agent_response,
             signals={},
-            session_total_tokens=0,
+            context_tokens=0,
             workflow_id="changelog",
             workflow_run_id=run_id,
             task_id="scan-codebase-and-append-changelog",

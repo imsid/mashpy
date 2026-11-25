@@ -23,11 +23,12 @@ async def session_usage(
     return await runtime_store.session_usage(session_id)
 
 
-async def session_total_tokens(store: MemoryStore, *, agent_id: str, session_id: str) -> int:
+async def context_tokens(store: MemoryStore, *, agent_id: str, session_id: str) -> int:
+    """The latest turn's context size: input and output tokens of its last model call."""
     turns = await store.get_turns(session_id=session_id, agent_id=agent_id, limit=1)
     if not turns:
         return 0
-    value = turns[-1].get("session_total_tokens", 0)
+    value = turns[-1].get("context_tokens", 0)
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -45,15 +46,15 @@ async def session_info(
 ) -> dict[str, Any]:
     # total_tokens is the true spend recorded in the event log: every agent's
     # requests in the session and the subagent runs they started, in sessions
-    # of their own. session_total_tokens is the memory context budget, which
-    # compaction resets.
+    # of their own. context_tokens is the size of the latest turn's context,
+    # which the session compacts on.
     usage = await session_usage(runtime_store, session_id)
     return {
         "agent_id": agent_id,
         "session_id": session_id,
         "model": model,
         "max_steps": max_steps,
-        "session_total_tokens": await session_total_tokens(
+        "context_tokens": await context_tokens(
             store, agent_id=agent_id, session_id=session_id
         ),
         "total_tokens": usage["total_tokens"],

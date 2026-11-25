@@ -55,7 +55,7 @@ class CompanionSpecTests(unittest.TestCase):
 
         self.assertEqual(spec.get_agent_id(), "companion")
         self.assertEqual(config.agent_id, "companion")
-        self.assertEqual(config.conversation_history_turns, 10)
+        self.assertEqual(config.replay, "replies")
         self.assertFalse(spec.enable_sandbox())
         self.assertEqual(spec.browser_sites(), [])
         self.assertEqual(spec.build_skills().list_skills(), [])
@@ -274,12 +274,10 @@ class CompanionWorkflowTests(unittest.IsolatedAsyncioTestCase):
 
                 runtime = pool._agent_provider.agent_servers[COMPANION_AGENT_ID].runtime
                 [turn] = await runtime.store.get_turns("s-1", COMPANION_AGENT_ID)
-                [entry] = turn["metadata"]["ledger"]
+                [entry] = turn["metadata"]["routes"]
                 self.assertEqual(
-                    (entry["workflow_id"], entry["status"], entry["companion_session_id"]),
-                    ("changelog", "completed", "s-1"),
+                    (entry["workflow_id"], entry["status"]), ("changelog", "completed")
                 )
-                self.assertIn("3 releases", entry["got"])
                 run = await pool.get_workflow_service().get_run("changelog", entry["run_id"])
                 # The run takes the companion request's app and policy.
                 self.assertEqual((run.app_id, run.policy_id), ("app-1", "p-1"))

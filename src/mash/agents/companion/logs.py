@@ -119,7 +119,7 @@ class ListAgentTracesTool(_LogTool):
     name = "ListAgentTraces"
     description = (
         "List the most recent requests of one agent in one of its sessions from "
-        "your ledger: trace_id, request_id, status, start time, duration and "
+        "your routes: trace_id, request_id, status, start time, duration and "
         "the first line of the request, newest first."
     )
     parameters = {

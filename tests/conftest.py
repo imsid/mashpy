@@ -282,6 +282,22 @@ class _TestRuntimeStore:
             return filtered[-max(1, int(limit)) :]
         return filtered
 
+    async def list_trace_events(
+        self,
+        agent_id: str,
+        trace_ids: list[str],
+        event_types: list[str],
+    ) -> list[RuntimeEvent]:
+        wanted_traces, wanted_types = set(trace_ids), set(event_types)
+        async with self._lock:
+            return [
+                event
+                for event in self._events
+                if event.agent_id == agent_id
+                and event.trace_id in wanted_traces
+                and event.event_type in wanted_types
+            ]
+
     async def has_request(self, request_id: str) -> bool:
         async with self._lock:
             return request_id in self._events_by_request
@@ -693,7 +709,7 @@ class _TestMemoryStore:
         user_message: str,
         agent_response: str,
         signals: dict[str, Any],
-        session_total_tokens: int,
+        context_tokens: int,
         metadata: dict[str, Any] | None = None,
         *,
         workflow_id: str | None = None,
@@ -712,7 +728,7 @@ class _TestMemoryStore:
                 "user_message": user_message,
                 "agent_response": agent_response,
                 "signals": signals,
-                "session_total_tokens": session_total_tokens,
+                "context_tokens": context_tokens,
                 "metadata": metadata or {},
                 "workflow_id": workflow_id,
                 "workflow_run_id": workflow_run_id,
@@ -735,7 +751,7 @@ class _TestMemoryStore:
                 "trace_id": t["trace_id"],
                 "user_message": t.get("user_message", ""),
                 "agent_response": t.get("agent_response", ""),
-                "session_total_tokens": t.get("session_total_tokens", 0),
+                "context_tokens": t.get("context_tokens", 0),
                 "replayable": t.get("replayable", True),
                 "signals": t.get("signals") or {},
                 "metadata": t.get("metadata") or {},
@@ -771,7 +787,6 @@ class _TestMemoryStore:
         self,
         session_id: str,
         agent_id: str,
-        turns: int,
         *,
         trace_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
@@ -801,9 +816,8 @@ class _TestMemoryStore:
             None,
         )
         if summary_index is None:
-            return rows[-turns:] if turns > 0 else []
-        tail = rows[summary_index + 1 :]
-        return [rows[summary_index]] + (tail[-turns:] if turns > 0 else [])
+            return rows
+        return rows[summary_index:]
 
     def _app_turns(self, app_id: str, after: float) -> list[dict[str, Any]]:
         rows = [
@@ -892,15 +906,14 @@ class _TestMemoryStore:
                     "session_id": t["session_id"],
                     "turn_count": 0,
                     "last_activity_at": 0.0,
-                    "session_total_tokens": 0,
+                    "context_tokens": 0,
                     "first_message": str(t.get("user_message") or "")[:200],
                 },
             )
             row["turn_count"] += 1
+            if t["created_at"] >= row["last_activity_at"]:
+                row["context_tokens"] = int(t["context_tokens"] or 0)
             row["last_activity_at"] = max(row["last_activity_at"], t["created_at"])
-            row["session_total_tokens"] = max(
-                row["session_total_tokens"], int(t["session_total_tokens"] or 0)
-            )
         rows = sorted(seen.values(), key=lambda r: r["session_id"])
         rows.sort(key=lambda r: r["last_activity_at"], reverse=True)
         return rows[:limit]

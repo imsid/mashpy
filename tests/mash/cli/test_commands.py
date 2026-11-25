@@ -68,11 +68,11 @@ class _FakeClient:
             "session_id": session_id,
             "model": "claude-test",
             "max_steps": 8,
-            "session_total_tokens": 12,
+            "context_tokens": 12,
         }
 
     def list_sessions(self, agent_id: str):
-        return [{"session_id": "s-1", "turn_count": 2, "session_total_tokens": 12, "agent_id": agent_id}]
+        return [{"session_id": "s-1", "turn_count": 2, "context_tokens": 12, "agent_id": agent_id}]
 
     def get_history(self, agent_id: str, session_id: str, *, limit=None):
         del agent_id, session_id, limit

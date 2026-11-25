@@ -71,7 +71,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         agent_id: str | None = None,
         signals: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
-        session_total_tokens: int = 0,
+        context_tokens: int = 0,
         workflow_id: str | None = None,
         workflow_run_id: str | None = None,
         task_id: str | None = None,
@@ -86,7 +86,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
             user_message=user_message,
             agent_response=agent_response,
             signals=signals or {},
-            session_total_tokens=session_total_tokens,
+            context_tokens=context_tokens,
             metadata=metadata,
             workflow_id=workflow_id,
             workflow_run_id=workflow_run_id,
@@ -107,7 +107,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
                 user_message=f"u-{name}",
                 agent_response=f"a-{name}",
                 signals={"s": 1},
-                session_total_tokens=0,
+                context_tokens=0,
                 metadata={"type": "summary_checkpoint"} if summary else None,
                 replayable=replayable,
             )
@@ -120,18 +120,39 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
     def _names(self, turns: list[dict[str, Any]]) -> list[str]:
         return [turn["trace_id"].removeprefix(f"{self.agent_id}-") for turn in turns]
 
-    async def test_replay_turns_without_a_summary_are_the_last_n_replayable(self) -> None:
+    async def test_replay_turns_without_a_summary_are_every_replayable_turn(self) -> None:
         await self._replay_fixture(
             "replay-1",
             [("t1", True, False), ("t2", True, False), ("wf", False, False), ("t3", True, False)],
         )
 
-        turns = await self.store.get_replay_turns("replay-1", self.agent_id, 2)
+        turns = await self.store.get_replay_turns("replay-1", self.agent_id)
 
-        self.assertEqual(self._names(turns), ["t2", "t3"])
+        self.assertEqual(self._names(turns), ["t1", "t2", "t3"])
         self.assertNotIn("signals", turns[0])
-        self.assertEqual(turns[0]["user_message"], "u-t2")
-        self.assertEqual(await self.store.get_replay_turns("replay-1", self.agent_id, 0), [])
+        self.assertEqual(turns[0]["user_message"], "u-t1")
+        self.assertEqual(await self.store.get_replay_turns("replay-none", self.agent_id), [])
+
+    async def test_replay_turns_by_trace_id_are_those_turns_in_order(self) -> None:
+        await self._replay_fixture(
+            "replay-3",
+            [("t1", True, False), ("t2", True, False), ("t3", True, False)],
+        )
+
+        turns = await self.store.get_replay_turns(
+            "replay-3",
+            self.agent_id,
+            trace_ids=[f"{self.agent_id}-t3", f"{self.agent_id}-t1", "not-in-session"],
+        )
+
+        self.assertEqual(self._names(turns), ["t1", "t3"])
+        # Another session's turn is not returned even when named.
+        self.assertEqual(
+            await self.store.get_replay_turns(
+                "replay-other", self.agent_id, trace_ids=[f"{self.agent_id}-t1"]
+            ),
+            [],
+        )
 
     async def test_replay_turns_start_at_the_latest_summary(self) -> None:
         await self._replay_fixture(
@@ -149,16 +170,8 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(
-            self._names(await self.store.get_replay_turns("replay-2", self.agent_id, 2)),
-            ["sum-new", "t4", "t5"],
-        )
-        self.assertEqual(
-            self._names(await self.store.get_replay_turns("replay-2", self.agent_id, 10)),
+            self._names(await self.store.get_replay_turns("replay-2", self.agent_id)),
             ["sum-new", "t3", "t4", "t5"],
-        )
-        self.assertEqual(
-            self._names(await self.store.get_replay_turns("replay-2", self.agent_id, 0)),
-            ["sum-new"],
         )
 
     async def test_save_turn_is_a_no_op_for_an_existing_trace_id(self) -> None:
@@ -171,12 +184,12 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
                 user_message="hi",
                 agent_response="hello",
                 signals={"sentiment": "positive"},
-                session_total_tokens=total,
+                context_tokens=total,
             )
 
         turns = await self.store.get_turns(session_id="session-1", agent_id=self.agent_id)
         self.assertEqual([turn["trace_id"] for turn in turns], [trace_id])
-        self.assertEqual(turns[0]["session_total_tokens"], 42)
+        self.assertEqual(turns[0]["context_tokens"], 42)
 
     async def test_save_and_get_logs_reconstruct_public_event_shape(self) -> None:
         await self.store.save_logs(
@@ -296,14 +309,14 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
             agent_response="first agent",
             signals={"unused_tool_tokens": 42, "unused_tools": ["alpha", "beta"]},
             metadata={"trace_id": "trace-1"},
-            session_total_tokens=9,
+            context_tokens=9,
         )
         turn_2 = await self._save_turn(
             session_id="session-a",
             user_message="second user",
             agent_response="second agent",
             metadata={"trace_id": "trace-2"},
-            session_total_tokens=11,
+            context_tokens=11,
         )
 
         turns = await self.store.get_turns(
@@ -322,7 +335,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(turns[0]["signals"]["unused_tool_tokens"], 42)
         self.assertEqual(turns[0]["signals"]["unused_tools"], ["alpha", "beta"])
         self.assertEqual(turns[0]["metadata"], {"trace_id": "trace-1"})
-        self.assertEqual(turns[1]["session_total_tokens"], 11)
+        self.assertEqual(turns[1]["context_tokens"], 11)
 
     async def test_list_workflow_turns_filters_by_app_and_workflow(self) -> None:
         run_id = "mw:h_TI1UUyBX5w8Q:masher-trace-digest:bHfMwMfMsPDPHI60"
@@ -437,20 +450,20 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
             session_id="session-a",
             user_message="first",
             agent_response="one",
-            session_total_tokens=3,
+            context_tokens=3,
         )
         await self._save_turn(
             session_id="session-b",
             user_message="second",
             agent_response="two",
-            session_total_tokens=7,
+            context_tokens=7,
         )
         await self._save_turn(
             session_id="session-x",
             user_message="other app",
             agent_response="other response",
             agent_id=self.other_agent_id,
-            session_total_tokens=99,
+            context_tokens=99,
         )
 
         sessions = await self.store.list_sessions(agent_id=self.agent_id, limit=10)
@@ -459,7 +472,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["session_id"] for item in sessions], ["session-b", "session-a"])
         assert latest is not None
         self.assertEqual(latest["session_id"], "session-b")
-        self.assertEqual(latest["session_total_tokens"], 7)
+        self.assertEqual(latest["context_tokens"], 7)
 
     async def test_list_sessions_filters_by_app_and_carries_the_first_message(self) -> None:
         await self._save_turn(
@@ -492,7 +505,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
                 session_id=session_id,
                 user_message="u",
                 agent_response="a",
-                session_total_tokens=tokens,
+                context_tokens=tokens,
             )
         # Saving a turn again (a replayed turn.persist) changes nothing.
         await self.store.save_turn(
@@ -502,13 +515,13 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
             user_message="u",
             agent_response="a",
             signals={},
-            session_total_tokens=100,
+            context_tokens=100,
         )
 
         sessions = await self.store.list_sessions(agent_id=self.agent_id, limit=10)
         self.assertEqual([s["session_id"] for s in sessions], ["s-3", "s-1", "s-2"])
         s1 = sessions[1]
-        self.assertEqual((s1["turn_count"], s1["session_total_tokens"]), (2, 9))
+        self.assertEqual((s1["turn_count"], s1["context_tokens"]), (2, 9))
         with psycopg.connect(self.database_url, autocommit=True) as conn:
             newest_s1 = conn.execute(
                 "SELECT MAX(created_at) FROM memory_turns WHERE agent_id = %s "
@@ -522,20 +535,21 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_migration_backfills_session_rows_from_turns(self) -> None:
         await self._save_turn(
-            session_id="old", user_message="u", agent_response="a", session_total_tokens=4
+            session_id="old", user_message="u", agent_response="a", context_tokens=4
         )
         await self._save_turn(
-            session_id="old", user_message="u", agent_response="a", session_total_tokens=6
+            session_id="old", user_message="u", agent_response="a", context_tokens=6
         )
         migration = (
             Path(__file__).resolve().parents[3]
             / "src/mash/storage/migrations/018_memory_session.sql"
         ).read_text()
         start = migration.index("INSERT INTO memory_session")
-        # 018 predates the agent_id rename (019).
+        # 018 predates the agent_id rename (019) and the context_tokens rename (025).
         backfill = (
             migration[start: migration.index(";", start)]
             .replace("app_id", "agent_id")
+            .replace("session_total_tokens", "context_tokens")
             .replace("GROUP BY", "WHERE agent_id = %s GROUP BY")
         )
         with psycopg.connect(self.database_url, autocommit=True) as conn:
@@ -544,7 +558,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
 
         [row] = await self.store.list_sessions(agent_id=self.agent_id, limit=10)
         self.assertEqual(
-            (row["session_id"], row["turn_count"], row["session_total_tokens"]),
+            (row["session_id"], row["turn_count"], row["context_tokens"]),
             ("old", 2, 6),
         )
 

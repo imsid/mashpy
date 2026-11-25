@@ -230,21 +230,17 @@ class AgentServerSubmitTests(unittest.TestCase):
     def test_compact_runs_on_the_runtime(self) -> None:
         resp = self.client.post(
             "/agent/agent-a/session/s-1/compact",
-            json={"reason": "manual", "session_total_tokens_reset": 10},
+            json={"reason": "manual"},
         )
 
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json(), {"summary_text": "summary", "trace_id": "trace-c"})
         self.assertEqual(
-            self.runtime.compactions,
-            [{"session_id": "s-1", "reason": "manual", "session_total_tokens_reset": 10}],
+            self.runtime.compactions, [{"session_id": "s-1", "reason": "manual"}]
         )
 
-    def test_compact_rejects_invalid_reset(self) -> None:
-        resp = self.client.post(
-            "/agent/agent-a/session/s-1/compact",
-            json={"session_total_tokens_reset": -1},
-        )
+    def test_compact_rejects_an_empty_reason(self) -> None:
+        resp = self.client.post("/agent/agent-a/session/s-1/compact", json={"reason": " "})
 
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(self.runtime.compactions, [])

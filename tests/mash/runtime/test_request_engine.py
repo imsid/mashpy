@@ -243,10 +243,14 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
         end = await self._terminal(request_id)
         self.assertEqual(end.payload["response"]["text"], "red")
 
-    async def _approval(self) -> tuple[_GatedTool, AgentRuntime, str, str]:
+    async def _approval(
+        self, session_id: str = "s-1"
+    ) -> tuple[_GatedTool, AgentRuntime, str, str]:
         tool = _GatedTool()
         runtime = await self._runtime(_Spec(tool, tool_name="deploy", arguments={}))
-        accepted = await runtime.submit_request(message="ship", session_id="s-1", **TEST_IDENTITY)
+        accepted = await runtime.submit_request(
+            message="ship", session_id=session_id, **TEST_IDENTITY
+        )
         request_id = accepted["request_id"]
         [opened] = await self._wait_for(request_id, RuntimeEventType.INTERACTION_START.value)
         self.assertEqual(opened.payload["type"], "approval")
@@ -264,7 +268,11 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_deny_or_skip_does_not_run_the_tool(self) -> None:
         for answer in ("deny", "skip"):
             with self.subTest(answer=answer):
-                tool, runtime, request_id, interaction_id = await self._approval()
+                # A session each: the history of a session holds its earlier
+                # tool results, and this model answers once it sees one.
+                tool, runtime, request_id, interaction_id = await self._approval(
+                    f"s-{answer}"
+                )
 
                 await runtime.answer_interaction(request_id, interaction_id, answer)
                 await self._terminal(request_id)

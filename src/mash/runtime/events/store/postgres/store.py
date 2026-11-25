@@ -109,6 +109,15 @@ class PostgresRuntimeStore(RuntimeStore):
             limit=limit,
         )
 
+    async def list_trace_events(
+        self,
+        agent_id: str,
+        trace_ids: list[str],
+        event_types: list[str],
+    ) -> list[RuntimeEvent]:
+        await self.open()
+        return await loaders.list_trace_events(self._pool, agent_id, trace_ids, event_types)
+
     async def has_request(self, request_id: str) -> bool:
         await self.open()
         return await loaders.has_request(self._pool, request_id)

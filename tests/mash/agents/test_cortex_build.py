@@ -96,7 +96,7 @@ class _CortexBuildFixture(unittest.IsolatedAsyncioTestCase):
             user_message=message,
             agent_response=f"reply to {message}",
             signals={},
-            session_total_tokens=0,
+            context_tokens=0,
             metadata=metadata,
             workflow_id=workflow_id,
             app_id=app_id,
@@ -449,7 +449,7 @@ class PostgresCortexBuildTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await memory_store.save_turn(
                     trace_id=f"{self.app_id}-{trace}", session_id="s", agent_id="assistant",
-                    user_message="hi", agent_response="yo", signals={}, session_total_tokens=0,
+                    user_message="hi", agent_response="yo", signals={}, context_tokens=0,
                     app_id=self.app_id, **kwargs,
                 )
             turns = await memory_store.list_app_turns(self.app_id)

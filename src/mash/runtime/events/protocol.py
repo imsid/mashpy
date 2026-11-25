@@ -48,6 +48,15 @@ class RuntimeStore(Protocol):
         limit: int | None = None,
     ) -> list[RuntimeEvent]: ...
 
+    async def list_trace_events(
+        self,
+        agent_id: str,
+        trace_ids: list[str],
+        event_types: list[str],
+    ) -> list[RuntimeEvent]:
+        """The agent's events of ``event_types`` in ``trace_ids``, in log order."""
+        ...
+
     async def has_request(self, request_id: str) -> bool: ...
 
     async def is_request_terminal(self, request_id: str) -> bool: ...

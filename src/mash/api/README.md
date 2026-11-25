@@ -169,8 +169,7 @@ Every call names the request it serves, and the host checks it as the sandbox re
 
 ```json
 {
-  "reason": "manual",
-  "session_total_tokens_reset": 0
+  "reason": "manual"
 }
 ```
 
@@ -398,7 +397,8 @@ Requests start only from a session's queue. These routes read them.
 
 `GET /api/v1/agent/{agent_id}/sessions`
 - Lists the agent's most recently active sessions, newest first, each with
-  `session_id`, `turn_count`, `last_activity_at`, `session_total_tokens` and
+  `session_id`, `turn_count`, `last_activity_at`, `context_tokens` (the latest
+  turn's context size) and
   `first_message` (the first 200 characters of the session's first user
   message).
 - Path params:
@@ -414,7 +414,9 @@ Requests start only from a session's queue. These routes read them.
   - `agent_id`
   - `session_id`
 - Returns `agent_id`, `session_id`, `model`, `max_steps`,
-  `session_total_tokens` (the context budget, which compaction resets), and
+  `context_tokens` (the latest turn's context: the input and output tokens of
+  its last model call; the session compacts once it reaches the agent's
+  `compaction_token_threshold`), and
   what the session's requests spent with the subagent runs they started, which
   run in sessions of their own: `total_tokens` (input plus output),
   `cache_read_tokens`, `cache_write_tokens`, and `usage`:

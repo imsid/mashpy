@@ -11,7 +11,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from conftest import build_test_stores
 from mash.core.llm import LLMProvider
 from mash.core.llm.types import LLMContentBlock, LLMResponse, LLMTokenUsage
-from mash.memory.compaction import compact_conversation
 from mash.memory.failed_turns import failed_turn_metadata, format_failed_request
 from mash.runtime import Host, HostBuilder
 from mash.runtime.engine import loop as loop_module
@@ -121,9 +120,7 @@ class FailedTurnReplayTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(failed["agent_response"], "")
                     self.assertEqual(failed["metadata"]["type"], "failed_request")
                     self.assertEqual(failed["metadata"]["error"]["error_code"], "invalid_request")
-                    self.assertEqual(
-                        failed["session_total_tokens"], first["session_total_tokens"]
-                    )
+                    self.assertEqual(failed["context_tokens"], first["context_tokens"])
 
                     self.assertEqual(await _ask("try again"), "request.completed")
 
@@ -181,27 +178,47 @@ class _SummaryLLM(LLMProvider):
 
 
 class FailedTurnCompactionTests(unittest.IsolatedAsyncioTestCase):
-    async def test_compaction_leaves_the_failed_turn_out(self) -> None:
-        _, store = build_test_stores()
+    async def test_compaction_reads_the_failed_turn_as_replay_shows_it(self) -> None:
+        from types import SimpleNamespace
+
+        from mash.core.config import AgentConfig
+        from mash.runtime import context as context_helpers
+
+        runtime_store, store = build_test_stores()
         await store.save_turn(
             trace_id="t0", session_id="s", agent_id="a", user_message="asked",
-            agent_response="answered", signals={}, session_total_tokens=0,
+            agent_response="answered", signals={}, context_tokens=0,
         )
+        failed_metadata = failed_turn_metadata({"error_code": "timeout", "error": "boom"})
         await store.save_turn(
             trace_id="t1", session_id="s", agent_id="a", user_message="failed ask",
-            agent_response="", signals={}, session_total_tokens=0,
-            metadata=failed_turn_metadata({"error_code": "timeout", "error": "boom"}),
+            agent_response="", signals={}, context_tokens=0, metadata=failed_metadata,
         )
         llm = _SummaryLLM()
-
-        _, trace_id = await compact_conversation(
-            store=store, llm=llm, agent_id="a", session_id="s", max_tokens=100,
-            temperature=0.0, turn_limit=5, reason="manual", session_total_tokens_reset=0,
+        runtime = SimpleNamespace(
+            agent_id="a",
+            session_id="s",
+            store=store,
+            runtime_store=runtime_store,
+            agent=SimpleNamespace(
+                llm=llm,
+                config=AgentConfig(agent_id="a", system_prompt="x", replay="replies"),
+            ),
         )
 
-        self.assertEqual(llm.seen, ["User: asked\nAssistant: answered"])
+        _, trace_id = await context_helpers.compact_session(runtime, "s")
+
+        # The failed request goes in as the block replay puts before the next
+        # message, so the summary can say what is left to retry.
+        self.assertEqual(
+            llm.seen,
+            [
+                "User: asked\nAssistant: answered\nUser: "
+                + format_failed_request("failed ask", failed_metadata)
+            ],
+        )
         [checkpoint] = [t for t in await store.get_turns("s", "a") if t["trace_id"] == trace_id]
-        self.assertEqual(checkpoint["metadata"]["turn_ids"], ["t0"])
+        self.assertEqual(checkpoint["metadata"]["turn_ids"], ["t0", "t1"])
 
 
 class FailedTurnScopeTests(unittest.IsolatedAsyncioTestCase):

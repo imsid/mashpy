@@ -66,8 +66,9 @@ class DefineHostRequest(BaseModel):
 
 
 class CompactSessionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     reason: str = "manual"
-    session_total_tokens_reset: int = 0
 
 
 class RunWorkflowRequest(BaseModel):

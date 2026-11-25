@@ -495,6 +495,36 @@ async def list_events(
     return [dict_to_event(row) for row in rows]
 
 
+async def list_trace_events(
+    pool: Any,
+    agent_id: str,
+    trace_ids: list[str],
+    event_types: list[str],
+) -> list[RuntimeEvent]:
+    """The agent's events of these types in these traces, in log order.
+
+    One query on ``idx_runtime_event_trace_cursor`` (agent_id, trace_id,
+    event_id): replay reads the turns it replays with it.
+    """
+    if not trace_ids or not event_types:
+        return []
+    async with pool.connection() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                """
+                SELECT event_id, request_id, seq AS request_seq, trace_id,
+                       agent_id, session_id, host_id, event_type, loop_index, step_key,
+                       dedupe_key, payload, created_at
+                FROM runtime_event_log
+                WHERE agent_id = %s AND trace_id = ANY(%s) AND event_type = ANY(%s)
+                ORDER BY event_id ASC
+                """,
+                (agent_id, list(trace_ids), list(event_types)),
+            )
+            rows = await cursor.fetchall()
+    return [dict_to_event(row) for row in rows]
+
+
 async def has_request(pool: Any, request_id: str) -> bool:
     async with pool.connection() as conn:
         async with conn.cursor() as cursor:

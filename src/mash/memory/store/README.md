@@ -72,7 +72,8 @@ Current backend status:
   - `user_message`
   - `agent_response`
   - `signals`
-  - `session_total_tokens`
+  - `context_tokens`: the size of the turn's context, the input and output
+    tokens of its last model call
   - `metadata`
 - Returns:
   - the persisted `trace_id`
@@ -86,7 +87,7 @@ Notes:
   - `trace_id`
   - `user_message`
   - `agent_response`
-  - `session_total_tokens`
+  - `context_tokens`
   - `signals`
   - `metadata`
   - `created_at`
@@ -95,12 +96,15 @@ Behavior:
 - The contract is chronological turn order.
 - `agent_id` is required and scopes reads to one agent.
 
-`get_replay_turns(session_id, agent_id, turns) -> list[dict]`
+`get_replay_turns(session_id, agent_id, *, trace_ids=None) -> list[dict]`
 - The turns a request replays into its context, oldest first: the latest
-  replayable `summary_checkpoint` turn, if any, then up to `turns` replayable
-  turns after it. Same shape as `get_turns`, without `signals`.
-- The runtime calls it with `AgentConfig.conversation_history_turns` when it
-  loads a request's context; the Postgres store reads only those rows.
+  replayable `summary_checkpoint` turn, if any, then every replayable turn
+  after it. Same shape as `get_turns`, without `signals`.
+- With `trace_ids`, those turns of the session instead: the ones a request
+  recorded on `mash.context_load.end`, so a recovered request replays the same
+  turns.
+- The runtime calls it when it loads a request's context, unless the agent's
+  `AgentConfig.replay` is `"none"`; compaction bounds how many turns there are.
 
 `get_turn(trace_id, agent_id, session_id=None) -> dict | None`
 - One turn by its trace id, the primary key, when it belongs to `agent_id` (and to `session_id` when given). The row has `trace_id`, `session_id`, `user_message`, `agent_response`, `metadata` and `created_at`.
@@ -142,7 +146,7 @@ Behavior:
   - `session_id`
   - `turn_count`
   - `last_activity_at`
-  - `session_total_tokens`
+  - `context_tokens`: the latest turn's
 
 `get_latest_session(agent_id) -> dict | None`
 - Convenience wrapper returning the first item from `list_sessions(agent_id, limit=1)`.
