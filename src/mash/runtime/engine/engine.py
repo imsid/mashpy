@@ -121,8 +121,28 @@ class RequestEngine:
             request_metadata=request_metadata,
             slots=self._slots,
         )
+        # A cancelled run in the session still finishes the step it was on
+        # (a tool call, a model call); the new request starts after it, so
+        # the two never run in one session at once. Cancel reports the
+        # request cancelled at once, so a caller may resubmit to the session
+        # before that step ends (RunSubAgents after a timeout).
+        finishing = [
+            task
+            for other_id, other in self._runs.items()
+            if other.session_id == session_id
+            and other.cancelled.is_set()
+            and (task := self._tasks.get(other_id)) is not None
+            and not task.done()
+        ]
         self._runs[request_id] = run
-        self._spawn(request_id, run.run())
+        self._spawn(request_id, self._run_after(finishing, run))
+
+    @staticmethod
+    async def _run_after(finishing: list[asyncio.Task[None]], run: RequestRun) -> None:
+        if finishing:
+            # wait() leaves the tasks running if this one is cancelled.
+            await asyncio.wait(finishing)
+        await run.run()
 
     async def continue_request(self, request_id: str) -> None:
         """Run the request again from its events, once it is recorded running.

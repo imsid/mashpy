@@ -18,7 +18,7 @@ from ..logging import (
     get_subagent_id_prefix,
 )
 from ..runtime.client import InteractionClosedError
-from ..runtime.errors import classify_error, retry_transient
+from ..runtime.errors import classify_error, is_retryable, retry_transient
 from .base import ToolResult
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT_SECONDS = 3600
 # Children one call may start: each is a request on its agent's process.
 MAX_REQUESTS = 16
+# Waits between attempts to read a child's stream again after it broke, e.g.
+# while the host restarts the child's process; the child's budget bounds them.
+RECONNECT_DELAYS = (0.5, 1.0, 2.0, 5.0)
 
 # Child ids are UUID5s in this namespace, so the REPL's 8-character short ids
 # stay distinct; a ``{request_id}-sub-...`` string would share the parent's
@@ -61,8 +64,9 @@ class SupportsChildClient(Protocol):
         request_id: str,
         *,
         timeout: Optional[float] = None,
+        after: int = 0,
     ) -> AsyncIterator[Dict[str, Any]]:
-        """Yield the child's streamed events."""
+        """Yield the child's streamed events after seq ``after`` (0: from the first)."""
 
     async def cancel_request(self, request_id: str) -> Dict[str, Any]:
         """Cancel the child."""
@@ -270,6 +274,17 @@ class RunSubAgentsTool:
                 not isinstance(session_id, str) or not session_id.strip()
             ):
                 return f"requests[{index}].session_id must be a non-empty string"
+            if session_id is not None and any(
+                earlier["agent_id"] == agent_id and earlier["session_id"] == session_id.strip()
+                for earlier in items
+            ):
+                # Two requests in one session would run at the same time, each
+                # without the other's turn.
+                return (
+                    f"requests[{index}] continues session '{session_id.strip()}' of "
+                    f"'{agent_id}', which another item already continues; send one "
+                    "request per session"
+                )
             items.append(
                 {
                     "agent_id": agent_id,
@@ -419,77 +434,107 @@ class RunSubAgentsTool:
         finally:
             if not follow.done():
                 follow.cancel()
-        if "status" not in entry:
-            entry.update(
-                {
-                    "status": "failed",
-                    "error": "the child's stream ended without a terminal event",
-                }
-            )
 
     async def _follow(
         self, entry: Dict[str, Any], client: Any, request_id: str, budget: _Budget
     ) -> None:
         """Read the child's stream into ``entry``, relaying its interactions.
 
-        The stream replays from the start, so a rerun call opens and closes the
-        relayed interactions again; both are no-ops on ids already stored.
+        A stream that breaks before the child's terminal event (its process
+        died and the host is restarting it, or the connection dropped) is read
+        again after the last event seen: the child recovers and finishes, and
+        only the child's own terminal event, or the budget running out, ends
+        its entry. An error that cannot pass, such as an unknown request,
+        fails the entry. A rerun call reads the stream from the start, so it
+        opens and closes the relayed interactions again; both are no-ops on
+        ids already stored.
         """
         relay = get_interaction_relay()
         opened: Dict[str, Dict[str, Any]] = {}  # child interaction id -> its create
         relayed: Dict[str, str] = {}  # child interaction id -> relayed id
+        closed: set[str] = set()  # child interaction ids already acked
         forwards: list[asyncio.Task[None]] = []
         interactions: list[Dict[str, Any]] = []
         stopped = False
+        last_seq = 0
+        attempt = 0
         try:
-            async for event in client.stream_response(request_id):
-                event_name = str(event.get("event") or "")
-                data = event.get("data")
-                if not isinstance(data, dict):
-                    data = {}
-                if event_name == "request.interaction.create" and relay is not None:
-                    child_interaction_id = str(data.get("interaction_id") or "")
-                    relayed_id = await relay.open(data)
-                    opened[child_interaction_id] = data
-                    relayed[child_interaction_id] = relayed_id
-                    budget.pause()
-                    forwards.append(
-                        asyncio.ensure_future(
-                            self._forward(
-                                relay, client, request_id, child_interaction_id, relayed_id
+            while True:
+                try:
+                    async for event in client.stream_response(request_id, after=last_seq):
+                        seq = event.get("seq")
+                        if isinstance(seq, int):
+                            if seq <= last_seq:
+                                continue
+                            last_seq = seq
+                        attempt = 0
+                        event_name = str(event.get("event") or "")
+                        data = event.get("data")
+                        if not isinstance(data, dict):
+                            data = {}
+                        if event_name == "request.interaction.create" and relay is not None:
+                            child_interaction_id = str(data.get("interaction_id") or "")
+                            if child_interaction_id in relayed or child_interaction_id in closed:
+                                # Read again after a reconnect without a seq.
+                                continue
+                            relayed_id = await relay.open(data)
+                            opened[child_interaction_id] = data
+                            relayed[child_interaction_id] = relayed_id
+                            budget.pause()
+                            forwards.append(
+                                asyncio.ensure_future(
+                                    self._forward(
+                                        relay, client, request_id, child_interaction_id, relayed_id
+                                    )
+                                )
                             )
-                        )
-                    )
-                    continue
-                if event_name == "request.interaction.ack":
-                    child_interaction_id = str(data.get("interaction_id") or "")
-                    relayed_id = relayed.pop(child_interaction_id, None)
-                    if relayed_id is None:
-                        continue
-                    await relay.close(relayed_id, data)
-                    budget.resume()
-                    interactions.append(
-                        _interaction_item(opened.pop(child_interaction_id), data)
-                    )
-                    continue
-                if event_name == "request.completed":
-                    response = data.get("response")
-                    response = response if isinstance(response, dict) else {}
-                    metadata = response.get("metadata")
-                    metadata = metadata if isinstance(metadata, dict) else {}
-                    entry["status"] = "completed"
-                    if metadata.get("trace_id"):
-                        entry["trace_id"] = str(metadata["trace_id"])
-                    entry["response"] = str(response.get("text") or "")
-                    if metadata.get("structured_output") is not None:
-                        entry["structured_output"] = metadata["structured_output"]
-                    return
-                if event_name == "request.cancelled":
-                    entry["status"] = "cancelled"
-                    return
-                if event_name == "request.error":
-                    entry.update({"status": "failed", **_child_error(data)})
-                    return
+                            continue
+                        if event_name == "request.interaction.ack":
+                            child_interaction_id = str(data.get("interaction_id") or "")
+                            relayed_id = relayed.pop(child_interaction_id, None)
+                            if relayed_id is None:
+                                continue
+                            closed.add(child_interaction_id)
+                            await relay.close(relayed_id, data)
+                            budget.resume()
+                            interactions.append(
+                                _interaction_item(opened.pop(child_interaction_id), data)
+                            )
+                            continue
+                        if event_name == "request.completed":
+                            response = data.get("response")
+                            response = response if isinstance(response, dict) else {}
+                            metadata = response.get("metadata")
+                            metadata = metadata if isinstance(metadata, dict) else {}
+                            entry["status"] = "completed"
+                            if metadata.get("trace_id"):
+                                entry["trace_id"] = str(metadata["trace_id"])
+                            entry["response"] = str(response.get("text") or "")
+                            if metadata.get("structured_output") is not None:
+                                entry["structured_output"] = metadata["structured_output"]
+                            return
+                        if event_name == "request.cancelled":
+                            entry["status"] = "cancelled"
+                            return
+                        if event_name == "request.error":
+                            entry.update({"status": "failed", **_child_error(data)})
+                            return
+                    reason: object = "the child's stream ended without a terminal event"
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    if not is_retryable(exc):
+                        raise
+                    reason = exc
+                delay = RECONNECT_DELAYS[min(attempt, len(RECONNECT_DELAYS) - 1)]
+                attempt += 1
+                logger.warning(
+                    "lost the stream of child request %s (%s); reading it again in %.1fs",
+                    request_id,
+                    reason,
+                    delay,
+                )
+                await asyncio.sleep(delay)
         except asyncio.CancelledError:
             # The call stops here (its budget ran out, or the process is
             # going down); a rerun call picks the open interactions up again.
@@ -500,7 +545,7 @@ class RunSubAgentsTool:
                 task.cancel()
             await asyncio.gather(*forwards, return_exceptions=True)
             if not stopped:
-                # The child ended or its stream broke: nothing answers these now.
+                # The child ended or its stream failed: nothing answers these now.
                 for relayed_id in relayed.values():
                     await relay.close(relayed_id, {"response": None, "cancelled": True})
             if interactions:

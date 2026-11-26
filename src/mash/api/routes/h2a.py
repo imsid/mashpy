@@ -324,12 +324,18 @@ def build_h2a_router() -> APIRouter:
         refused = await _own_child(request, agent_id, request_id)
         if refused is not None:
             return refused
+        try:
+            after = max(0, int(request.query_params.get("after") or 0))
+        except ValueError:
+            return h2a_error(400, "INVALID_REQUEST", "after must be an integer")
         client = state_from_request(request).pool.get_client(agent_id)
 
+        # The child's seq goes through as each frame's id, so a caller whose
+        # stream broke reads on after the last event it has.
         async def _generate() -> AsyncIterator[str]:
-            async for event in client.stream_response(request_id):
+            async for event in client.stream_response(request_id, after=after):
                 yield build_runtime_event_sse_payload(
-                    str(event.get("event") or ""), event.get("data")
+                    str(event.get("event") or ""), event.get("data"), seq=event.get("seq")
                 )
 
         return StreamingResponse(

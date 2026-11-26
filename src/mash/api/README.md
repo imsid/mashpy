@@ -44,6 +44,7 @@ An agent process starts, follows, answers and cancels its `RunSubAgents` childre
 
 `GET /h2a/agent/{agent_id}/request/{request_id}`
 - Streams the child request's events as SSE. Only the agent that submitted it (its `parent.agent_id`) may stream it; others get `403`.
+- Each frame's `id:` is the child's event seq; `?after=<seq>` starts after that event, so a caller whose stream broke reads on from where it was.
 
 `POST /h2a/agent/{agent_id}/request/{request_id}/cancel`
 - Cancels the child through its agent's client. Only the agent that submitted it may cancel it; others get `403`, and an unknown request `404`.

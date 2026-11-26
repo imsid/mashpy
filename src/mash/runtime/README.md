@@ -672,7 +672,7 @@ There are three layers of failure handling, each covering a different scenario:
 
 - `get_request_status(request_id)` reads the request's status from `runtime_request`: `running`, `completed`, `failed` or `cancelled`. A `running` request whose stream has gone quiet after a crash continues when its agent's process restarts.
 
-- `cancel_request(request_id)` acks a pending interaction as cancelled, emits `REQUEST_CANCELLED`, and stops the loop at the next step boundary; the step in flight finishes and appends its events. Idempotent on a request that is already terminal.
+- `cancel_request(request_id)` acks a pending interaction as cancelled, emits `REQUEST_CANCELLED`, and stops the loop at the next step boundary; the step in flight finishes and appends its events. A new request on the same session starts only once that step is done, so the two never run in one session at once. Idempotent on a request that is already terminal.
 
 On the host, `GET /api/v1/agent/{agent_id}/request/{request_id}/status` and `GET /api/v1/agent/{agent_id}/trace/{trace_id}/status` read a request's status. Cancelling goes through the event (`POST /api/v1/sessions/{session_id}/events/{event_id}/cancel`): `Pool.cancel_with_children` cancels the companion's request and its running `RunSubAgents` children, each through its own agent, skipping a child whose agent is disabled. The request, parked in its `RunSubAgents` step, stops at the step boundary once they end. `GET /api/v1/agent/{agent_id}/sessions/{session_id}/requests` lists a session's requests newest first, filtered by `status` and `started_by`.
 

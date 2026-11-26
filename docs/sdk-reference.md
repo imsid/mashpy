@@ -671,7 +671,10 @@ stays in its entry. A call takes at most 16 items. `timeout_seconds` defaults
 to the companion's `AgentConfig.subagent_timeout_seconds` (3600), which is
 also the most a call may ask for. Each child gets that budget, its clock
 stopped while it waits on the user; when a child's budget runs out, the tool
-cancels it.
+cancels it. If a child's agent process dies, the tool waits for the host to
+restart it and reads on from the child's last event, so the child's recovered
+outcome is what its entry reports. Two items may not continue the same
+session.
 
 Each child is a request in a session of its own, started by the
 companion, with `parent_request_id` set to the companion's request. Without

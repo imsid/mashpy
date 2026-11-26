@@ -161,6 +161,30 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool.runs, 2)
         self.assertEqual(spec.model_calls, 2)
 
+    async def test_a_request_starts_after_a_cancelled_run_in_its_session_stops(self) -> None:
+        tool = _BlockingTool()
+        runtime = await self._runtime(_Spec(tool, tool_name="work", arguments={}))
+        first = (await runtime.submit_request(message="go", session_id="s-1", **TEST_IDENTITY))[
+            "request_id"
+        ]
+        await self._wait_for(first, RuntimeEventType.EXECUTE_TOOL_START.value)
+        await runtime.cancel_request(first)  # reported cancelled; the tool call goes on
+
+        second = (
+            await runtime.submit_request(message="again", session_id="s-1", **TEST_IDENTITY)
+        )["request_id"]
+        other = (
+            await runtime.submit_request(message="elsewhere", session_id="s-2", **TEST_IDENTITY)
+        )["request_id"]
+        # Another session does not wait.
+        await self._wait_for(other, RuntimeEventType.CHAT_START.value)
+        await asyncio.sleep(0.1)
+        self.assertEqual(await self._events(second, RuntimeEventType.CHAT_START.value), [])
+
+        tool.release.set()
+        end = await self._terminal(second)
+        self.assertEqual(end.payload["status"], "ok")
+
     async def test_an_answer_wakes_the_request(self) -> None:
         runtime = await self._runtime(self._ask_spec())
         accepted = await runtime.submit_request(message="ask", session_id="s-1", **TEST_IDENTITY)

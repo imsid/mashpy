@@ -14,7 +14,9 @@ from mash.logging import (
     clear_trace_id,
     set_trace_id,
 )
-from mash.runtime.client import InteractionClosedError
+from unittest import mock
+
+from mash.runtime.client import AgentClientError, AgentUnavailableError, InteractionClosedError
 from mash.tools.subagent import RunSubAgentsTool, bound_interaction_relay, child_request_id
 
 
@@ -50,6 +52,7 @@ class _Children:
         self.answers: list[tuple[str, str, Any]] = []
         self.answered = asyncio.Event()
         self.closed_interactions: set[str] = set()
+        self.stream_calls: list[tuple[str, int]] = []
         self._counter = 0
 
     def client(self, agent_id: str) -> "_Client":
@@ -95,9 +98,10 @@ class _Client:
         return request_id
 
     async def stream_response(
-        self, request_id: str, *, timeout: Optional[float] = None
+        self, request_id: str, *, timeout: Optional[float] = None, after: int = 0
     ) -> AsyncIterator[Dict[str, Any]]:
         children = self._children
+        children.stream_calls.append((request_id, after))
         script = children.scripts.get(self.agent_id, children.default_script)
         children.running += 1
         children.max_running = max(children.max_running, children.running)
@@ -583,6 +587,120 @@ class RunSubAgentsToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len({e["request_id"] for e in entries}), 2)
         for entry in entries:
             self.assertEqual(entry["session_id"], entry["request_id"])
+
+    async def test_a_broken_stream_is_read_again_after_the_last_event(self) -> None:
+        # The child's process dies mid-request; the host restarts it, the
+        # child recovers and finishes.
+        async def script(client: "_Client", request_id: str):
+            after = client._children.stream_calls[-1][1]
+            if after == 0:
+                yield {"event": "chat.end", "data": {}, "seq": 1}
+                yield {"event": "execute_tool.end", "data": {}, "seq": 2}
+                raise AgentUnavailableError("agent 'research' is unavailable")
+            if len([c for c in client._children.stream_calls if c[1] == 2]) == 1:
+                # Still restarting.
+                raise AgentUnavailableError("agent 'research' is unavailable")
+            yield {**_completed(request_id, "recovered"), "seq": 3}
+
+        self.children.scripts = {"research": script}
+        with mock.patch("mash.tools.subagent.RECONNECT_DELAYS", (0.01,)):
+            result, entries = await self._run(
+                {"requests": [{"agent_id": "research", "prompt": "a"}]}
+            )
+
+        self.assertFalse(result.is_error)
+        self.assertEqual(entries[0]["status"], "completed")
+        self.assertEqual(entries[0]["response"], "recovered")
+        child_id = entries[0]["request_id"]
+        self.assertEqual(
+            self.children.stream_calls, [(child_id, 0), (child_id, 2), (child_id, 2)]
+        )
+
+    async def test_a_stream_that_ends_early_is_read_again(self) -> None:
+        async def script(client: "_Client", request_id: str):
+            if len(client._children.stream_calls) == 1:
+                return
+            yield _completed(request_id, "done late")
+
+        self.children.scripts = {"research": script}
+        with mock.patch("mash.tools.subagent.RECONNECT_DELAYS", (0.01,)):
+            _, entries = await self._run({"requests": [{"agent_id": "research", "prompt": "a"}]})
+
+        self.assertEqual(entries[0]["status"], "completed")
+        self.assertEqual(entries[0]["response"], "done late")
+
+    async def test_an_error_that_cannot_pass_fails_the_entry(self) -> None:
+        async def script(client: "_Client", request_id: str):
+            raise AgentClientError("GET stream failed (status=404): request not found")
+            yield {}
+
+        self.children.scripts = {"research": script}
+        _, entries = await self._run({"requests": [{"agent_id": "research", "prompt": "a"}]})
+
+        self.assertEqual(entries[0]["status"], "failed")
+        self.assertEqual(entries[0]["error_code"], "not_found")
+        self.assertEqual(len(self.children.stream_calls), 1)
+
+    async def test_a_child_that_never_comes_back_times_out(self) -> None:
+        async def script(client: "_Client", request_id: str):
+            raise AgentUnavailableError("agent 'research' is unavailable")
+            yield {}
+
+        self.children.scripts = {"research": script}
+        with mock.patch("mash.tools.subagent.RECONNECT_DELAYS", (0.05,)):
+            _, entries = await self._run(
+                {"requests": [{"agent_id": "research", "prompt": "a"}], "timeout_seconds": 1}
+            )
+
+        self.assertEqual(entries[0]["status"], "timed_out")
+        self.assertGreater(len(self.children.stream_calls), 2)
+
+    async def test_a_reconnect_without_seq_does_not_relay_an_interaction_twice(self) -> None:
+        relay = _Relay()
+
+        async def script(client: "_Client", request_id: str):
+            yield _create(request_id, "itr_child")
+            if len(client._children.stream_calls) == 1:
+                raise AgentUnavailableError("agent 'research' is unavailable")
+            await client._children.answered.wait()
+            yield _ack("itr_child", "yes")
+            yield _completed(request_id, "answered yes")
+
+        self.children.scripts = {"research": script}
+        answering = asyncio.ensure_future(self._answer_when_opened(relay, "yes"))
+        with mock.patch("mash.tools.subagent.RECONNECT_DELAYS", (0.01,)):
+            _, entries = await self._run(
+                {"requests": [{"agent_id": "research", "prompt": "a"}]}, relay=relay
+            )
+        await answering
+
+        self.assertEqual(entries[0]["status"], "completed")
+        self.assertEqual(len(relay.opened), 1)
+        self.assertEqual(len(self.children.answers), 1)
+
+    async def test_one_session_takes_one_item(self) -> None:
+        result = await self.tool.execute(
+            {
+                "requests": [
+                    {"agent_id": "research", "prompt": "a", "session_id": "s-r"},
+                    {"agent_id": "research", "prompt": "b", "session_id": "s-r"},
+                ]
+            }
+        )
+
+        self.assertTrue(result.is_error)
+        self.assertIn("one request per session", result.content)
+        self.assertEqual(self.children.submitted, [])
+        # Another agent's session of the same name is a different session.
+        _, entries = await self._run(
+            {
+                "requests": [
+                    {"agent_id": "research", "prompt": "a", "session_id": "s-r"},
+                    {"agent_id": "planner", "prompt": "b", "session_id": "s-r"},
+                ]
+            }
+        )
+        self.assertEqual([e["status"] for e in entries], ["completed", "completed"])
 
     async def test_invalid_arguments_are_errors(self) -> None:
         for args in (

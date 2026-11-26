@@ -207,6 +207,7 @@ class _RecordingClient:
         self.cancelled: list[str] = []
         self.answers: list[tuple[str, str, Any]] = []
         self.closed: set[str] = set()
+        self.streams: list[tuple[str, int]] = []
 
     async def post_request(self, message: str, **kwargs: Any) -> str:
         self.calls.append({"message": message, **kwargs})
@@ -215,6 +216,12 @@ class _RecordingClient:
     async def cancel_request(self, request_id: str) -> dict:
         self.cancelled.append(request_id)
         return {"request_id": request_id, "status": "cancelled"}
+
+    async def stream_response(self, request_id: str, *, after: int = 0, **kwargs: Any):
+        self.streams.append((request_id, after))
+        for seq, name in ((7, "chat.end"), (8, "request.completed")):
+            if seq > after:
+                yield {"event": name, "data": {"request_id": request_id}, "seq": seq}
 
     async def post_interaction(self, request_id: str, *, interaction_id: str, response: Any) -> dict:
         if interaction_id in self.closed:
@@ -581,6 +588,33 @@ class H2ARelayAuthTests(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 403)
         self.assertEqual(missing.status_code, 404)
+
+    def test_the_stream_reads_on_after_the_last_event_and_carries_seqs(self) -> None:
+        import asyncio
+
+        asyncio.run(
+            self.store.append_event(
+                RuntimeEvent(
+                    request_id="req-sub",
+                    agent_id="research",
+                    session_id="s-1",
+                    event_type=RuntimeEventType.INVOKE_AGENT_START.value,
+                    dedupe_key="request.accepted",
+                    payload={"request_metadata": {"parent": {"agent_id": "primary-app"}}},
+                )
+            )
+        )
+        primary = derive_agent_token(SECRET, "primary-app")
+
+        resp = self.http.get(
+            "/h2a/agent/research/request/req-sub?after=7",
+            headers={"Authorization": f"Bearer {primary}"},
+        )
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(self.client_for_research.streams, [("req-sub", 7)])
+        self.assertIn("id: 8\nevent: request.completed", resp.text)
+        self.assertNotIn("chat.end", resp.text)
 
 
 class AgentProcessEndToEndTests(unittest.IsolatedAsyncioTestCase):
