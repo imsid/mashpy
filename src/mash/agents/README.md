@@ -23,7 +23,7 @@
   `transcript` or `events`) and `GetAgentTurns`, which read an agent's traces
   and turns by agent id with a session or trace id, only for the companion's
   own children in the current session. They return whole results; a long one
-  is previewed like any tool result and read on with `ReadToolResult`.
+  is saved to a file like any tool result.
 
 ## Package Boundary
 - Built-in agents should compose `mash.runtime`, `mash.tools`, `mash.memory`, and `mash.logging`.

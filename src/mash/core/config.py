@@ -36,9 +36,10 @@ class AgentConfig:
     # (all input of its last model call, cached included, plus output) reaches this. 0
     # turns compaction off, and the history then grows without bound.
     compaction_token_threshold: int = 500_000
-    # A tool result longer than this reaches the model as a preview and a line
-    # saying how to read the rest with ReadToolResult; the full result stays in
-    # the event log.
+    # A tool result longer than this is saved whole to a file in the agent's
+    # sandbox folder, and the model gets a note with its size and path to read
+    # it with run_code; without a sandbox the model gets the whole result. The
+    # event log keeps the full result either way.
     tool_result_context_chars: int = 20_000
     compaction_temperature: float = 0.0
     # Sent with every model call of the agent, e.g. {"thinking_level": "low"}

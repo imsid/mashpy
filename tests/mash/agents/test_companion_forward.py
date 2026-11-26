@@ -53,6 +53,9 @@ class _Router(LLMProvider):
         self.plan = plan
         self.calls = 0
         self.seen_results: list[str] = []
+        # The companion's sandbox files, by path: a saved result is read from
+        # here, as run_code would read it.
+        self.files: dict[str, str] = {}
 
     @property
     def model(self) -> str:
@@ -82,7 +85,9 @@ class _Router(LLMProvider):
             return _response("my own reply")
         content = str(last.data.get("content"))
         self.seen_results.append(content)
-        # The id is near the start of the entry, so a preview holds it too.
+        saved = re.search(r"saved whole to (\S+) in your sandbox folder", content)
+        if saved:
+            content = self.files[saved.group(1)]
         request_id = re.search(r'"request_id": "([^"]+)"', content).group(1)
         forward = ToolCall(
             id="call-forward",
@@ -91,7 +96,7 @@ class _Router(LLMProvider):
         )
         calls = [forward]
         if self.plan == "alongside":
-            calls.append(ToolCall(id="call-other", name="ReadToolResult", arguments={}))
+            calls.append(ToolCall(id="call-other", name="InspectAgentTrace", arguments={}))
         return _response(calls=calls)
 
     def set_event_logger(self, logger, agent_id: str) -> None:
@@ -178,11 +183,29 @@ class ForwardTests(unittest.IsolatedAsyncioTestCase):
             rebuilt["context"]["messages"][-1]["content"], [{"type": "text", "text": "built it"}]
         )
 
-    async def test_a_long_answer_forwards_whole_though_the_companion_saw_a_preview(self) -> None:
+    async def test_a_long_answer_forwards_whole_though_the_companion_saw_a_file_note(self) -> None:
+        router = await self._pool("forward", response_text=LONG)
+
+        async def write(*, path: str, data: bytes, **_: Any) -> None:
+            router.files[path] = data.decode("utf-8")
+
+        for target in (
+            patch("mash.runtime.factory.request_sandbox", return_value=("http://host", "tok")),
+            patch("mash.runtime.engine.steps.write_sandbox_file", side_effect=write),
+        ):
+            target.start()
+            self.addCleanup(target.stop)
+        done = await self._ask("builder|write it all")
+
+        self.assertTrue(router.seen_results[0].startswith("[The result is "))
+        self.assertEqual(done["response"]["text"], LONG.strip())
+
+    async def test_without_a_sandbox_a_long_answer_reaches_the_companion_whole(self) -> None:
         router = await self._pool("forward", response_text=LONG)
         done = await self._ask("builder|write it all")
 
-        self.assertTrue(router.seen_results[0].startswith("[Result is "))
+        self.assertIn("line 00000", router.seen_results[0])
+        self.assertIn("line 02999", router.seen_results[0])
         self.assertEqual(done["response"]["text"], LONG.strip())
 
     async def test_a_refused_forward_is_an_error_and_the_companion_goes_on(self) -> None:

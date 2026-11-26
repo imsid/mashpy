@@ -290,7 +290,7 @@ lifecycle.
     runtime (the spec's tools, skills and LLM, then the sandbox, browser and
     MCP tools), and `build_turn_agent` for each step, a cheap agent over a copy
     of the base registry plus the tools bound to the request (conversation
-    tools, `search_cortex`, `ReadToolResult`, and for the companion
+    tools, `search_cortex`, and for the companion
     `RunSubAgents`, `ForwardAnswer` and `RunWorkflow`); tools shut down once,
     with the runtime
   - runtime tool wiring
@@ -307,7 +307,8 @@ lifecycle.
     `compaction_token_threshold`
   - context serialization/deserialization
   - action/result payload conversion; a tool result over
-    `tool_result_context_chars` enters the context as a preview
+    `tool_result_context_chars` that the request saved to its sandbox
+    (`saved_to` in its metadata) enters the context as a note naming the file
 
 - [`transcript.py`](./transcript.py)
   - `turn_messages(events, ...)`: one turn's messages from its

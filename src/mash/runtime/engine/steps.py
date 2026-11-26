@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -23,7 +24,9 @@ from ...logging.trace_context import (
     get_workflow_id,
 )
 from ...otel import semconv
+from ...tools.sandbox import write_sandbox_file
 from ...tools.subagent import child_request_id
+from ...tools.tool_results import SAVED_TO, result_file_path
 from .. import context as context_helpers
 from .. import factory as factory_helpers
 from ..events import RequestStatus, RuntimeEvent, RuntimeEventType
@@ -37,6 +40,8 @@ from ..requests import (
 
 if TYPE_CHECKING:
     from ..service import AgentRuntime
+
+log = logging.getLogger(__name__)
 
 
 def _merge_tool_usage(
@@ -332,12 +337,10 @@ def _commit_step_payload(
     result_payloads: list[dict[str, Any]],
     step_index: int,
     tool_usage: dict[str, Any] | None,
-    trace_id: str,
 ) -> dict[str, Any]:
     action = context_helpers.action_from_payload(action_payload)
     results = context_helpers.result_payloads_to_context_results(
         result_payloads,
-        trace_id=trace_id,
         limit=runtime.agent.config.tool_result_context_chars,
     )
     reply = forwarded_reply(result_payloads)
@@ -852,8 +855,55 @@ async def _execute_and_record_tool_call(
         result,
         duration_ms=duration_ms,
     )
+    await _save_long_result(
+        runtime,
+        request_id=request_id,
+        trace_id=trace_id,
+        tool_call=tool_call,
+        result_payload=result_payload,
+        policy=policy,
+    )
     await record_tool_end(runtime, **ids, result_payload=result_payload)
     return result_payload
+
+
+async def _save_long_result(
+    runtime: "AgentRuntime",
+    *,
+    request_id: str,
+    trace_id: str,
+    tool_call: ToolCall,
+    result_payload: dict[str, Any],
+    policy: dict[str, Any] | None,
+) -> None:
+    """Save a result too long for the context to the request's sandbox.
+
+    The file's path goes in the result's metadata as ``saved_to``, and the
+    model sees a note naming it (``context_content``). Without a sandbox, or
+    when the write fails, the result stays as it is and the model gets all of
+    it.
+    """
+    result = result_payload["result"]
+    content = str(result.get("content") or "")
+    if len(content) <= runtime.agent.config.tool_result_context_chars:
+        return
+    sandbox = factory_helpers.request_sandbox(runtime, policy)
+    if sandbox is None:
+        return
+    host_api_url, token = sandbox
+    path = result_file_path(trace_id, tool_call.id)
+    try:
+        await write_sandbox_file(
+            host_api_url=host_api_url,
+            token=token,
+            request_id=request_id,
+            path=path,
+            data=content.encode("utf-8"),
+        )
+    except Exception as exc:
+        log.warning("could not save the result of %s to the sandbox: %s", tool_call.id, exc)
+        return
+    result["metadata"] = {**dict(result.get("metadata") or {}), SAVED_TO: path}
 
 
 def _tool_call_from_payload(tool_call_payload: dict[str, Any]) -> ToolCall:
@@ -989,8 +1039,6 @@ def commit_state(
     runtime: "AgentRuntime",
     workflow_state: dict[str, Any],
     structured_output_request: dict[str, Any] | None = None,
-    *,
-    trace_id: str,
 ) -> dict[str, Any]:
     """The loop state after a step's commit: its results observed into the context.
 
@@ -1011,7 +1059,6 @@ def commit_state(
         result_payloads=result_payloads,
         step_index=loop_index,
         tool_usage=dict(workflow_state.get("tool_usage") or {}),
-        trace_id=trace_id,
     )
     done = bool(commit_payload.get("done"))
     updated: dict[str, Any] = {
@@ -1042,9 +1089,7 @@ async def commit_request_step(
 ) -> dict[str, Any]:
     loop_index = int(workflow_state.get("loop_index") or 0)
     action_payload = dict(workflow_state.get("action") or {})
-    updated = commit_state(
-        runtime, workflow_state, structured_output_request, trace_id=trace_id
-    )
+    updated = commit_state(runtime, workflow_state, structured_output_request)
     step_started_at = workflow_state.get("step_started_at")
     if step_started_at is None:
         step_duration_ms = 0

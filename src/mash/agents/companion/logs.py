@@ -243,8 +243,8 @@ class InspectAgentTraceTool(_LogTool):
             turn = await self._reader.memory_store.get_turn(trace_id, agent_id)
             messages = turn_messages(
                 events,
-                # Whole results: a long answer is previewed as this tool's own
-                # result, and ReadToolResult reads on from there.
+                # Whole results: a long answer is saved to a file as this
+                # tool's own result.
                 limit=sys.maxsize,
                 reply=str((turn or {}).get("agent_response") or ""),
             )

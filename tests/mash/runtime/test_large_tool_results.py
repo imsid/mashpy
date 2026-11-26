@@ -1,4 +1,4 @@
-"""Large tool results: the model sees a preview, the event log keeps the result."""
+"""Large tool results: saved to a file in the sandbox, the event log keeps the result."""
 
 from __future__ import annotations
 
@@ -20,9 +20,10 @@ from mash.skills.registry import SkillRegistry
 from mash.testing.runtime_fixtures import TEST_IDENTITY
 from mash.tools.base import ToolResult
 from mash.tools.registry import ToolRegistry
-from mash.tools.tool_results import PREVIEW_CHARS, ReadToolResultTool, context_content
+from mash.runtime import factory
+from mash.tools.tool_results import SAVED_TO, context_content, result_file_path
 
-BIG = "".join(f"{n:05d}|" for n in range(6000))  # 36,000 chars, each position readable
+BIG = "".join(f"{n:05d}\n" for n in range(6000))  # 36,000 chars in 6,000 lines
 
 
 class _BigTool:
@@ -108,20 +109,37 @@ class _Spec(AgentSpec):
 
 class ContextContentTests(unittest.TestCase):
     def test_a_short_result_is_shown_whole(self) -> None:
-        self.assertEqual(context_content("short", limit=20_000, trace_id="t", tool_call_id="c"), "short")
+        saved = {SAVED_TO: "tool-results/t/c.txt"}
+        self.assertEqual(context_content("short", limit=20_000, metadata=saved), "short")
         exact = "x" * 20_000
-        self.assertEqual(context_content(exact, limit=20_000, trace_id="t", tool_call_id="c"), exact)
+        self.assertEqual(context_content(exact, limit=20_000, metadata=saved), exact)
 
-    def test_a_long_result_is_a_preview_that_says_how_to_read_on(self) -> None:
-        shown = context_content(BIG, limit=20_000, trace_id="t-1", tool_call_id="call-1")
-        header, body = shown.split("\n", 1)
-        self.assertEqual(body, BIG[:PREVIEW_CHARS])
-        self.assertIn("36,000 chars", header)
-        self.assertIn(f"chars 0-{PREVIEW_CHARS:,}", header)
-        self.assertIn(
-            f'ReadToolResult(trace_id="t-1", tool_call_id="call-1", offset={PREVIEW_CHARS})',
-            header,
+    def test_a_long_saved_result_is_a_note_naming_its_file(self) -> None:
+        note = context_content(
+            BIG, limit=20_000, metadata={SAVED_TO: "tool-results/t-1/call-1.txt", "exit_code": 1}
         )
+        self.assertNotIn("00001", note)
+        self.assertIn("36,000 characters in 6,000 lines, exit code 1", note)
+        self.assertIn("saved whole to tool-results/t-1/call-1.txt", note)
+        self.assertIn("tail -n 50 tool-results/t-1/call-1.txt", note)
+
+    def test_a_long_result_not_saved_is_shown_whole(self) -> None:
+        self.assertEqual(context_content(BIG, limit=20_000, metadata={}), BIG)
+        self.assertEqual(context_content(BIG, limit=20_000, metadata=None), BIG)
+
+    def test_the_path_comes_from_the_ids(self) -> None:
+        self.assertEqual(result_file_path("abc123", "call-1"), "tool-results/abc123/call-1.txt")
+        self.assertEqual(
+            result_file_path("abc", "toolu/../x y"), "tool-results/abc/toolu_.._x_y.txt"
+        )
+
+    def test_a_request_has_a_sandbox_unless_the_host_or_policy_says_no(self) -> None:
+        runtime = type("R", (), {"_sandbox_tools": ("http://host", "tok")})()
+        self.assertEqual(factory.request_sandbox(runtime, None), ("http://host", "tok"))
+        self.assertEqual(factory.request_sandbox(runtime, {"sandbox": True}), ("http://host", "tok"))
+        self.assertIsNone(factory.request_sandbox(runtime, {"sandbox": False}))
+        runtime._sandbox_tools = None
+        self.assertIsNone(factory.request_sandbox(runtime, None))
 
 
 class LargeResultTests(unittest.IsolatedAsyncioTestCase):
@@ -138,8 +156,22 @@ class LargeResultTests(unittest.IsolatedAsyncioTestCase):
             target.start()
             self.addCleanup(target.stop)
         self.runtime_store, self.memory_store = build_test_stores()
+        self.written: list[dict[str, Any]] = []
 
-    async def _run(self) -> tuple[AgentRuntime, _Spec, str, str]:
+    def _sandbox(self, *, fail: bool = False) -> None:
+        async def write(**kwargs: Any) -> None:
+            if fail:
+                raise RuntimeError("Sandbox error: no sandbox")
+            self.written.append(kwargs)
+
+        for target in (
+            patch("mash.runtime.factory.request_sandbox", return_value=("http://host", "tok")),
+            patch("mash.runtime.engine.steps.write_sandbox_file", side_effect=write),
+        ):
+            target.start()
+            self.addCleanup(target.stop)
+
+    async def _run(self) -> tuple[_Spec, str, str]:
         spec = _Spec()
         runtime = AgentRuntime.from_spec(
             spec,
@@ -155,71 +187,54 @@ class LargeResultTests(unittest.IsolatedAsyncioTestCase):
             events = await self.runtime_store.list_request_events(request_id)
             end = [e for e in events if e.event_type == RuntimeEventType.INVOKE_AGENT_END.value]
             if end:
-                return runtime, spec, request_id, str(end[0].trace_id)
+                return spec, request_id, str(end[0].trace_id)
             await asyncio.sleep(0.01)
         self.fail("the request never ended")
 
-    async def test_the_model_sees_a_preview_and_the_log_keeps_the_result(self) -> None:
-        _, spec, request_id, trace_id = await self._run()
-        [seen] = spec.provider.seen
-        self.assertEqual(
-            seen,
-            context_content(BIG, limit=20_000, trace_id=trace_id, tool_call_id="call-big"),
-        )
+    async def _tool_end(self, request_id: str) -> Any:
         [end] = [
             e
             for e in await self.runtime_store.list_request_events(request_id)
             if e.event_type == RuntimeEventType.EXECUTE_TOOL_END.value
         ]
+        return end
+
+    async def test_a_long_result_is_saved_to_the_sandbox_and_the_model_sees_a_note(self) -> None:
+        self._sandbox()
+        spec, request_id, trace_id = await self._run()
+
+        path = result_file_path(trace_id, "call-big")
+        [written] = self.written
+        self.assertEqual(
+            written,
+            {
+                "host_api_url": "http://host",
+                "token": "tok",
+                "request_id": request_id,
+                "path": path,
+                "data": BIG.encode(),
+            },
+        )
+        [seen] = spec.provider.seen
+        self.assertEqual(seen, context_content(BIG, limit=20_000, metadata={SAVED_TO: path}))
+        end = await self._tool_end(request_id)
         self.assertEqual(end.payload["result"]["content"], BIG)
+        self.assertEqual(end.payload["result"]["metadata"][SAVED_TO], path)
 
-    async def test_read_tool_result_reads_on_from_the_log(self) -> None:
-        _, _, _, trace_id = await self._run()
-        tool = ReadToolResultTool(
-            runtime_store=self.runtime_store,
-            agent_id="big-app",
-            session_id="s-1",
-            context_chars=20_000,
-        )
-        part = await tool.execute(
-            {"trace_id": trace_id, "tool_call_id": "call-big", "offset": PREVIEW_CHARS, "limit": 600}
-        )
-        self.assertFalse(part.is_error)
-        header, body = part.content.split("\n", 1)
-        self.assertEqual(body, BIG[PREVIEW_CHARS : PREVIEW_CHARS + 600])
-        self.assertIn(f"of 36,000; read more with offset={PREVIEW_CHARS + 600}", header)
+    async def test_without_a_sandbox_the_model_gets_the_whole_result(self) -> None:
+        spec, request_id, _ = await self._run()
 
-        last = await tool.execute(
-            {"trace_id": trace_id, "tool_call_id": "call-big", "offset": 35_900}
-        )
-        self.assertTrue(last.content.split("\n", 1)[0].endswith("this is the end]"))
-        self.assertEqual(last.content.split("\n", 1)[1], BIG[35_900:])
+        self.assertEqual(spec.provider.seen, [BIG])
+        end = await self._tool_end(request_id)
+        self.assertNotIn(SAVED_TO, end.payload["result"]["metadata"])
 
-        # The default and the most it returns leave room for its header, so its
-        # own result is never previewed.
-        whole = await tool.execute({"trace_id": trace_id, "tool_call_id": "call-big"})
-        self.assertLessEqual(len(whole.content), 20_000)
+    async def test_a_failed_write_leaves_the_whole_result(self) -> None:
+        self._sandbox(fail=True)
+        spec, request_id, _ = await self._run()
 
-        for args, message in (
-            ({"trace_id": trace_id, "tool_call_id": "nope"}, "no result of call"),
-            ({"trace_id": trace_id, "tool_call_id": "call-big", "offset": 40_000}, "past the end"),
-            ({"trace_id": trace_id, "tool_call_id": "call-big", "limit": 50_000}, "at most"),
-        ):
-            with self.subTest(args=args):
-                refused = await tool.execute(args)
-                self.assertTrue(refused.is_error)
-                self.assertIn(message, refused.content)
-
-    async def test_read_tool_result_reads_only_its_own_session(self) -> None:
-        _, _, _, trace_id = await self._run()
-        other = ReadToolResultTool(
-            runtime_store=self.runtime_store,
-            agent_id="big-app",
-            session_id="s-other",
-            context_chars=20_000,
-        )
-        refused = await other.execute({"trace_id": trace_id, "tool_call_id": "call-big"})
-        self.assertTrue(refused.is_error)
+        self.assertEqual(spec.provider.seen, [BIG])
+        end = await self._tool_end(request_id)
+        self.assertNotIn(SAVED_TO, end.payload["result"]["metadata"])
 
 
 if __name__ == "__main__":

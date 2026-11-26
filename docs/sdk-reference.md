@@ -303,7 +303,7 @@ AgentConfig(
     max_parallel_tools=8,                  # cap on parallel-safe tool calls run concurrently per turn
     subagent_timeout_seconds=3600,        # RunSubAgents wait: the default and the most a call may ask for
     compaction_token_threshold=500_000,   # summarize once the last turn's context reaches this (0 = off)
-    tool_result_context_chars=20_000,     # longer tool results reach the model as a preview
+    tool_result_context_chars=20_000,     # longer tool results are saved to a sandbox file the model reads
     compaction_temperature=0.0,           # sampling temperature for the summary pass
     provider_options={},                  # sent with every model call, provider-specific (e.g. {"thinking_level": "low"} on Gemini)
     extra={},                             # free-form dict for provider/app-specific options
@@ -322,10 +322,12 @@ summarized before the next request, tool calls included, and replay starts
 from that summary. Lower the threshold for a model with a small context
 window.
 
-A tool result longer than `tool_result_context_chars` reaches the model as its
-first 4,000 characters and a line giving its length and how to read on. The
-event log keeps the full result, and `ReadToolResult(trace_id, tool_call_id,
-offset, limit)`, which every agent has, reads any part of it.
+A tool result longer than `tool_result_context_chars` is saved whole to
+`tool-results/<trace_id>/<tool_call_id>.txt` in the agent's sandbox folder.
+The model sees a note with its size, line count, exit code and path instead of
+its text, and reads the file with `run_code` (`tail`, `grep`, `sed -n`). The
+event log keeps the full result. An agent without a sandbox on the request
+gets the whole result in its context.
 
 ## LLM Providers
 

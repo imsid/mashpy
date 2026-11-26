@@ -1,7 +1,7 @@
 """Conversation compaction: a summary checkpoint replaces a session's history.
 
 The runtime renders the history a request would replay (every turn since the
-last checkpoint, tool calls and previewed results included) and passes it here
+last checkpoint, tool calls and results included) and passes it here
 as text. The summary is saved as a ``summary_checkpoint`` turn; replay starts
 from the latest one.
 """

@@ -30,7 +30,7 @@ from mash.skills.registry import SkillRegistry
 from mash.testing.runtime_fixtures import TEST_IDENTITY
 from mash.tools.base import ToolResult
 from mash.tools.registry import ToolRegistry
-from mash.tools.tool_results import context_content
+from mash.tools.tool_results import SAVED_TO, context_content, result_file_path
 
 BIG = "y" * 25_000
 
@@ -195,17 +195,35 @@ class TranscriptReplayTests(ReplayTestCase):
         self.assertEqual(history[4].content[0].data["text"], "next")
         self.assertEqual(first.payload["response"]["text"], "answered")
 
-    async def test_a_large_result_replays_as_its_preview(self) -> None:
+    async def test_a_saved_result_replays_as_its_note(self) -> None:
         provider = _Provider()
         runtime = await self._runtime(_Spec(provider))
-        first = await self._ask(runtime, "big")
+        written: dict[str, bytes] = {}
+
+        async def write(*, path: str, data: bytes, **_: Any) -> None:
+            written[path] = data
+
+        with patch(
+            "mash.runtime.factory.request_sandbox", return_value=("http://host", "tok")
+        ), patch("mash.runtime.engine.steps.write_sandbox_file", side_effect=write):
+            first = await self._ask(runtime, "big")
         await self._ask(runtime, "next")
 
+        path = result_file_path(first.trace_id, "call-1")
+        self.assertEqual(written, {path: BIG.encode()})
+        live = provider.requests[1].messages[-1].content[0].data["content"]
         replayed = provider.requests[2].messages[2].content[0].data["content"]
-        self.assertEqual(
-            replayed,
-            context_content(BIG, limit=20_000, trace_id=first.trace_id, tool_call_id="call-1"),
-        )
+        note = context_content(BIG, limit=20_000, metadata={SAVED_TO: path})
+        self.assertEqual(live, note)
+        self.assertEqual(replayed, note)
+
+    async def test_without_a_sandbox_a_large_result_replays_whole(self) -> None:
+        provider = _Provider()
+        runtime = await self._runtime(_Spec(provider))
+        await self._ask(runtime, "big")
+        await self._ask(runtime, "next")
+
+        self.assertEqual(provider.requests[2].messages[2].content[0].data["content"], BIG)
 
     async def test_a_turn_with_incomplete_events_replays_as_its_text(self) -> None:
         provider = _Provider()

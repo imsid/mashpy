@@ -300,7 +300,7 @@ AgentConfig(
     max_parallel_tools=8,                 # cap on parallel-safe tool calls run concurrently per turn
     subagent_timeout_seconds=3600,       # RunSubAgents wait: the default and the most a call may ask for
     compaction_token_threshold=500_000,   # summarize history once the last turn's context reaches this (0 = off)
-    tool_result_context_chars=20_000,     # longer tool results reach the model as a preview plus ReadToolResult
+    tool_result_context_chars=20_000,     # longer tool results are saved to a sandbox file the model reads
     compaction_temperature=0.0,           # sampling temperature for the summary pass
     provider_options={},                  # sent with every model call, provider-specific (e.g. {"thinking_level": "low"} on Gemini)
     extra={},                             # free-form dict for provider/app-specific options

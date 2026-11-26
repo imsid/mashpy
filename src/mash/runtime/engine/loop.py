@@ -447,8 +447,8 @@ class RequestRun:
 
         The child is looked up in the full ``RunSubAgents`` results this request
         recorded on ``execute_tool.end``, so an answer the context shows as a
-        preview still forwards whole. A refusal is an error result, and the
-        model goes on.
+        saved file's note still forwards whole. A refusal is an error result,
+        and the model goes on.
         """
 
         def refused(message: str) -> dict[str, Any]:

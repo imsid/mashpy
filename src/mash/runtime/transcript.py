@@ -5,7 +5,7 @@ the user message on ``invoke_agent.start``, each step's assistant blocks and
 tool calls on ``chat.end``, and each tool's full result on ``execute_tool.end``.
 Replay rebuilds a turn's messages from them, so an agent continuing a session
 sees its own earlier tool calls and results, not only its replies. A result
-longer than the agent's limit is previewed, as it was in the request.
+the request saved to a file shows as the same note it showed then.
 """
 
 from __future__ import annotations
@@ -85,8 +85,7 @@ def turn_messages(
                     content=context_content(
                         str(result.get("content") or ""),
                         limit=limit,
-                        trace_id=str(end.trace_id or ""),
-                        tool_call_id=call_id,
+                        metadata=result.get("metadata"),
                     ),
                     is_error=bool(result.get("is_error")),
                     images=[dict(image) for image in result.get("images") or []],

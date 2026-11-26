@@ -77,7 +77,7 @@ async def compact_session(
     """Summarize the history a request would replay into a summary checkpoint.
 
     The summary reads every turn since the last checkpoint, rendered from the
-    messages replay builds: tool calls and their previewed results included.
+    messages replay builds: tool calls and their results included.
     """
     session_id_value = str(session_id or self.session_id).strip()
     if not session_id_value:
@@ -287,10 +287,9 @@ def tool_calls_from_action_payload(
 def result_payloads_to_context_results(
     payloads: list[dict[str, Any]],
     *,
-    trace_id: str,
     limit: int,
 ) -> list[ContextToolResult]:
-    """The results as the context holds them: a long one as its preview.
+    """The results as the context holds them: a long saved one as a note naming its file.
 
     The payloads keep the full content, which ``execute_tool.end`` stores.
     """
@@ -308,8 +307,7 @@ def result_payloads_to_context_results(
                 content=context_content(
                     str(result_payload.get("content") or ""),
                     limit=limit,
-                    trace_id=trace_id,
-                    tool_call_id=tool_call_id,
+                    metadata=result_payload.get("metadata"),
                 ),
                 is_error=bool(result_payload.get("is_error")),
                 metadata=result_metadata,

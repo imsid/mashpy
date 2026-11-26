@@ -24,7 +24,6 @@ from ..tools.sandbox import SANDBOX_TOOL_NAMES, build_sandbox_tools
 from ..tools.runtime import RuntimeToolBuilder
 from ..tools.forward import ForwardAnswerTool
 from ..tools.subagent import RunSubAgentsTool
-from ..tools.tool_results import ReadToolResultTool
 from ..tools.workflow import RunWorkflowTool
 from .host.directory import (
     AgentMetadata,
@@ -112,6 +111,18 @@ def register_sandbox_tools(self: "AgentRuntime", agent: Agent) -> None:
         agent.tools.register(tool)
 
 
+def request_sandbox(
+    self: "AgentRuntime", policy: dict[str, Any] | None
+) -> tuple[str, str] | None:
+    """The host API URL and agent token that reach the request's sandbox, or None.
+
+    None when the host has no sandboxes or the request's policy turns them off.
+    """
+    if self._sandbox_tools is None or not (policy or {}).get("sandbox", True):
+        return None
+    return self._sandbox_tools
+
+
 def register_browser_tools(self: "AgentRuntime", agent: Agent) -> None:
     """Register the browser tools, when the host has browsers and the spec lists sites."""
     if self._browser_tools is None:
@@ -171,8 +182,7 @@ def build_turn_agent(
 
     It shares the base agent's LLM, skills and tool objects, and adds the
     tools bound to the request: the conversation tools for its session and
-    app, ``search_cortex`` for its app, and ``ReadToolResult`` over its
-    session's tool results. The request's policy narrows the
+    app, and ``search_cortex`` for its app. The request's policy narrows the
     sandbox and browser tools. The companion, on a host request the user
     started, also gets ``RunSubAgents`` over the host's agents and
     ``RunWorkflow`` over its workflows.
@@ -193,20 +203,6 @@ def build_turn_agent(
     cortex = self.get_cortex()
     if cortex is not None and app_id:
         agent.tools.register(cortex.search_tool(app_id))
-    if self.runtime_store is not None:
-        if "ReadToolResult" in agent.tools:
-            raise ValueError(
-                f"agent '{self.agent_id}' registers its own 'ReadToolResult' tool; the "
-                "runtime provides it, so remove it from build_tools()"
-            )
-        agent.tools.register(
-            ReadToolResultTool(
-                runtime_store=self.runtime_store,
-                agent_id=self.agent_id,
-                session_id=session_id,
-                context_chars=config.tool_result_context_chars,
-            )
-        )
     apply_policy(self, agent, policy)
     for name in ("RunSubAgents", "ForwardAnswer", "RunWorkflow"):
         if name in agent.tools:
