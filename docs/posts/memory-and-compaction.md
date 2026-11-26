@@ -71,7 +71,7 @@ The summary reads the history a request would replay, rendered as text: user mes
 
 | Field | Default | Meaning |
 |---|---|---|
-| `compaction_token_threshold` | `100_000` | the latest turn's context size that triggers compaction (`0` turns it off) |
+| `compaction_token_threshold` | `500_000` | the latest turn's context size that triggers compaction (`0` turns it off) |
 | `compaction_temperature` | `0.0` | sampling for the summary call |
 
 Summaries are generated at temperature zero because they are records, not prose. The summarization prompt aims to preserve decisions, constraints, user preferences, and the ids of agent sessions the user may come back to, the things a future turn might silently depend on, and discard the conversational scaffolding around them. Compaction is lossy; [the runtime store post](persistence-store.md) covered why memory can afford that and the event log can't. When the loss matters, the original turns are still in the store, and there's a path back to them.

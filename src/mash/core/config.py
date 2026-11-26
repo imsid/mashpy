@@ -35,7 +35,7 @@ class AgentConfig:
     # The session compacts before a request once the latest turn's context
     # (all input of its last model call, cached included, plus output) reaches this. 0
     # turns compaction off, and the history then grows without bound.
-    compaction_token_threshold: int = 100_000
+    compaction_token_threshold: int = 500_000
     # A tool result longer than this reaches the model as a preview and a line
     # saying how to read the rest with ReadToolResult; the full result stays in
     # the event log.

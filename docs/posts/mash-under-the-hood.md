@@ -172,7 +172,7 @@ included, into a summary checkpoint using the agent's own LLM. Future requests
 load the summary instead of the full history, keeping context size bounded
 without losing key decisions, constraints, user preferences, or the agent
 sessions the user may come back to. The threshold is
-`compaction_token_threshold` in `AgentConfig`, 100,000 tokens by default; 0
+`compaction_token_threshold` in `AgentConfig`, 500,000 tokens by default; 0
 turns compaction off.
 
 **Tools**
