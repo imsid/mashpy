@@ -25,7 +25,13 @@ from mash.api.admin_ui import get_admin_static_dir
 from mash.api.routes.common import API_KEY_COOKIE
 from mash.runtime import Host, HostBuilder
 from mash.runtime.events import RuntimeEvent, RuntimeEventType
-from mash.testing.runtime_fixtures import DEFAULT_POLICY, patch_companion_llm, build_spec, metadata
+from mash.testing.runtime_fixtures import (
+    DEFAULT_POLICY,
+    RoutingLLMProvider,
+    build_spec,
+    metadata,
+    patch_companion_llm,
+)
 from mash.workflows import AgentStep, CodeStep, StepContext, WorkflowSpec
 from mash.workflows.store import WorkflowRunRecord, WorkflowStepEventRecord
 from mash.workflows.engine import WorkflowRunner
@@ -76,9 +82,7 @@ def _stub_eval_agent_llms():
         side_effect=lambda: build_spec(
             agent_id="eval-judge-agent", response_text="{}"
         ).build_llm(),
-    ), patch_companion_llm(
-        build_spec(agent_id="companion", response_text="companion-ok").build_llm()
-    ):
+    ), patch_companion_llm(RoutingLLMProvider("primary")):
         yield
 
 
@@ -335,7 +339,7 @@ def test_an_event_runs_on_the_companion_and_streams_from_it() -> None:
         with _build_test_client(root) as client:
             request_id = _send(client, "s-host-1", "hello")
             payload = _collect_terminal_response(client, "companion", request_id)
-            assert payload["response"]["text"] == "companion-ok"
+            assert payload["response"]["text"] == "primary-ok"
 
 
 def test_agent_scoped_session_routes() -> None:
@@ -344,27 +348,28 @@ def test_agent_scoped_session_routes() -> None:
         with _build_test_client(root) as client:
             request_id = _send(client, "s1", "hello")
             payload = _collect_terminal_response(client, "companion", request_id)
-            assert payload["response"]["text"] == "companion-ok"
+            assert payload["response"]["text"] == "primary-ok"
             _collect_terminal_response(client, "companion", _send(client, "s2", "again"))
 
-            sessions = client.get("/api/v1/agent/companion/sessions")
+            sessions = client.get("/api/v1/agent/primary/sessions")
             assert sessions.status_code == 200
             listed = sessions.json()["data"]
             assert [s["session_id"] for s in listed["sessions"]] == ["s2", "s1"]
             assert listed["sessions"][1]["turn_count"] == 1
             assert listed["limit"] == 50
-            newest = client.get("/api/v1/agent/companion/sessions", params={"limit": 1})
+            newest = client.get("/api/v1/agent/primary/sessions", params={"limit": 1})
             assert [s["session_id"] for s in newest.json()["data"]["sessions"]] == ["s2"]
+            # The routed agent's entries are on each conversation's board.
             # Each row carries the session's first message, and app_id keeps
             # only the sessions with that app's turns.
             assert [s["first_message"] for s in listed["sessions"]] == ["again", "hello"]
             _collect_terminal_response(client, "companion", _send(client, "s3", "mine", app_id="app-2"))
-            mine = client.get("/api/v1/agent/companion/sessions", params={"app_id": "app-2"})
+            mine = client.get("/api/v1/agent/primary/sessions", params={"app_id": "app-2"})
             assert [s["session_id"] for s in mine.json()["data"]["sessions"]] == ["s3"]
-            theirs = client.get("/api/v1/agent/companion/sessions", params={"app_id": "app-1"})
+            theirs = client.get("/api/v1/agent/primary/sessions", params={"app_id": "app-1"})
             assert [s["session_id"] for s in theirs.json()["data"]["sessions"]] == ["s2", "s1"]
 
-            history = client.get("/api/v1/agent/companion/sessions/s1/history")
+            history = client.get("/api/v1/agent/primary/sessions/s1/history")
             assert history.status_code == 200
             assert len(history.json()["data"]["turns"]) == 1
 
@@ -378,10 +383,10 @@ def test_an_events_structured_output_reaches_its_response() -> None:
                 "MASH_DATA_DIR": str(root),
                 "MASH_DATABASE_URL": "",
             },
-        ), patch_companion_llm(build_spec(agent_id="companion", response_text='{"ok":true}').build_llm()):
+        ), patch_companion_llm(RoutingLLMProvider("primary")):
             host = (
                 HostBuilder()
-                .agent(build_spec(agent_id="primary"), metadata=metadata())
+                .agent(build_spec(agent_id="primary", response_text='{"ok":true}'), metadata=metadata())
                 .host(Host(host_id="assistant", agents=("primary",)))
                 .build()
             )
@@ -417,10 +422,10 @@ def test_session_signals_route_returns_definitions_and_turn_rows() -> None:
                 client, "companion", _send(client, "s1", "hello again")
             )
 
-            response = client.get("/api/v1/agent/companion/sessions/s1/signals")
+            response = client.get("/api/v1/agent/primary/sessions/s1/signals")
             assert response.status_code == 200
             payload = response.json()["data"]
-            assert payload["agent_id"] == "companion"
+            assert payload["agent_id"] == "primary"
             assert payload["session_id"] == "s1"
             assert set(payload["definitions"].keys()) == {"unused_tools", "unused_tool_tokens"}
             assert payload["definitions"]["unused_tools"]["value_type"] == "string_list"
@@ -432,7 +437,7 @@ def test_session_signals_route_returns_definitions_and_turn_rows() -> None:
             assert "unused_tools" in payload["turns"][0]["signals"]
             assert "unused_tool_tokens" in payload["turns"][0]["signals"]
 
-            limited = client.get("/api/v1/agent/companion/sessions/s1/signals", params={"limit": 1})
+            limited = client.get("/api/v1/agent/primary/sessions/s1/signals", params={"limit": 1})
             assert limited.status_code == 200
             limited_payload = limited.json()["data"]
             assert [turn["trace_id"] for turn in limited_payload["turns"]] == [
@@ -779,7 +784,7 @@ def test_telemetry_events_filter_by_agent() -> None:
         with _build_test_client(root) as client:
             request_id = _send(client, "s-1", "hello")
             payload = _collect_terminal_response(client, "companion", request_id)
-            assert payload["response"]["text"] == "companion-ok"
+            assert payload["response"]["text"] == "primary-ok"
             events = client.get("/api/v1/telemetry/events?agent_id=companion")
             assert events.status_code == 200
             payload = events.json()["data"]
@@ -1048,12 +1053,12 @@ def test_reasoning_trace_route_returns_compact_trace() -> None:
             trace_id = terminal["trace_id"]
 
             reasoning_trace = client.get(
-                f"/api/v1/agent/companion/session/s-1/trace/{trace_id}/reasoning",
+                f"/api/v1/agent/primary/session/s-1/trace/{trace_id}/reasoning",
             )
             assert reasoning_trace.status_code == 200
             payload = reasoning_trace.json()["data"]
             assert payload["source"] == "runtime_event_log"
-            assert payload["agent_id"] == "companion"
+            assert payload["agent_id"] == "primary"
             assert payload["session_id"] == "s-1"
             assert payload["trace_id"] == trace_id
             assert payload["status"] == "completed"
@@ -1081,19 +1086,19 @@ def test_memory_search_uses_agent_memory_store_by_default() -> None:
         with _build_test_client(root) as client:
             request_id = _send(client, "s-1", "hello world")
             payload = _collect_terminal_response(client, "companion", request_id)
-            assert payload["response"]["text"] == "companion-ok"
+            assert payload["response"]["text"] == "primary-ok"
 
             search = client.get(
                 "/api/v1/telemetry/memory/search",
                 params={
                     "q": "@user: hello",
-                    "agent_id": "companion",
+                    "agent_id": "primary",
                     "session_id": "s-1",
                 },
             )
             assert search.status_code == 200
             payload = search.json()["data"]
-            assert payload["agent_id"] == "companion"
+            assert payload["agent_id"] == "primary"
             assert payload["session_id"] == "s-1"
             assert payload["results"]
             assert payload["results"][0]["preview"]
@@ -1591,7 +1596,7 @@ def _send(
     headers: dict[str, str] | None = None,
     **body: Any,
 ) -> str:
-    """Post a message as an event; the id of the companion request it runs as."""
+    """Post a message as an event; the id of the companion request it starts as."""
     resp = client.post(
         f"/api/v1/sessions/{session_id}/events",
         json={
@@ -1634,6 +1639,13 @@ def _collect_terminal_response(
             if current_event == "request.completed":
                 payload = json.loads(text.split(":", 1)[1].strip())
                 assert isinstance(payload, dict)
+                route = ((payload.get("response") or {}).get("metadata") or {}).get("routed")
+                if route:
+                    # The companion routed the message: the answer is the
+                    # routed request's.
+                    return _collect_terminal_response(
+                        client, route["agent_id"], route["request_id"], headers=headers
+                    )
                 return payload
             if current_event == "request.error":
                 raise AssertionError(f"request failed: {text}")

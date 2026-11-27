@@ -15,7 +15,7 @@ from mash.api import create_app
 from mash.api.config import MashHostConfig
 from mash.runtime import Host, HostBuilder
 from mash.testing.runtime_fixtures import (
-    DeterministicLLMProvider,
+    RoutingLLMProvider,
     build_spec,
     metadata,
     patch_companion_llm,
@@ -24,7 +24,8 @@ from mash.testing.runtime_fixtures import (
 
 @contextmanager
 def _client():
-    slow = DeterministicLLMProvider(response_text="done", delay_seconds=0.6)
+    # The companion's classifier is the slow part: it routes every event to "fast".
+    slow = RoutingLLMProvider("fast", delay_seconds=0.6)
     with tempfile.TemporaryDirectory() as tmp, patch.dict(
         os.environ, {"MASH_DATA_DIR": str(Path(tmp)), "MASH_DATABASE_URL": ""}
     ), patch_companion_llm(slow):
@@ -79,7 +80,11 @@ def test_session_list_filters_and_orders_newest_first() -> None:
         _wait_for_status(client, second, "running")
 
         everything = _list(client)
-        assert [r["request_id"] for r in everything] == [second, first]
+        # The session holds the companion's requests and the one each routed.
+        [routed] = [r for r in everything if r["agent_id"] == "fast"]
+        assert routed["parent_request_id"] == first
+        assert routed["started_by"] == "companion"
+        assert [r["request_id"] for r in everything] == [second, routed["request_id"], first]
         assert everything[0] == {
             "request_id": second,
             "agent_id": "companion",
@@ -95,6 +100,9 @@ def test_session_list_filters_and_orders_newest_first() -> None:
 
         assert [r["request_id"] for r in _list(client, status="running")] == [second]
         assert [r["request_id"] for r in _list(client, started_by="user")] == [second, first]
+        assert [r["request_id"] for r in _list(client, started_by="companion")] == [
+            routed["request_id"]
+        ]
         assert _list(client, started_by="planner") == []
         _wait_for_status(client, second, "completed")
 

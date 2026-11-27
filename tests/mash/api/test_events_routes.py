@@ -13,46 +13,61 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from mash.agents.companion import CompanionSpec
 from mash.api import create_app
 from mash.api.config import MashHostConfig
 from mash.runtime import Host, HostBuilder
 from mash.sessions import event_request_id
 from mash.testing.runtime_fixtures import (
-    DelegatingLLMProvider,
+    DeterministicAgentSpec,
     DeterministicLLMProvider,
+    RoutingLLMProvider,
     ToolCallingLLMProvider,
     build_spec,
     metadata,
     patch_companion_llm,
 )
 from mash.tools.ask_user import AskUserTool
+from mash.tools.registry import ToolRegistry
+
+
+class _FastSpec(DeterministicAgentSpec):
+    """The agent every event is routed to, on the model a test gives it."""
+
+    def __init__(
+        self,
+        provider: Any = None,
+        *,
+        ask: bool = False,
+        slow_seconds: float = 0.0,
+        sites: list[str] | None = None,
+    ) -> None:
+        super().__init__(agent_id="fast", response_text="done", delay_seconds=slow_seconds)
+        if provider is not None:
+            self.provider = provider
+        self._ask = ask
+        self._sites = list(sites or [])
+
+    def build_tools(self) -> ToolRegistry:
+        tools = super().build_tools()
+        if self._ask:
+            tools.register(AskUserTool())
+        return tools
+
+    def browser_sites(self) -> list[str]:
+        return list(self._sites)
 
 
 @contextmanager
 def _client(provider: Any = None, *, ask: bool = False, slow_seconds: float = 0.0):
+    """A host whose companion routes every event to ``fast``, on ``provider``."""
     with tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
         stack.enter_context(
             patch.dict(os.environ, {"MASH_DATA_DIR": str(Path(tmp)), "MASH_DATABASE_URL": ""})
         )
-        stack.enter_context(
-            patch_companion_llm(provider or DeterministicLLMProvider(response_text="done"))
-        )
-        if ask:
-            original = CompanionSpec.build_tools
-
-            def _with_ask(self):
-                tools = original(self)
-                tools.register(AskUserTool())
-                return tools
-
-            stack.enter_context(patch.object(CompanionSpec, "build_tools", _with_ask))
+        stack.enter_context(patch_companion_llm(RoutingLLMProvider("fast")))
         pool = (
             HostBuilder()
-            .agent(
-                build_spec(agent_id="fast", response_text="fast-ok", delay_seconds=slow_seconds),
-                metadata=metadata(),
-            )
+            .agent(_FastSpec(provider, ask=ask, slow_seconds=slow_seconds), metadata=metadata())
             .host(Host(host_id="assistant", agents=("fast",)))
             .host(Host(host_id="other", agents=("fast",)))
             .build()
@@ -110,9 +125,13 @@ def _frames(client: TestClient, path: str) -> list[tuple[str, dict]]:
     return frames
 
 
-def _companion_requests(client: TestClient, session_id: str = "s-1") -> list[dict]:
+def _session_requests(client: TestClient, session_id: str = "s-1") -> dict[str, list[dict]]:
+    """The session's requests by agent: the companion's, and the ones it routed."""
     resp = client.get(f"/api/v1/agent/companion/sessions/{session_id}/requests")
-    return resp.json()["data"]["requests"]
+    by_agent: dict[str, list[dict]] = {}
+    for record in resp.json()["data"]["requests"]:
+        by_agent.setdefault(record["agent_id"], []).append(record)
+    return by_agent
 
 
 def test_an_event_runs_as_a_request_with_a_derived_id_and_keeps_its_outcome() -> None:
@@ -128,9 +147,14 @@ def test_an_event_runs_as_a_request_with_a_derived_id_and_keeps_its_outcome() ->
         assert done["request_id"] == event_request_id("s-1", "e-1")
         assert done["app_id"] == "app-1"
         assert done["closed_at"] >= done["started_at"] >= done["received_at"]
-        [record] = _companion_requests(client)
+        requests = _session_requests(client)
+        [record] = requests["companion"]
         assert record["request_id"] == done["request_id"]
         assert (record["app_id"], record["policy_id"]) == ("app-1", "p-1")
+        # The routed request runs in the same session, under the same app and policy.
+        [routed] = requests["fast"]
+        assert routed["parent_request_id"] == done["request_id"]
+        assert (routed["app_id"], routed["policy_id"]) == ("app-1", "p-1")
 
 
 def test_a_seen_event_returns_its_row_and_runs_once() -> None:
@@ -143,7 +167,10 @@ def test_a_seen_event_returns_its_row_and_runs_once() -> None:
             assert again.json()["data"]["seq"] == first.json()["data"]["seq"]
         _wait(client, "e-1", {"completed"})
         assert _post(client, "e-1").status_code == 200
-        assert len(_companion_requests(client)) == 1
+        assert {agent: len(r) for agent, r in _session_requests(client).items()} == {
+            "companion": 1,
+            "fast": 1,
+        }
 
 
 def test_events_in_a_session_run_one_at_a_time_in_order() -> None:
@@ -324,9 +351,8 @@ def test_a_reconnected_stream_misses_no_frame_and_repeats_none() -> None:
         assert rest == [seq for seq in seqs if seq > cut]
 
 
-def test_cancelling_an_event_cancels_its_requests_children() -> None:
-    provider = DelegatingLLMProvider(final_text="done", subagent_id="fast", subagent_prompt="go")
-    with _client(provider, slow_seconds=5.0) as client:
+def test_cancelling_an_event_cancels_its_routed_request() -> None:
+    with _client(slow_seconds=5.0) as client:
         _post(client, "e-1")
         request_id = event_request_id("s-1", "e-1")
         deadline = time.monotonic() + 10
@@ -361,11 +387,13 @@ def test_a_browser_handoff_mints_a_link_each_time_someone_asks() -> None:
         stack.enter_context(
             patch.dict(os.environ, {"MASH_DATA_DIR": str(Path(tmp)), "MASH_DATABASE_URL": ""})
         )
-        stack.enter_context(patch_companion_llm(provider))
-        stack.enter_context(
-            patch.object(CompanionSpec, "browser_sites", lambda self: ["https://*.pge.com"])
+        stack.enter_context(patch_companion_llm(RoutingLLMProvider("fast")))
+        pool = (
+            HostBuilder()
+            .agent(_FastSpec(provider, sites=["https://*.pge.com"]), metadata=metadata())
+            .host(Host(host_id="assistant", agents=("fast",)))
+            .build()
         )
-        pool = HostBuilder().host(Host(host_id="assistant", agents=())).build()
         pool.configure_browsers(BrowserManager(browsers, host_secret="local-agents"))
         app = create_app(
             pool,
@@ -417,3 +445,29 @@ def test_the_handoff_route_needs_browsers_and_a_browser_interaction() -> None:
         )
         assert resp.status_code == 503
         assert resp.json()["error"]["code"] == "BROWSER_UNAVAILABLE"
+
+
+def test_the_event_stream_runs_on_into_the_routed_request() -> None:
+    with _client() as client:
+        _post(client, "e-1")
+        _wait(client, "e-1", {"completed"})
+        frames: list[tuple[str, int, dict]] = []
+        with client.stream("GET", "/api/v1/sessions/s-1/events/e-1/stream") as resp:
+            name, seq = None, None
+            for line in resp.iter_lines():
+                if line.startswith("id:"):
+                    seq = int(line[3:].strip())
+                elif line.startswith("event:"):
+                    name = line[6:].strip()
+                elif line.startswith("data:") and name:
+                    frames.append((name, seq, json.loads(line[5:].strip())))
+        names = [name for name, _, _ in frames]
+        # One end frame: the routed request's. The companion's is left out.
+        assert names.count("request.completed") == 1
+        assert names[-1] == "request.completed"
+        assert frames[-1][2]["response"]["text"] == "done"
+        assert frames[-1][2]["agent_id"] == "fast"
+        accepted = [data for name, _, data in frames if name == "request.accepted"]
+        assert [a["agent_id"] for a in accepted] == ["companion", "fast"]
+        seqs = [seq for _, seq, _ in frames if seq is not None]
+        assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)
