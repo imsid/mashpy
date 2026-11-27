@@ -39,7 +39,7 @@ def _texts(request: Any) -> list[tuple[str, str]]:
     return [(m.role, m.content[0].data.get("text")) for m in request.messages]
 
 
-class BoardContextTests(ReplayTestCase):
+class _BoardCase(ReplayTestCase):
     async def _entry(self, name: str, agent_id: str, **metadata: Any) -> int:
         return await self.memory_store.append_entry(
             trace_id=name,
@@ -66,6 +66,8 @@ class BoardContextTests(ReplayTestCase):
             await asyncio.sleep(0.01)
         self.fail("the request never ended")
 
+
+class BoardContextTests(_BoardCase):
     async def test_a_routed_request_reads_every_agents_entries_labelled(self) -> None:
         await self._entry("e1", "inbox")
         await self._entry("e2", "fudge")
@@ -169,3 +171,43 @@ class BoardContextTests(ReplayTestCase):
         )
         self.assertEqual(load_end.payload["board"], {"up_to": 0})
         self.assertEqual(_texts(provider.requests[0]), [("user", "first")])
+
+
+class _CompanionSpec(_Spec):
+    def get_agent_id(self) -> str:
+        return "companion"
+
+    def build_agent_config(self):  # type: ignore[override]
+        from mash.core.config import AgentConfig
+
+        return AgentConfig(agent_id="companion", system_prompt="route", **self.config)
+
+
+class BoardCompactionInRequestsTests(_BoardCase):
+    async def test_a_routed_request_never_compacts_on_its_own(self) -> None:
+        await self._entry("e1", "inbox")
+        provider = _Provider(usage=600)
+        runtime = await self._runtime(_Spec(provider, compaction_token_threshold=100))
+
+        await self._routed(runtime, "next")
+        await self._routed(runtime, "again")
+
+        self.assertEqual(provider.summaries, [])
+        entries = await self.memory_store.read_entries(SESSION)
+        self.assertEqual([e["metadata"].get("type") for e in entries], [None, None, None])
+
+    async def test_compacting_the_companions_session_summarizes_the_board(self) -> None:
+        await self._entry("e1", "inbox")
+        await self._entry("e2", "fudge")
+        provider = _Provider()
+        runtime = await self._runtime(_CompanionSpec(provider))
+
+        text, trace_id = await runtime.compact_session(SESSION, reason="manual")
+
+        self.assertEqual(text, "the summary")
+        entry = await self.memory_store.last_entry(SESSION)
+        self.assertEqual(
+            (entry["seq"], entry["agent_id"], entry["trace_id"], entry["metadata"]["type"]),
+            (3, "companion", trace_id, "summary"),
+        )
+        self.assertIn("[entry 2 · fudge]", provider.summaries[0])

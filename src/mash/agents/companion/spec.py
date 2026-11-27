@@ -16,6 +16,7 @@ from .logs import AgentLogReader, GetAgentTurnsTool, InspectAgentTraceTool, List
 from .prompt import COMPANION_PROMPT
 
 COMPANION_AGENT_ID = "companion"
+BOARD_COMPACTION_TOKENS = 100_000
 
 
 class _UnconfiguredLLM(LLMProvider):
@@ -106,10 +107,11 @@ class CompanionSpec(AgentSpec):
         return AgentConfig(
             agent_id=COMPANION_AGENT_ID,
             system_prompt=COMPANION_PROMPT,
-            # Its turns are short (a message, the agents and workflows that
-            # handled it, and the reply), so the companion keeps more of them.
-            # What its agents did stays in the event log, read with its log tools.
-            conversation_history_turns=10,
+            # The board's threshold: the companion summarizes a conversation's
+            # board once its entries since the last summary reach this many
+            # tokens. The board is in every model call of every request in the
+            # conversation, so it sits well below the per-request default.
+            compaction_token_threshold=BOARD_COMPACTION_TOKENS,
             provider_options=_routing_provider_options(),
         )
 

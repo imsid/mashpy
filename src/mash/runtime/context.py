@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING, Any, Optional
 
 from ..core.context import (
@@ -16,10 +17,13 @@ from ..core.context import (
 from ..core.context import ToolResult as ContextToolResult
 from ..memory.compaction import compact_conversation
 from ..memory.failed_turns import format_failed_request, is_failed_turn
-from ..memory.store import BOARD_SUMMARY, WORKFLOW_RESULT
+from ..logging import get_request_id
+from ..memory.board import board_label, compact_board
+from ..memory.store import BOARD_SUMMARY
 from ..memory.routes import format_routes
 from ..tools.tool_results import context_content
 from . import sessions
+from .factory import is_companion
 from .transcript import render_messages
 
 if TYPE_CHECKING:
@@ -71,14 +75,31 @@ async def compact_session(
     *,
     reason: str = "manual",
 ) -> tuple[Optional[str], Optional[str]]:
-    """Summarize every turn since the last checkpoint into a summary checkpoint.
+    """Summarize the session; the summary's text and trace id.
 
-    The summary reads each turn's text: the user message, the agents and
-    workflows that handled it, and the reply.
+    On the companion the session is a conversation, and its board gets a
+    summary entry. Elsewhere every turn since the last checkpoint becomes a
+    summary checkpoint, from each turn's user message and reply.
     """
     session_id_value = str(session_id or self.session_id).strip()
     if not session_id_value:
         raise ValueError("session_id is required")
+    if is_companion(self):
+        trace_id = str(uuid.uuid4())
+        entry = await compact_board(
+            self.store,
+            self.agent.llm,
+            session_id=session_id_value,
+            agent_id=self.agent_id,
+            trace_id=trace_id,
+            threshold=self.agent.config.compaction_token_threshold,
+            max_tokens=self.agent.config.max_tokens,
+            temperature=self.agent.config.compaction_temperature,
+            reason=reason,
+        )
+        if entry is None:
+            return "", ""
+        return str(entry["agent_response"]), trace_id
     turns = await self.store.get_replay_turns(session_id=session_id_value)
     messages, pending, history = _history(turns)
     if pending:
@@ -198,19 +219,6 @@ def _blocks(*parts: str) -> str:
     return "\n\n".join(part for part in parts if part)
 
 
-def board_label(entry: dict[str, Any]) -> str:
-    """An entry's label in the context: its number and its author."""
-    meta = entry.get("metadata") or {}
-    seq, author = entry.get("seq"), entry.get("agent_id")
-    if meta.get("type") == BOARD_SUMMARY:
-        return f"[entry {seq} · {author} · summary of the entries before it]"
-    if meta.get("type") == WORKFLOW_RESULT:
-        return f"[entry {seq} · {author} · workflow run]"
-    if is_failed_turn(entry):
-        return f"[entry {seq} · {author} · failed]"
-    return f"[entry {seq} · {author}]"
-
-
 def board_messages(entries: list[dict[str, Any]]) -> tuple[list[Message], str]:
     """The board as messages, and the text that goes before the next user message.
 
@@ -251,25 +259,6 @@ def board_messages(entries: list[dict[str, Any]]) -> tuple[list[Message], str]:
     return messages, pending
 
 
-def render_board(entries: list[dict[str, Any]]) -> str:
-    """The board as plain text: each entry's label, message and reply."""
-    parts: list[str] = []
-    for entry in entries:
-        meta = entry.get("metadata") or {}
-        lines = [board_label(entry)]
-        user_text = str(entry.get("user_message") or "")
-        if user_text and meta.get("type") != BOARD_SUMMARY:
-            lines.append(f"User: {user_text}")
-        if is_failed_turn(entry):
-            lines.append(format_failed_request(user_text, meta))
-        reply = str(entry.get("agent_response") or "")
-        if reply:
-            label = "Summary" if meta.get("type") == BOARD_SUMMARY else str(entry.get("agent_id"))
-            lines.append(f"{label}: {reply}")
-        parts.append("\n".join(lines))
-    return "\n\n".join(parts)
-
-
 async def build_board_context(
     self: "AgentRuntime",
     session_id: str,
@@ -295,6 +284,32 @@ async def build_board_context(
     context.add_user_message(_blocks(pending, message))
     position = up_to if up_to is not None else max((e["seq"] for e in entries), default=0)
     return context, int(position)
+
+
+# A board summary's trace id is derived from the request that wrote it, so a
+# recovered request that runs the check again finds the summary stored.
+BOARD_SUMMARY_NAMESPACE = uuid.UUID("0b7a52c4-3f1e-4d0a-9c86-1e5f2a7d9b43")
+
+
+async def compact_board_if_full(
+    self: "AgentRuntime", session_id: str, request_id: str
+) -> Optional[dict[str, Any]]:
+    """Write the board's summary when its last entry reached the companion's threshold.
+
+    The companion runs this as its request starts, before it routes the
+    message, with its own model and its ``compaction_token_threshold``.
+    Returns the summary entry, or None.
+    """
+    return await compact_board(
+        self.store,
+        self.agent.llm,
+        session_id=session_id,
+        agent_id=self.agent_id,
+        trace_id=str(uuid.uuid5(BOARD_SUMMARY_NAMESPACE, request_id)),
+        threshold=self.agent.config.compaction_token_threshold,
+        max_tokens=self.agent.config.max_tokens,
+        temperature=self.agent.config.compaction_temperature,
+    )
 
 
 async def build_context_payload(
@@ -324,7 +339,15 @@ async def build_context_payload(
     compaction_summary_text: Optional[str] = None
     compaction_summary_trace_id: Optional[str] = None
     threshold = self.agent.config.compaction_token_threshold
-    if threshold > 0 and await get_context_tokens(self, session_id) >= threshold:
+    if is_companion(self):
+        # The companion's session is a conversation: its board is compacted
+        # once, as a whole.
+        request_id = get_request_id()
+        summary = await compact_board_if_full(self, session_id, request_id) if request_id else None
+        if summary is not None:
+            compaction_summary_text = str(summary["agent_response"])
+            compaction_summary_trace_id = str(summary["trace_id"])
+    elif threshold > 0 and await get_context_tokens(self, session_id) >= threshold:
         compaction_summary_text, compaction_summary_trace_id = await compact_session(
             self, session_id, reason="auto"
         )

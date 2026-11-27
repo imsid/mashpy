@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from .service import AgentRuntime
 
 
-def _is_companion(self: "AgentRuntime") -> bool:
+def is_companion(self: "AgentRuntime") -> bool:
     from mash.agents.companion import COMPANION_AGENT_ID
 
     return self.agent_id == COMPANION_AGENT_ID
@@ -51,7 +51,7 @@ def resolve_host_agents(
     Only the companion routes, on a request the user started; a request a
     RunSubAgents call started gets no agents, so routing is one level deep.
     """
-    if parent_kind == "subagent" or not host or not _is_companion(self):
+    if parent_kind == "subagent" or not host or not is_companion(self):
         return {}
     agent_ids = [str(value) for value in host.get("agents") or []]
     if not agent_ids:
@@ -322,7 +322,7 @@ def configure_run_workflow(
 ) -> None:
     """Register ``RunWorkflow`` for the companion when its host has workflows."""
     workflow_ids = [str(value) for value in (host or {}).get("workflows") or []]
-    if not _is_companion(self) or not workflow_ids:
+    if not is_companion(self) or not workflow_ids:
         return
     access = self.get_host_access()
     get_workflow_client = getattr(access, "get_workflow_client", None)

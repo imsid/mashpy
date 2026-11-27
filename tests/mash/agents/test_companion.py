@@ -55,7 +55,7 @@ class CompanionSpecTests(unittest.TestCase):
 
         self.assertEqual(spec.get_agent_id(), "companion")
         self.assertEqual(config.agent_id, "companion")
-        self.assertEqual(config.conversation_history_turns, 10)
+        self.assertEqual(config.compaction_token_threshold, 100_000)
         self.assertFalse(spec.enable_sandbox())
         self.assertEqual(spec.browser_sites(), [])
         self.assertEqual(spec.build_skills().list_skills(), [])
