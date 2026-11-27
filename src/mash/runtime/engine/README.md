@@ -53,7 +53,7 @@ together for a recovered request:
 
 | Event | What the rebuild takes from it |
 |---|---|
-| `mash.context_load.end` | the system prompt as rendered, the trace ids of the replayed turns, the compaction |
+| `mash.context_load.end` | the system prompt as rendered; for a request the companion routed, the board position read (`board.up_to`), otherwise the trace ids of the replayed turns and the compaction |
 | `invoke_agent.start` | the host, app, policy and parent, from the request metadata |
 | `chat.start`, `chat.end` | each step's assistant message, action and usage |
 | `execute_tool.end` | each tool result, the loop's own (AskUser, browser handoffs, denied calls) included |
@@ -79,11 +79,12 @@ so a rerun appends nothing twice.
 
 1. `start_request_trace`: reads the trace id from `invoke_agent.start` and
    appends `mash.context_load.start`.
-2. `load_request_context`: loads history (compacting first if needed), builds
-   the system prompt with the host snapshot and the Cortex profile, and
-   appends `mash.context_load.end` with the system prompt, the trace ids of
-   the turns it replays and the compaction, so a recovered request builds the
-   context it first saw.
+2. `load_request_context`: builds the system prompt with the caller's context
+   and the Cortex profile, then loads the board (a request the companion
+   routed) or the agent's own session history (compacting first if needed).
+   It appends `mash.context_load.end` with the system prompt and either the
+   board position read (`board.up_to`) or the trace ids of the replayed turns
+   and the compaction, so a recovered request builds the context it first saw.
 3. `plan_request_step`: appends `chat.start`, calls `Agent.plan_step(...)`,
    and appends `chat.end` with the model's turn and its usage under
    `attributes`. An action whose tools need approval gets an `interaction`.
@@ -104,7 +105,15 @@ so a rerun appends nothing twice.
    clears `action` and `result_payloads` and advances `loop_index`.
 7. Once done: `finalize_structured_output` when a schema was requested and no
    tool set it, `persist_completed_turn` (the turn's write to conversation
-   memory), and `complete_request`.
+   memory: a board entry for a routed request), and `complete_request`.
+
+The companion's requests take another path through `RequestRun`: `route.py`
+compacts the board when it is full, records the board position, classifies
+the message with one structured output call (`chat.end` 0), and starts the
+routed request, runs a workflow, answers `about` or asks the user to pick an
+agent. Its events carry dedupe keys like the loop's (`context.loaded`,
+`route.classify.completed`, `route.workflow_input.completed`), so a recovered
+companion request reads its choice back.
 
 An exception from any step ends the request with `fail_request`, whose payload
 is `classify_error(...)`: `error`, `error_type`, `error_code`, `retryable`.

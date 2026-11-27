@@ -2,7 +2,7 @@
 
 ## What Must Stay True
 - `AgentSpec` remains the runtime contract for building agents.
-- `HostBuilder` composes a flat pool and hosts of agents and workflows; the built-in companion routes every host request.
+- `HostBuilder` composes a flat pool and hosts of agents and workflows; the built-in companion routes every host request with a classifier and runs no agent loop.
 - `AgentRuntime` is the per-agent execution core.
 - `AgentServer` is the per-agent HTTP/SSE adapter.
 - `Pool` owns agent registration, host definitions, and lifecycle.
@@ -12,6 +12,10 @@
 - `AgentRuntime` receives stores via constructor injection — it never creates or closes them.
 - `Pool` owns shared store instances and their lifecycle; `AgentServer` owns its own.
 - Runtime servers and clients preserve the current host/session contracts.
+- A routed request's id is derived from the companion's request id (`routed_request_id`), and it runs in the companion's session.
+- Every step of the companion's route records its output as an event with a dedupe key, so a recovered companion request makes no model call twice and starts no request or workflow run twice.
+- A routed request reads the board at context load and records the position read; recovery rebuilds from that position.
+- A routed request never compacts on its own; the companion writes the board's one summary.
 - A `RunSubAgents` child's new session id (its request id, derived from the call's position) remains deterministic.
 - Interactions (approval/info/choice/browser) wait in the request loop; the answer is the `mash.interaction.end` event, so a recovered loop finds it.
 - Every event a step appends has a dedupe key, so a step that runs twice after a crash appends nothing twice.
@@ -22,7 +26,7 @@
 - Keep host composition, transport, request coordination, and runtime lifecycle logic in this package.
 - If hosted request lifecycle, replay semantics, or `RuntimeEventType` changes, update runtime docs and tests together.
 - If storage contracts or store lifecycle ownership change, update `AgentSpec` docs and the runtime README Stores section.
-- Preserve the companion's `RunSubAgents`/`RunWorkflow` wiring and its agent directory. Only the companion routes, on requests that run an event. A child request (a `subagent` parent) asks the app through the companion, which relays the interaction onto its own request.
+- Only the companion routes, and only to its host's agents and workflows. Its routed request's reply, approvals and questions reach the user through the event; nothing is relayed through the companion.
 - If runtime control APIs or session semantics change, update downstream API and CLI tests together.
 - If interaction types or schemas change, update the H2A RFC (`docs/rfcs/host-to-agent-protocol.md`) and client/server together.
 

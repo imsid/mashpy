@@ -68,12 +68,13 @@ The [product brief](docs/posts/product-brief.md) has the full pitch.
 - **Agent harness**: the agent loop runs inside a durable request with tools,
   skills, memory and structured output. Requests are recorded as replayable
   runtime events, so restarts and long-running work resume mid-loop.
-- **Companion routing**: every event to a host runs on the built-in
-  companion, which routes it to the host's agents, in parallel when the work
-  splits, or to a workflow, and writes the answer.
+- **Companion routing**: every event to a host starts on the built-in
+  companion, whose classifier picks one of the host's agents or workflows.
+  The agent's reply streams to the user on the event, and every agent in the
+  conversation reads the same board of earlier entries.
 - **Human-in-the-loop**: agents pause for approvals, questions and browser
-  sign-ins, and the pause survives a host restart. Interactions from the
-  companion's subagents come back on the event.
+  sign-ins, and the pause survives a host restart. The routed agent's
+  questions come back on the event.
 - **Sandboxes**: each policy gets a container where the code the model writes
   (Python, JavaScript, shell) runs, in a folder per agent whose files and
   SQLite databases persist. Pages, files and servers the code makes open at
@@ -91,7 +92,7 @@ The [product brief](docs/posts/product-brief.md) has the full pitch.
   Gemini, and any open-source model served over a Chat Completions endpoint.
   Each agent picks its model in `build_llm()`.
 - **API, CLI and REPL**: HTTP with SSE streaming, a `mash` CLI, and a REPL that
-  shows the companion's subagents live. `mash.cli.App` ships it as your own
+  follows each message's agent live. `mash.cli.App` ships it as your own
   client.
 - **Traces**: every request as OpenTelemetry spans, read by the admin UI and
   `/trace`, and exported to any OTLP backend with `mashpy[otel]`.
@@ -357,7 +358,7 @@ curl -N http://127.0.0.1:8000/api/v1/sessions/thread-1/events/msg-1/stream
 | **Browser** | A Chromium per policy, in its own container, whose profile keeps the sites the user signed in to; agents that list sites with `browser_sites()` drive it on those sites |
 | **Cortex** | Opt-in per-app memory kept by the host and shared by every agent; each request reads its app's, the `cortex-build` workflow builds it on demand, and apps edit it over the API |
 | **WorkflowSpec** | Ordered pipeline of typed steps (`CodeStep` / `AgentStep`); runs are durable and observable |
-| **ToolRegistry** | Register callable tools; built-ins include AskUser and the companion's RunSubAgents and RunWorkflow, and the host adds `run_code` and `edit_file` when it has sandboxes, `sandbox_put` and `sandbox_get` for specs that declare file roots, and the browser tools for specs that list sites |
+| **ToolRegistry** | Register callable tools; built-ins include AskUser, and a request the companion routed gets `read_board` and `search_board`; the host adds `run_code` and `edit_file` when it has sandboxes, `sandbox_put` and `sandbox_get` for specs that declare file roots, and the browser tools for specs that list sites |
 | **SkillRegistry** | Markdown instruction bundles loaded on demand via a meta-tool |
 | **LLMProvider** | Adapters for Anthropic, OpenAI, and Gemini |
 | **OSSCompatibleProvider** | Runs open-source models (Gemma, Qwen, DeepSeek) over any Chat Completions endpoint, self-hosted (vLLM, Ollama) or hosted (OpenRouter); chosen in `build_llm()` like any provider |

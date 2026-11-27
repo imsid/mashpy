@@ -43,8 +43,8 @@ On every request, for the request's app:
   entries matching every term, ranked. The app comes from the request; an
   `app_id` in the arguments is ignored, and the output does not include it.
 
-The `/h2a` relay copies the companion request's `app_id` onto its children,
-so a child reads the same app. Everything in an app can read every
+The `/h2a` relay copies the companion request's `app_id` onto the request it
+routes to, so the routed agent reads the same app. Everything in an app can read every
 conversation in it this way; separate memory means separate apps.
 
 ## `cortex-build`

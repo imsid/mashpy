@@ -184,6 +184,12 @@ Behavior:
   - `last_activity_at`
   - `context_tokens`: the latest turn's
 
+`list_board_sessions(*, limit, app_id=None) -> list[dict]`
+- The host's conversations, newest first: sessions in the `sessions` table,
+  each row counting every agent's entries, with `context_tokens` set to the
+  last entry's `board_tokens` and `first_message` from entry 1. The runtime
+  answers the companion's session list with it.
+
 `get_latest_session(agent_id) -> dict | None`
 - Convenience wrapper returning the first item from `list_sessions(agent_id, limit=1)`.
 

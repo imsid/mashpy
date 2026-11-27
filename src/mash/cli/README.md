@@ -141,7 +141,7 @@ Browser administration (run on the Docker host; browsers are found by the `mash.
 Notes
 
 - If no command is given, the CLI prints help.
-- Every message goes to a host and runs on its companion.
+- Every message goes to a host. Its companion picks the agent or workflow, and the REPL follows that agent's reply on the same event stream.
 
 ## REPL Commands
 
@@ -153,8 +153,8 @@ Session
 
 - `/new`: start a new session without leaving the REPL.
 - `/resume`: open the session picker and go on in the session you choose. Neither works while a request runs in the foreground.
-- `/compact`: have the agent summarize the session so far. Later requests start from the summary.
-- `/usage`: the tokens the session used, one row per agent with its model, runs, input, output and cache tokens. On a host the companion's row comes first and each agent it ran (`↳`) follows, with the runs it made in sessions of their own; a totals row closes the table.
+- `/compact`: summarize the conversation's board so far. Later requests start from the summary.
+- `/usage`: the tokens the session used, one row per agent with its model, runs, input, output and cache tokens. On a host the companion's row comes first and each agent it routed to (`↳`) follows; a totals row closes the table.
 - `/copy`: copy the last answer to the system clipboard. `/copy code` copies its last code block. Where there is no system clipboard, Ctrl-Y pastes the text into the input.
 
 Requests
@@ -166,7 +166,7 @@ Requests
 
 Deployment
 
-- `/agents`: the agents the REPL's requests can reach, each with its display name, description, capabilities and usage guidance. These are the host's agents, which the companion routes to.
+- `/agents`: the agents the REPL's requests can reach, each with its display name, description, capabilities and usage guidance. These are the host's agents, which the companion routes to. When the companion can't tell which one a message is for, it asks you to pick one.
 - `/tools`: the tools and skills of those agents.
 - `/workflow` or `/workflow list`: list registered workflows (host-attached only when connected through a host).
 - `/workflow run <workflow_id> [dedup_key] [--no-follow] [--input JSON_OBJECT]`: start a workflow run for the REPL's app and policy and follow its steps. `--no-follow` prints the run id and returns.
@@ -193,9 +193,7 @@ like any other terminal output.
 
 - The live rows show the running request: its phase or current tool, elapsed
   time and tokens. Under a `RunSubAgents` call there is one row per child, all
-  followed at the same time. A `RunWorkflow` call's row adds the step its run
-  is on, and the detail level prints each step as it ends. Queued messages
-  are listed below.
+  followed at the same time. Queued messages are listed below.
 - Each finished tool call prints one line, such as `✓ search(q=x) 2.5s`. A
   `RunSubAgents` call prints `Asking 2 agents: energy, review` and then one
   line per child as it ends, with its tool count, tokens and time.
@@ -246,8 +244,9 @@ then a menu opens under it (`ask.py`):
 
 Up, Down, a number or an option's first letter move through a menu, and Enter
 answers. Ctrl-C at a question cancels the request that asked. Ctrl-D leaves
-the REPL. A child's interaction is asked through the companion's request with
-the child's agent id in front. When several are waiting, the question says
+the REPL. The companion's own questions (pick an agent, a workflow input it
+could not fill) and the routed agent's questions come the same way. When
+several are waiting, the question says
 how many more there are. A question whose interaction is answered somewhere
 else, times out, or belongs to a request that ended closes by itself.
 

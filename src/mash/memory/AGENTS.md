@@ -3,6 +3,7 @@
 ## What Must Stay True
 - Package-level exports from `src/mash/memory/__init__.py` remain stable unless intentionally changed.
 - Store, retrieval, and compaction responsibilities stay separated within this package.
+- A conversation's board has one summary at a time, written by `board.compact_board`; per-agent compaction (`compaction.py`) is only for an agent's own sessions.
 - Memory behavior remains reusable across every agent, the companion included.
 
 ## Change Rules

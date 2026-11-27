@@ -23,7 +23,7 @@ Import the public API from `mash.runtime`:
 - `AgentRuntime`: per-agent execution core
 - `AgentServer`: per-agent HTTP/SSE adapter; `token=` requires a bearer token on every route but `/health`
 - `Pool`: deployed pool of agents and workflows
-- `Host`: immutable composition over the pool (agents + workflows); every request to a host runs on the built-in `companion`, which routes it to them
+- `Host`: immutable composition over the pool (agents + workflows); every request to a host starts on the built-in `companion`, which routes it to one of them
 - `HostBuilder`: pool construction API
 - `AgentClient`: client for one addressable runtime
 - `AgentMetadata`: agent self-description supplied at registration
@@ -117,7 +117,7 @@ sequenceDiagram
 
     Engine->>Agent: act (execute tools) -> observe
     Agent-->>Engine: response + trace + token usage
-    Engine->>Memory: save_turn(...)
+    Engine->>Memory: append_entry(...)
     Engine->>Events: append request.started / agent.trace / request.completed
     Runtime-->>Server: replay persisted events
     Server-->>Client: SSE runtime events
@@ -227,9 +227,9 @@ constructor parameter. The default factory is `AgentSpec.build_memory_store()`.
 
 This store owns conversation-oriented state:
 
-- saved turns
+- saved turns, numbered per session (`seq`): a conversation's board
 - signals
-- summaries/compaction checkpoints
+- summaries: the board's, and an agent's own session's checkpoints
 - logs and search-oriented memory data
 
 This is the store used for conversation history and long-lived agent memory behavior.
@@ -290,30 +290,32 @@ lifecycle.
     runtime (the spec's tools, skills and LLM, then the sandbox, browser and
     MCP tools), and `build_turn_agent` for each step, a cheap agent over a copy
     of the base registry plus the tools bound to the request (conversation
-    tools, `search_cortex`, and for the companion
-    `RunSubAgents`, `ForwardAnswer` and `RunWorkflow`); tools shut down once,
-    with the runtime
+    tools, `search_cortex`, and for a request the companion routed
+    `read_board` and `search_board`); tools shut down once, with the runtime
   - runtime tool wiring
   - MCP tool wiring
   - web search tool wiring (reuses the MCP manager, registers plain tool names)
-  - `RunSubAgents`, `ForwardAnswer` and `RunWorkflow` wiring for the companion on a request that runs an event, over the host's agents and workflows; no other agent routes
 
 - [`context.py`](./context.py)
-  - session history loading: the text of the last
+  - board loading for a request the companion routed: the latest board
+    summary and every entry after it, each labelled with its number and
+    author (`build_board_context`); the context load records the position
+    read, and recovery rebuilds from it
+  - the board's summary when its last entry's `board_tokens` reaches the
+    companion's `compaction_token_threshold` (`compact_board_if_full`), and
+    `/compact` on a conversation
+  - history loading for an agent's own session: the text of the last
     `AgentConfig.conversation_history_turns` turns, each user message and
-    reply, with a turn's routes before the next message
-  - compaction once the latest turn's `context_tokens` reaches
-    `compaction_token_threshold`
+    reply; compaction once the latest turn's `context_tokens` reaches the
+    agent's `compaction_token_threshold`
   - context serialization/deserialization
   - action/result payload conversion; a tool result over
     `tool_result_context_chars` that the request saved to its sandbox
     (`saved_to` in its metadata) enters the context as a note naming the file
 
 - [`transcript.py`](./transcript.py)
-  - `turn_messages(events, ...)`: one turn's messages from its
-    `invoke_agent.start`, `chat.end` and `execute_tool.end` events, for the
-    companion's `InspectAgentTrace(view="transcript")`
-  - `render_messages(messages)`: messages as plain text, for the compaction summary
+  - `render_messages(messages)`: messages as plain text, for the summary of an
+    agent's own session
 
 - [`requests.py`](./requests.py)
   - request submission helpers
@@ -334,7 +336,7 @@ lifecycle.
 
 - [`agent_process.py`](./agent_process.py)
   - `build_agent_server(pool, agent_id, token=, host_api_url=, sandbox_tools=)`: the `AgentServer` behind `mash agent serve`; with `sandbox_tools` (the host sets `MASH_SANDBOX_ENABLED=1` when it has sandboxes) every turn agent gets `run_code` and `edit_file`, plus `sandbox_put` and `sandbox_get` when the spec's `sandbox_file_roots()` names folders (`mash.tools.sandbox`), and a spec with its own tool of one of those names fails to start. With `browser_tools` (the host sets `MASH_BROWSER_ENABLED=1` when it has browsers) an agent whose spec lists `browser_sites()` also gets the browser tools (`mash.tools.browser`), and the engine turns its `browser_handoff` calls into `browser` interactions; the app mints a live-view link for one on the event. The request's policy snapshot narrows both sets: `"sandbox": false` drops the sandbox tools with `browser_save` and `browser_upload`, and `browser_sites` is intersected with the spec's. When the pool enables Cortex the runtime gets a `CortexReader` (`runtime.enable_cortex`): each request gets its app's profile block in `context.load` and `search_cortex`
-  - `HostRelay`: the runtime's host access in an agent process; the companion's clients for the host's agents, and its workflow client, point at the host's `/h2a` relay
+  - `HostRelay`: the runtime's host access in an agent process; the companion's clients for the host's agents, and its workflow client, point at the host's `/h2a` relay, and `get_workflow` reads a workflow's spec from the imported pool
   - `stop_with_parent()`: an agent process shuts down when the host whose pid is in `MASH_PARENT_PID` exits
 
 - [`sessions.py`](./sessions.py)
@@ -355,7 +357,11 @@ lifecycle.
   - `RequestEngine`: starts, recovers, cancels and continues requests, stores interaction answers; works on at most `MASH_AGENT_MAX_RUNNING` requests at once (default 32), and a request gives its slot back while it waits on an interaction or on its `RunSubAgents` children
 
 - [`engine/loop.py`](./engine/loop.py)
-  - `RequestRun`: the request loop
+  - `RequestRun`: the request loop; on the companion it runs the route instead
+
+- [`engine/route.py`](./engine/route.py)
+  - the companion's request: board compaction, the classifier call, and the
+    agent route, workflow run, `about` answer or `unclear` question it leads to
 
 - [`engine/steps.py`](./engine/steps.py)
   - the loop's steps
@@ -392,8 +398,8 @@ lifecycle.
   - `Pool`
   - agent registrations, one `AgentClient` per enabled agent (from the configured `AgentProvider` at `start()`), the host (composition) registry, and the `SandboxManager` when the host has sandboxes. The pool runs no agent runtimes
   - `enable_agent` / `disable_agent`: start or stop one agent's process on a running pool. Disable raises `AgentInUseError` while a host or workflow names the agent; `get_client` raises `AgentDisabledError` for a disabled one. The enabled set is in memory
-  - the `EventService` (`mash.sessions.service`), started by `start_events()` once workflow recovery has run. It takes new events, dequeues each session's oldest queued event onto the companion with `submit_host_request(..., request_id=, policy=)`, and keeps one watcher per started event that follows the companion request's stream and copies its outcome onto the event. On start it watches every started event and dequeues every session with queued events; `define_host` dequeues the sessions waiting on that host
-  - `cancel_with_children(agent_id, request_id)`: cancels a request and its running `RunSubAgents` children
+  - the `EventService` (`mash.sessions.service`), started by `start_events()` once workflow recovery has run. It takes new events, dequeues each session's oldest queued event onto the companion with `submit_host_request(..., request_id=, policy=)`, and keeps one watcher per started event that follows the companion's request, then the request it routed to, and copies the outcome onto the event. On start it watches every started event and dequeues every session with queued events; `define_host` dequeues the sessions waiting on that host
+  - `cancel_with_children(agent_id, request_id)`: cancels a request and its running children: the request the companion routed to, or a `RunSubAgents` call's
 
 - `host/builder.py`
   - `HostBuilder`
@@ -403,7 +409,7 @@ lifecycle.
 
 - `host/directory.py`
   - `AgentMetadata` and the `HostAccess` protocol
-  - the `AGENTS` directory of a host's agents for the companion's prompt, and the request-context block
+  - the request-context block (`append_context_block`)
 
 - `host/tokens.py`
   - per-agent tokens: HMAC of the agent id under `MASH_HOST_SECRET`, checked by deriving again
@@ -510,7 +516,7 @@ The structured payload appears alongside `text`:
 ### HTTP API
 
 An event (`POST /api/v1/sessions/{session_id}/events`) accepts an optional
-`structured_output` field, which becomes the companion request's schema. It
+`structured_output` field, which the companion passes to the routed request as its schema. It
 must be a JSON-schema dict; Pydantic models are serialized client-side by
 [`src/mash/cli/client.py`](../cli/client.py) before being sent.
 
@@ -590,33 +596,49 @@ the loop (`interaction.open.{loop}.{attempt}` for the approval gate,
 `ask_user.{call}.open.{loop}.{attempt}`, `browser.handoff.{call}.open.{loop}.{attempt}`).
 A recovered request opens the same id, and the create event is deduped on it.
 
-### Relayed interactions
-
-A `RunSubAgents` child's interactions reach the app through the companion,
-without a model call. The loop binds a `ChildInteractionRelay` around the
-call, and the tool, which reads each child's stream, uses it:
-
-1. On the child's `request.interaction.create`, the relay opens the same
-   interaction on the calling request, under
-   `relayed_interaction_id(child_request_id, child_interaction_id)`, with
-   `origin` set to the child's `agent_id`, `request_id`, `session_id`,
-   `trace_id` and `interaction_id`.
-2. The app answers it on the calling request's event. A task in the tool waits for
-   that answer and posts it to the child through
-   `POST /h2a/agent/{agent_id}/request/{request_id}/interaction`.
-3. On the child's `request.interaction.ack`, the relay closes the calling
-   request's copy with the same response and flags. The first answer stored
-   wins, so this is a no-op once the app has answered; after a child timeout
-   or cancel it closes the copy the same way.
-
-The two event logs are the only state. A recovered call replays each child's
-stream and arrives at the same ids, so it reopens nothing, and forwards an
-answer that was stored but not yet sent. Cancel acks every open interaction of
-the request, the relayed ones included.
-
 ### Client Operation
 
 `AgentClient.post_interaction(request_id, *, interaction_id, response)` POSTs to `/agent/{agent_id}/request/{request_id}/interaction`; the agent's server stores the response and wakes the request.
+
+## Companion and board
+
+Every request to a host starts on the companion. Its request runs no agent
+loop (`engine/route.py`):
+
+1. If the board's last entry has `board_tokens` at or above the companion's
+   `compaction_token_threshold` (100k), it writes a summary entry with its own
+   model. It records the board position it read on `mash.context_load.end`.
+2. It makes one structured output call whose only field, `route`, is an enum
+   of the host's agent ids, workflow ids, `about` and `unclear`. The input is
+   the agents' and workflows' descriptions, the board as text and the message.
+3. An agent id: it submits that agent's request through `/h2a` in its own
+   session, with an id from `routed_request_id(request_id)` and a parent of
+   kind `conversation` whose `route` (`choice`, `picked_by`) lands in the
+   entry's metadata. It ends with `routed` (`agent_id`, `request_id`,
+   `picked_by`) in its response metadata.
+4. A workflow id: a second structured output call fills the workflow's input
+   schema, every field nullable. Each required field left null becomes an
+   `info` interaction. The run starts through `/h2a` with the dedup key
+   `{request_id}-route` and runs standalone. The companion writes one board
+   entry (`type` `workflow_result`) with the input and outcome and ends with
+   that text.
+5. `about` ends with the agents' and workflows' descriptions, with no model
+   call. `unclear` opens a `choice` interaction over the host's agents and
+   routes to the one picked.
+
+Each step's output is an event with a dedupe key (`route.classify.completed`,
+`route.workflow_input.completed`) and each question's id comes from its place
+in the request, so a recovered request repeats no model call and starts no
+second request or run.
+
+A routed request reads the board at context load: the latest summary entry and
+every entry after it, as user and assistant messages, the user message headed
+`[entry N · author]`. It gets `read_board` and `search_board` over its session
+and never compacts on its own. At commit it appends its entry with `tokens` set
+to its context size; a failed one appends the failure marker. Its reply,
+approvals and questions reach the user through the event: `EventService`
+follows the routed request after the companion's, numbering its frames on
+from the companion's end seq.
 
 ## Error Classification and Resumability
 
@@ -675,7 +697,7 @@ There are three layers of failure handling, each covering a different scenario:
 
 - `cancel_request(request_id)` acks a pending interaction as cancelled, emits `REQUEST_CANCELLED`, and stops the loop at the next step boundary; the step in flight finishes and appends its events. A new request on the same session starts only once that step is done, so the two never run in one session at once. Idempotent on a request that is already terminal.
 
-On the host, `GET /api/v1/agent/{agent_id}/request/{request_id}/status` and `GET /api/v1/agent/{agent_id}/trace/{trace_id}/status` read a request's status. Cancelling goes through the event (`POST /api/v1/sessions/{session_id}/events/{event_id}/cancel`): `Pool.cancel_with_children` cancels the companion's request and its running `RunSubAgents` children, each through its own agent, skipping a child whose agent is disabled. The request, parked in its `RunSubAgents` step, stops at the step boundary once they end. `GET /api/v1/agent/{agent_id}/sessions/{session_id}/requests` lists a session's requests newest first, filtered by `status` and `started_by`.
+On the host, `GET /api/v1/agent/{agent_id}/request/{request_id}/status` and `GET /api/v1/agent/{agent_id}/trace/{trace_id}/status` read a request's status. Cancelling goes through the event (`POST /api/v1/sessions/{session_id}/events/{event_id}/cancel`): `Pool.cancel_with_children` cancels the companion's request and its running children, the routed request among them, each through its own agent, skipping a child whose agent is disabled. `GET /api/v1/agent/{agent_id}/sessions/{session_id}/requests` lists a session's requests newest first, filtered by `status` and `started_by`.
 
 ## Important Interfaces
 
