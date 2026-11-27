@@ -22,6 +22,7 @@ from ..tools.browser import (
 )
 from ..tools.sandbox import SANDBOX_TOOL_NAMES, build_sandbox_tools
 from ..tools.runtime import RuntimeToolBuilder
+from ..tools.board import board_tools
 from ..tools.forward import ForwardAnswerTool
 from ..tools.subagent import RunSubAgentsTool
 from ..tools.workflow import RunWorkflowTool
@@ -183,8 +184,9 @@ def build_turn_agent(
     It shares the base agent's LLM, skills and tool objects, and adds the
     tools bound to the request: the conversation tools for its session and
     app, and ``search_cortex`` for its app. The request's policy narrows the
-    sandbox and browser tools. The companion, on a host request the user
-    started, also gets ``RunSubAgents`` over the host's agents and
+    sandbox and browser tools. A request the companion routed gets
+    ``read_board`` and ``search_board`` over its session. The companion, on a
+    host request the user started, also gets ``RunSubAgents`` over the host's agents and
     ``RunWorkflow`` over its workflows.
     """
     base = self.agent
@@ -200,6 +202,10 @@ def build_turn_agent(
         agent.set_chain_renderer(chain_renderer)
     if self.definition.enable_runtime_tools():
         configure_runtime_tools(self, agent, session_id=session_id, app_id=app_id)
+    if parent_kind == "conversation":
+        # A request the companion routed reads its conversation's board.
+        for tool in board_tools(self.memory_store, session_id):
+            agent.tools.register(tool)
     cortex = self.get_cortex()
     if cortex is not None and app_id:
         agent.tools.register(cortex.search_tool(app_id))

@@ -211,3 +211,16 @@ class BoardCompactionInRequestsTests(_BoardCase):
             (3, "companion", trace_id, "summary"),
         )
         self.assertIn("[entry 2 · fudge]", provider.summaries[0])
+
+
+class BoardToolsInRequestsTests(_BoardCase):
+    async def test_only_a_routed_request_gets_the_board_tools(self) -> None:
+        provider = _Provider()
+        runtime = await self._runtime(_Spec(provider))
+
+        await self._routed(runtime, "routed")
+        await self._ask(runtime, "own", session_id="own-session")
+
+        routed, own = provider.requests[0], provider.requests[2]
+        self.assertTrue({"read_board", "search_board"} <= {t.name for t in routed.tools})
+        self.assertFalse({"read_board", "search_board"} & {t.name for t in own.tools})
