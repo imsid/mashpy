@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+import json
+from typing import Any, Callable
 
 from mash.core.config import AgentConfig
 from mash.policies import Policy
@@ -114,119 +115,59 @@ class DeterministicAgentSpec(AgentSpec):
         return AgentConfig(agent_id=self.agent_id, system_prompt=f"You are {self.agent_id}.")
 
 
-class DelegatingLLMProvider(LLMProvider):
+class RoutingLLMProvider(LLMProvider):
+    """The companion's model in tests: it answers the classifier and the
+    workflow input call with structured output, and makes no other call.
+
+    ``route`` is the classifier's answer, or a function of the user's message
+    that returns it. ``workflow_input`` is the input call's answer.
+    """
+
     def __init__(
         self,
+        route: str | Callable[[str], str],
         *,
-        final_text: str,
-        subagent_id: str,
-        subagent_prompt: str,
+        workflow_input: dict[str, Any] | None = None,
+        delay_seconds: float = 0.0,
     ) -> None:
-        self._final_text = final_text
-        self._subagent_id = subagent_id
-        self._subagent_prompt = subagent_prompt
-        self.last_system: Any = None
+        self._route = route
+        self._workflow_input = dict(workflow_input or {})
+        self._delay_seconds = delay_seconds
+        self.requests: list[LLMRequest] = []
 
     @property
     def model(self) -> str:
         return "test-model"
 
+    @staticmethod
+    def message_of(request: LLMRequest) -> str:
+        """The user's message in a classifier or input call."""
+        text = "".join(
+            block.data.get("text", "") for block in request.messages[-1].content if block.type == "text"
+        )
+        return text.rsplit("MESSAGE\n", 1)[-1]
+
     async def send(self, request: LLMRequest) -> LLMResponse:
-        self.last_system = request.system
-        saw_tool_result = False
-        for message in request.messages:
-            if message.role != "tool":
-                continue
-            for block in message.content:
-                if block.type == "tool_result":
-                    saw_tool_result = True
-                    break
-            if saw_tool_result:
-                break
-        if not saw_tool_result:
-            return LLMResponse(
-                thought_summary="",
-                text="Delegating.",
-                tool_calls=[
-                    ToolCall(
-                        id="call-1",
-                        name="RunSubAgents",
-                        arguments={
-                            "requests": [
-                                {
-                                    "agent_id": self._subagent_id,
-                                    "prompt": self._subagent_prompt,
-                                }
-                            ],
-                            "timeout_seconds": 5,
-                        },
-                    )
-                ],
-                content_blocks=[
-                    LLMContentBlock.text("Delegating."),
-                    LLMContentBlock.tool_call(
-                        tool_call_id="call-1",
-                        name="RunSubAgents",
-                        arguments={
-                            "requests": [
-                                {
-                                    "agent_id": self._subagent_id,
-                                    "prompt": self._subagent_prompt,
-                                }
-                            ],
-                            "timeout_seconds": 5,
-                        },
-                    ),
-                ],
-                stop_reason="tool_call",
-                usage=LLMTokenUsage(input_tokens=2, output_tokens=1, total_tokens=3),
-            )
+        self.requests.append(request)
+        if self._delay_seconds:
+            await asyncio.sleep(self._delay_seconds)
+        schema = (request.provider_options or {}).get("structured_output") or {}
+        if "route" in (schema.get("properties") or {}):
+            route = self._route(self.message_of(request)) if callable(self._route) else self._route
+            text = json.dumps({"route": route})
+        else:
+            text = json.dumps(self._workflow_input)
         return LLMResponse(
             thought_summary="",
-            text=self._final_text,
+            text=text,
             tool_calls=[],
-            content_blocks=[LLMContentBlock.text(self._final_text)],
+            content_blocks=[LLMContentBlock.text(text)],
             stop_reason="end_turn",
             usage=LLMTokenUsage(input_tokens=3, output_tokens=1, total_tokens=4),
         )
 
     def set_event_logger(self, logger, agent_id: str) -> None:
         del logger, agent_id
-
-
-class DelegatingAgentSpec(AgentSpec):
-    def __init__(
-        self,
-        *,
-        agent_id: str,
-        final_text: str,
-        subagent_id: str,
-        subagent_prompt: str,
-    ) -> None:
-        self.agent_id = agent_id
-        self.final_text = final_text
-        self.subagent_id = subagent_id
-        self.subagent_prompt = subagent_prompt
-        self.provider = DelegatingLLMProvider(
-            final_text=self.final_text,
-            subagent_id=self.subagent_id,
-            subagent_prompt=self.subagent_prompt,
-        )
-
-    def get_agent_id(self) -> str:
-        return self.agent_id
-
-    def build_tools(self) -> ToolRegistry:
-        return ToolRegistry()
-
-    def build_skills(self) -> SkillRegistry:
-        return SkillRegistry()
-
-    def build_llm(self) -> LLMProvider:
-        return self.provider
-
-    def build_agent_config(self) -> AgentConfig:
-        return AgentConfig(agent_id=self.agent_id, system_prompt=f"You are {self.agent_id}.")
 
 
 class ToolCallingLLMProvider(LLMProvider):
@@ -306,21 +247,6 @@ def build_spec(
         response_text=response_text,
         fail_on_message=fail_on_message,
         delay_seconds=delay_seconds,
-    )
-
-
-def build_delegating_spec(
-    *,
-    agent_id: str,
-    final_text: str,
-    subagent_id: str,
-    subagent_prompt: str,
-) -> DelegatingAgentSpec:
-    return DelegatingAgentSpec(
-        agent_id=agent_id,
-        final_text=final_text,
-        subagent_id=subagent_id,
-        subagent_prompt=subagent_prompt,
     )
 
 

@@ -42,8 +42,11 @@ from ..events import RuntimeEventType
 from ..requests import (
     caller_metadata_from_request_metadata,
     host_id_from_request_metadata,
+    is_conversation_request,
 )
+from ..factory import is_companion
 from .rebuild import rebuild_request_state
+from .route import run_route
 from .steps import (
     commit_request_step,
     complete_request,
@@ -745,10 +748,13 @@ class RequestRun:
         """Save the user's message of a failed request, before the failure is
         announced, so the next request on the session can see it.
 
-        Only a request with no parent: a subagent's failure reaches its caller
-        as a tool result, and a workflow task's turn is never replayed.
+        Only a request the user's message started: the companion's, or the
+        one it routed, which puts the failure on the board. A subagent's
+        failure reaches its caller as a tool result, and a workflow task's
+        turn is never replayed.
         """
-        if self.request_metadata.get("parent"):
+        parent = self.request_metadata.get("parent")
+        if parent and not is_conversation_request(self.request_metadata):
             return
         try:
             await persist_failed_turn(
@@ -765,6 +771,10 @@ class RequestRun:
 
     async def _run(self) -> None:
         runtime = self.runtime
+        if is_companion(runtime):
+            # The companion runs no agent loop: it routes the message and stops.
+            await run_route(self)
+            return
         request_id = self.request_id
         session_id = self.session_id
         # The trace was minted when the request was accepted; a recovered

@@ -138,10 +138,18 @@ def parent_request_metadata(parent: Any, *, agent_id: str) -> dict[str, Any]:
             if not isinstance(event_session_id, str) or not event_session_id.strip():
                 raise ValueError("parent.event_session_id must be a non-empty string")
             normalized["event_session_id"] = event_session_id.strip()
-        return {
+        route = parent.get("route")
+        if route is not None and not isinstance(route, dict):
+            raise ValueError("parent.route must be an object")
+        routed: dict[str, Any] = {
             "parent": normalized,
             "event_session_id": normalized.get("event_session_id"),
         }
+        if route:
+            # The classifier's choice, kept on the request's board entry.
+            normalized["route"] = dict(route)
+            routed["route"] = dict(route)
+        return routed
     if kind == "workflow":
         normalized = {
             "kind": "workflow",

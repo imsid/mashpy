@@ -340,20 +340,11 @@ class Pool:
         unknown policy.
         """
         from mash.agents.companion import COMPANION_AGENT_ID
-        from mash.agents.companion.workflows import format_workflow_list
 
         host = self.get_host(host_id)
         if policy is None:
             policy = await self.read_policy(policy_id)
         snapshot = self.snapshot_for(host)
-        if snapshot["workflows"]:
-            # The companion's workflow directory, built from the registered
-            # specs.
-            listing = format_workflow_list(
-                self._workflow_registry.get(workflow_id)
-                for workflow_id in snapshot["workflows"]
-            )
-            context = "\n\n".join(part for part in (context, listing) if part)
         request_id = await self.get_client(COMPANION_AGENT_ID).post_request(
             message,
             session_id=session_id,

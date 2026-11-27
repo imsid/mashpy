@@ -15,7 +15,12 @@ from mash.memory.failed_turns import failed_turn_metadata, format_failed_request
 from mash.runtime import Host, HostBuilder
 from mash.runtime.engine import loop as loop_module
 from mash.runtime.engine.loop import RequestRun
-from mash.testing.runtime_fixtures import DeterministicAgentSpec, metadata, patch_companion_llm
+from mash.testing.runtime_fixtures import (
+    DeterministicAgentSpec,
+    RoutingLLMProvider,
+    metadata,
+    patch_companion_llm,
+)
 
 _MALFORMED = "Error code: 400 - bad request"
 
@@ -84,29 +89,43 @@ class FormatFailedRequestTests(unittest.TestCase):
         self.assertEqual(len(line), len("Error: ") + 300)
 
 
+class _FailingSecondSpec(DeterministicAgentSpec):
+    def __init__(self) -> None:
+        super().__init__(agent_id="research")
+        self.provider = _FailsSecondProvider()
+
+
 class FailedTurnReplayTests(unittest.IsolatedAsyncioTestCase):
     async def test_try_again_sees_the_failed_message_and_its_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            provider = _FailsSecondProvider()
+            spec = _FailingSecondSpec()
+            provider = spec.provider
             with patch.dict(
                 os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}
-            ), patch_companion_llm(provider):
+            ), patch_companion_llm(RoutingLLMProvider("research")):
                 pool = (
                     HostBuilder()
-                    .agent(DeterministicAgentSpec(agent_id="research"), metadata=metadata())
+                    .agent(spec, metadata=metadata())
                     .host(Host(host_id="h", agents=("research",)))
                     .build()
                 )
                 pool.configure_runtime_database_url("postgresql://test/runtime")
                 await pool.start()
                 try:
-                    client = pool.get_client("companion")
-
                     async def _ask(message: str) -> str:
                         accepted = await pool.submit_host_request(
                             "h", message=message, session_id="s-1", app_id="app-1", policy_id="p-1"
                         )
-                        async for event in client.stream_response(accepted["request_id"], timeout=10):
+                        request_id = accepted["request_id"]
+                        async for event in pool.get_client("companion").stream_response(
+                            request_id, timeout=10
+                        ):
+                            if event.get("event") == "request.completed":
+                                route = event["data"]["response"]["metadata"]["routed"]
+                                break
+                        async for event in pool.get_client("research").stream_response(
+                            route["request_id"], timeout=10
+                        ):
                             if event.get("event") in {"request.completed", "request.error"}:
                                 return str(event["event"])
                         raise AssertionError("no terminal event")
@@ -114,27 +133,30 @@ class FailedTurnReplayTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(await _ask("refresh my follows"), "request.completed")
                     self.assertEqual(await _ask("dive into the Nvidia story"), "request.error")
 
-                    runtime = pool._agent_provider.agent_servers["companion"].runtime
-                    first, failed = await runtime.store.get_turns("s-1", "companion")
+                    runtime = pool._agent_provider.agent_servers["research"].runtime
+                    first, failed = await runtime.store.read_entries("s-1")
+                    self.assertEqual(failed["agent_id"], "research")
                     self.assertEqual(failed["user_message"], "dive into the Nvidia story")
                     self.assertEqual(failed["agent_response"], "")
                     self.assertEqual(failed["metadata"]["type"], "failed_request")
                     self.assertEqual(failed["metadata"]["error"]["error_code"], "invalid_request")
-                    self.assertEqual(failed["context_tokens"], first["context_tokens"])
+                    # A failed entry adds nothing to the board's size.
+                    self.assertEqual(failed["board_tokens"], first["board_tokens"])
 
                     self.assertEqual(await _ask("try again"), "request.completed")
 
                     # The failed request adds no message of its own: the
-                    # history stays user / assistant / user, and the failure
-                    # sits at the top of the new message.
+                    # board reads user / assistant / user, and the failure sits
+                    # at the top of the new message.
                     third = provider.calls[2]
                     self.assertEqual(
                         [role for role, _ in third], ["user", "assistant", "user"]
                     )
-                    self.assertEqual(third[0][1], "refresh my follows")
+                    self.assertEqual(third[0][1], "[entry 1 · research]\nrefresh my follows")
                     self.assertEqual(third[1][1], "answer 1")
                     self.assertEqual(
                         third[2][1],
+                        "[entry 2 · research · failed]\n\n"
                         "<failed_request>\n"
                         "This user message got no reply: the request failed, "
                         "recorded by the system.\n"
