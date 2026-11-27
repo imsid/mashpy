@@ -1006,6 +1006,36 @@ class _TestMemoryStore:
         rows.sort(key=lambda r: r["last_activity_at"], reverse=True)
         return rows[:limit]
 
+    async def list_board_sessions(
+        self, *, limit: int, app_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        # A conversation: a session with an entry the companion routed or wrote
+        # (Postgres reads the sessions table instead).
+        def _conversation(t: dict[str, Any]) -> bool:
+            parent = (t.get("metadata") or {}).get("parent") or {}
+            return t["agent_id"] == "companion" or parent.get("kind") == "conversation"
+
+        conversations = {t["session_id"] for t in self._turns if _conversation(t)}
+        rows = []
+        for session_id in conversations:
+            entries = sorted(
+                (t for t in self._turns if t["session_id"] == session_id), key=lambda t: t["seq"]
+            )
+            if app_id is not None and not any(t.get("app_id") == app_id for t in entries):
+                continue
+            rows.append(
+                {
+                    "session_id": session_id,
+                    "turn_count": len(entries),
+                    "last_activity_at": max(t["created_at"] for t in entries),
+                    "context_tokens": int(entries[-1].get("board_tokens") or 0),
+                    "first_message": str(entries[0].get("user_message") or "")[:200],
+                }
+            )
+        rows.sort(key=lambda r: r["session_id"])
+        rows.sort(key=lambda r: r["last_activity_at"], reverse=True)
+        return rows[:limit]
+
     async def get_latest_session(self, agent_id: str) -> dict[str, Any] | None:
         sessions = await self.list_sessions(agent_id, limit=1)
         return sessions[0] if sessions else None

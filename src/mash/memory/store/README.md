@@ -63,20 +63,28 @@ Current backend status:
 
 ### Turn Persistence
 
-`save_turn(...) -> str`
-- Persists one conversation turn. Saving a `trace_id` that already exists is a no-op.
+`append_entry(...) -> int`
+- Persists one turn as the session's next entry. Appending a `trace_id` that
+  already exists is a no-op that returns its `seq`.
 - Inputs:
   - `trace_id`: used as the stored `trace_id`
   - `session_id`
-  - `agent_id`
+  - `agent_id`: the entry's author
   - `user_message`
   - `agent_response`
   - `signals`
   - `context_tokens`: the size of the turn's context, the input and output
     tokens of its last model call
-  - `metadata`
+  - `metadata`: `type` is `summary` for a board summary, `workflow_result` for
+    a workflow run the companion started, `failed_request` for a failed request
+  - `tokens`: the entry's size on the board
+- Sets:
+  - `seq`: the session's next number, 1 for its first entry. The unique index
+    on `(session_id, seq)` enforces it and orders the board.
+  - `board_tokens`: the previous entry's `board_tokens` plus `tokens`, or
+    `tokens` alone for a `summary` entry
 - Returns:
-  - the persisted `trace_id`
+  - the entry's `seq`
 
 Notes:
 - `signals` are backend-defined JSON-compatible values associated with the turn.
@@ -96,7 +104,33 @@ Behavior:
 - The contract is chronological turn order.
 - `agent_id` is required and scopes reads to one agent.
 
-`get_replay_turns(session_id, agent_id, *, turns=None, trace_ids=None) -> list[dict]`
+### Board Reads
+
+Every entry read has `trace_id`, `session_id`, `seq`, `agent_id`,
+`user_message`, `agent_response`, `tokens`, `board_tokens`, `metadata` and
+`created_at`.
+
+`read_entries(session_id, *, after=None, before=None, limit=None) -> list[dict]`
+- The session's entries with `after < seq < before`, in `seq` order. With
+  `limit`, the first ones after `after`, or with only `before`, the last ones
+  before it. One scan of the `(session_id, seq)` index.
+
+`search_entries(session_id, query, *, limit=10) -> list[dict]`
+- The session's entries whose message or reply match `query` on the full-text
+  indexes, best first, each with `seq`, `agent_id` and a `snippet`.
+
+`last_entry(session_id) -> dict | None`
+- The entry with the highest `seq`. The board compaction check reads its
+  `board_tokens`.
+
+`read_board(session_id, *, up_to=None) -> list[dict]`
+- The latest `summary` entry and every entry after it, or every entry when
+  there is none. With `up_to`, only entries up to that `seq`: the position a
+  routed request recorded at its context load.
+
+### Own-Session Replay
+
+`get_replay_turns(session_id, *, turns=None, trace_ids=None) -> list[dict]`
 - The turns a request replays into its context, oldest first: the latest
   replayable `summary_checkpoint` turn, if any, then the last `turns`
   replayable turns after it, or every one when `turns` is None (compaction).
@@ -105,7 +139,8 @@ Behavior:
   recorded on `mash.context_load.end`, so a recovered request replays the same
   turns.
 - The runtime calls it with `AgentConfig.conversation_history_turns` when it
-  loads a request's context, unless that is 0.
+  loads the context of a request in an agent's own session, unless that is 0.
+  It reads every agent's turns in the session, in `seq` order.
 
 `get_turn(trace_id, agent_id, session_id=None) -> dict | None`
 - One turn by its trace id, the primary key, when it belongs to `agent_id` (and to `session_id` when given). The row has `trace_id`, `session_id`, `user_message`, `agent_response`, `metadata` and `created_at`.
@@ -141,7 +176,7 @@ Behavior:
 `list_sessions(agent_id, *, limit) -> list[dict]`
 - Returns the app's `limit` most recently active sessions, newest first.
 - The Postgres store reads them from `memory_session`, one row per app and
-  session that `save_turn` updates in the turn's transaction, so the cost
+  session that `append_entry` updates in the turn's transaction, so the cost
   follows `limit`, not the number of turns.
 - Expected shape per item:
   - `session_id`

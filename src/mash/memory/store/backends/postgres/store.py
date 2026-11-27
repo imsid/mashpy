@@ -883,6 +883,61 @@ class PostgresStore(MemoryStore):
             for row in rows
         ]
 
+    async def list_board_sessions(
+        self, *, limit: int, app_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        params: List[Any] = []
+        app_filter = ""
+        if app_id is not None:
+            app_filter = """
+                WHERE EXISTS (
+                    SELECT 1 FROM memory_turns AS u
+                    WHERE u.session_id = c.session_id AND u.app_id = %s
+                )"""
+            params.append(app_id)
+        params.append(int(limit))
+        await self.open()
+        async with self._pool.connection() as conn:
+            rows = await self._fetchall(
+                conn,
+                f"""
+                WITH c AS (
+                    SELECT s.session_id,
+                           SUM(m.turn_count) AS turn_count,
+                           MAX(m.last_activity_at) AS last_activity_at
+                    FROM sessions AS s
+                    JOIN memory_session AS m ON m.session_id = s.session_id
+                    GROUP BY s.session_id
+                )
+                SELECT c.session_id, c.turn_count, c.last_activity_at,
+                       (
+                           SELECT t.board_tokens FROM memory_turns AS t
+                           WHERE t.session_id = c.session_id
+                           ORDER BY t.seq DESC LIMIT 1
+                       ) AS context_tokens,
+                       (
+                           SELECT LEFT(t.user_message, {FIRST_MESSAGE_CHARS})
+                           FROM memory_turns AS t
+                           WHERE t.session_id = c.session_id
+                           ORDER BY t.seq ASC LIMIT 1
+                       ) AS first_message
+                FROM c{app_filter}
+                ORDER BY c.last_activity_at DESC, c.session_id ASC
+                LIMIT %s
+                """,
+                params,
+            )
+        return [
+            {
+                "session_id": str(row["session_id"]),
+                "turn_count": int(row["turn_count"] or 0),
+                "last_activity_at": float(row["last_activity_at"] or 0.0),
+                "context_tokens": int(row["context_tokens"] or 0),
+                "first_message": str(row["first_message"] or ""),
+            }
+            for row in rows
+        ]
+
     async def get_latest_session(self, agent_id: str) -> Optional[Dict[str, Any]]:
         sessions = await self.list_sessions(agent_id=agent_id, limit=1)
         return sessions[0] if sessions else None

@@ -351,27 +351,28 @@ def test_agent_scoped_session_routes() -> None:
             assert payload["response"]["text"] == "primary-ok"
             _collect_terminal_response(client, "companion", _send(client, "s2", "again"))
 
-            sessions = client.get("/api/v1/agent/primary/sessions")
+            sessions = client.get("/api/v1/agent/companion/sessions")
             assert sessions.status_code == 200
             listed = sessions.json()["data"]
             assert [s["session_id"] for s in listed["sessions"]] == ["s2", "s1"]
             assert listed["sessions"][1]["turn_count"] == 1
             assert listed["limit"] == 50
-            newest = client.get("/api/v1/agent/primary/sessions", params={"limit": 1})
+            newest = client.get("/api/v1/agent/companion/sessions", params={"limit": 1})
             assert [s["session_id"] for s in newest.json()["data"]["sessions"]] == ["s2"]
-            # The routed agent's entries are on each conversation's board.
-            # Each row carries the session's first message, and app_id keeps
+            # The companion's sessions are its conversations, counted over the
+            # board's entries, whichever agent wrote them. Each row carries the session's first message, and app_id keeps
             # only the sessions with that app's turns.
             assert [s["first_message"] for s in listed["sessions"]] == ["again", "hello"]
             _collect_terminal_response(client, "companion", _send(client, "s3", "mine", app_id="app-2"))
-            mine = client.get("/api/v1/agent/primary/sessions", params={"app_id": "app-2"})
+            mine = client.get("/api/v1/agent/companion/sessions", params={"app_id": "app-2"})
             assert [s["session_id"] for s in mine.json()["data"]["sessions"]] == ["s3"]
-            theirs = client.get("/api/v1/agent/primary/sessions", params={"app_id": "app-1"})
+            theirs = client.get("/api/v1/agent/companion/sessions", params={"app_id": "app-1"})
             assert [s["session_id"] for s in theirs.json()["data"]["sessions"]] == ["s2", "s1"]
 
-            history = client.get("/api/v1/agent/primary/sessions/s1/history")
+            history = client.get("/api/v1/agent/companion/sessions/s1/history")
             assert history.status_code == 200
-            assert len(history.json()["data"]["turns"]) == 1
+            [turn] = history.json()["data"]["turns"]
+            assert (turn["agent_id"], turn["user_message"]) == ("primary", "hello")
 
 
 def test_an_events_structured_output_reaches_its_response() -> None:

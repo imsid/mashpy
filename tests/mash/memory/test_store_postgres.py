@@ -905,6 +905,41 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await seqs(up_to=1), [1])
         self.assertEqual(await self.store.read_board(f"board-{uuid.uuid4().hex}"), [])
 
+    async def test_list_board_sessions_counts_every_agents_entries(self) -> None:
+        conversation = f"board-{uuid.uuid4().hex}"
+        own = f"board-{uuid.uuid4().hex}"
+        with psycopg.connect(self.database_url, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO sessions (session_id, host_id, policy_id) VALUES (%s, 'h', 'p')",
+                (conversation,),
+            )
+        self.addCleanup(self._delete_session_row, conversation)
+        await self.store.append_entry(
+            trace_id=f"{self.agent_id}-c1", session_id=conversation, agent_id=self.agent_id,
+            user_message="first message", agent_response="a", signals={},
+            context_tokens=4, tokens=4, app_id="app-board",
+        )
+        await self.store.append_entry(
+            trace_id=f"{self.agent_id}-c2", session_id=conversation,
+            agent_id=self.other_agent_id, user_message="second", agent_response="b",
+            signals={}, context_tokens=6, tokens=6, app_id="app-board",
+        )
+        # A session outside the sessions table is an agent's own, not a conversation.
+        await self._entry(own, "o1")
+
+        rows = await self.store.list_board_sessions(limit=50, app_id="app-board")
+
+        [row] = rows
+        self.assertEqual(
+            (row["session_id"], row["turn_count"], row["context_tokens"], row["first_message"]),
+            (conversation, 2, 10, "first message"),
+        )
+        self.assertEqual(await self.store.list_board_sessions(limit=50, app_id="nobody"), [])
+
+    def _delete_session_row(self, session_id: str) -> None:
+        with psycopg.connect(self.database_url, autocommit=True) as conn:
+            conn.execute("DELETE FROM sessions WHERE session_id = %s", (session_id,))
+
     async def test_board_indexes_exist(self) -> None:
         with psycopg.connect(self.database_url, autocommit=True) as conn:
             names = {

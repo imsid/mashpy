@@ -247,6 +247,22 @@ class MemoryStore(Protocol):
         """
         ...
 
+    async def list_board_sessions(
+        self,
+        *,
+        limit: int,
+        app_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """The ``limit`` most recently active conversations, newest first.
+
+        A conversation is a host session (a row of ``sessions``) with entries;
+        its rows count every agent's entries. With ``app_id``, only sessions
+        with that app's entries. Each row has ``session_id``, ``turn_count``,
+        ``last_activity_at``, ``context_tokens`` (the last entry's
+        ``board_tokens``) and ``first_message``.
+        """
+        ...
+
     async def get_latest_session(
         self,
         agent_id: str,
