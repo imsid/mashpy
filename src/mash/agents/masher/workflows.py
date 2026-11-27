@@ -246,6 +246,20 @@ def _response_text(payload: dict[str, Any]) -> str | None:
     return text if isinstance(text, str) and text.strip() else None
 
 
+async def _host_answer(pool: Any, request_id: str) -> dict[str, Any]:
+    """The row's answer: the companion's completed payload, or, when it routed
+    the message to an agent, that request's."""
+    payload = await collect_terminal_payload(pool, COMPANION_AGENT_ID, request_id)
+    response = payload.get("response")
+    metadata = response.get("metadata") if isinstance(response, dict) else None
+    routed = metadata.get("routed") if isinstance(metadata, dict) else None
+    if isinstance(routed, dict) and routed.get("agent_id") and routed.get("request_id"):
+        return await collect_terminal_payload(
+            pool, str(routed["agent_id"]), str(routed["request_id"])
+        )
+    return payload
+
+
 def _response_json_text(payload: dict[str, Any]) -> str:
     response = payload.get("response")
     structured = response.get("structured_output") if isinstance(response, dict) else None
@@ -287,10 +301,10 @@ async def _collect_experiment_metrics(
     *,
     request_id: str | None,
 ) -> dict[str, Any] | None:
-    """The row's metrics: the companion's request and the children it ran.
+    """The row's metrics: the companion's request and the request it routed to.
 
-    Each child runs in a session of its own, so its events are read by
-    request, from the children the companion's request started.
+    The routed request is a child of the companion's, so its events are read
+    by request, from the children the companion's request started.
     """
     if request_id is None:
         return None
@@ -365,9 +379,7 @@ def _build_execute_experiment_rows(context: MasherRuntimeContext):
             actual_output: str | None = None
             if request_id is not None:
                 try:
-                    payload = await collect_terminal_payload(
-                        pool, COMPANION_AGENT_ID, request_id
-                    )
+                    payload = await _host_answer(pool, request_id)
                     actual_output = _response_text(payload)
                 except Exception as exc:  # noqa: BLE001 - row failure
                     error = _error_text(exc)

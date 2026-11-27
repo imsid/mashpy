@@ -176,8 +176,7 @@ class RequestEngine:
         events = await self._store.list_request_events(request_id)
         trace_id = next((e.trace_id for e in events if e.trace_id), None)
         session_id = next((e.session_id for e in events if e.session_id), None)
-        # Clears the prompts: the request's own, and those it relays for its
-        # children. A later resume opens new ones.
+        # Clears the request's open prompts. A later resume opens new ones.
         for interaction_id in pending_interactions(events):
             await emit_interaction_ack(
                 self._runtime,

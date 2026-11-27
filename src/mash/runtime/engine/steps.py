@@ -16,7 +16,6 @@ from ...core.context import Context, MessageRole, Response, ToolCall
 from ...core.context import ToolResult as ContextToolResult
 from ...core.llm.types import LLMContentBlock, LLMMessage, LLMRequest
 from ...memory.failed_turns import failed_turn_metadata
-from ...memory.routes import build_routes
 from ...logging.trace_context import (
     bound_loop_index,
     bound_subagent_id_prefix,
@@ -35,6 +34,7 @@ from ..host.directory import append_context_block
 from ..requests import (
     app_id_from_request_metadata,
     append_runtime_event,
+    is_conversation_request,
     policy_from_request_metadata,
 )
 
@@ -129,14 +129,6 @@ def _tool_start_payload(tool_call: ToolCall) -> dict[str, Any]:
                 }
                 for index, item in enumerate(items)
             ]
-    elif tool_call.name == "RunWorkflow":
-        # The run's id is the host's to assign, but its dedup key is fixed by
-        # this call's position, so a reader can find the run and follow its
-        # steps while the call runs.
-        prefix = get_subagent_id_prefix()
-        workflow_id = str((tool_call.arguments or {}).get("workflow_id") or "").strip()
-        if prefix and workflow_id:
-            payload["workflow_run"] = {"workflow_id": workflow_id, "dedup_key": prefix}
     return payload
 
 
@@ -157,8 +149,6 @@ def _tool_end_payload(
     }
     if "structured_output" in result_payload:
         payload["structured_output"] = result_payload["structured_output"]
-    if "reply" in result_payload:
-        payload["reply"] = result_payload["reply"]
     return payload
 
 
@@ -343,22 +333,6 @@ def _commit_step_payload(
         result_payloads,
         limit=runtime.agent.config.tool_result_context_chars,
     )
-    reply = forwarded_reply(result_payloads)
-    if reply is not None:
-        # A forwarded answer ends the request: it is the reply, appended as
-        # the final assistant message, with no further model call.
-        agent = runtime.agent
-        context = agent.observe(context, action, results)
-        context.add_message(MessageRole.ASSISTANT, [{"type": "text", "text": reply}])
-        signals = agent.collect_signals(context, action, results, tool_usage=tool_usage)
-        if signals:
-            context.signals.update(signals)
-        context.mark_complete()
-        return {
-            "context": context_helpers.serialize_context(context),
-            "done": True,
-            "signals": dict(signals or {}),
-        }
     commit = runtime.agent.commit_step(
         context,
         action,
@@ -379,14 +353,6 @@ def _context_size(token_usage: dict[str, Any] | None) -> int:
     if usage.get("context") is not None:
         return int(usage["context"])
     return int(usage.get("input", 0) or 0) + int(usage.get("output", 0) or 0)
-
-
-def forwarded_reply(result_payloads: list[dict[str, Any]]) -> str | None:
-    """The reply a step's only result forwards (``ForwardAnswer``), or None."""
-    if len(result_payloads) != 1:
-        return None
-    reply = result_payloads[0].get("reply")
-    return reply if isinstance(reply, str) else None
 
 
 def _int_or_zero(value: Any) -> int:
@@ -428,7 +394,7 @@ async def _persist_turn_payload(
     workflow_id = response_metadata.get("workflow_id") or None
     workflow_run_id = response_metadata.get("workflow_run_id") or None
     task_id = response_metadata.get("task_id") or None
-    await runtime.store.save_turn(
+    await runtime.store.append_entry(
         app_id=app_id_from_request_metadata(response_metadata),
         trace_id=resolved_trace_id,
         session_id=session_id,
@@ -437,6 +403,8 @@ async def _persist_turn_payload(
         agent_response=response.text,
         signals=signals,
         context_tokens=int(context_tokens),
+        # The entry's size on the board: the request's context size.
+        tokens=int(context_tokens),
         metadata=response_metadata,
         workflow_id=workflow_id,
         workflow_run_id=workflow_run_id,
@@ -547,17 +515,14 @@ async def load_request_context(
 
     The event holds what a recovered request needs to build the same context:
     the system prompt as rendered now (the Cortex profile changes over time),
-    the trace ids of the turns replayed, and the compaction this load ran.
+    and for a request the companion routed the board position it read
+    (``board.up_to``), or else the trace ids of the turns replayed and the
+    compaction this load ran.
     """
     metadata = dict(request_metadata or {})
     app_id = app_id_from_request_metadata(metadata)
-    parent = metadata.get("parent")
-    system_prompt = factory_helpers.resolve_host_system_prompt(
-        runtime,
-        metadata.get("host") or None,
-        metadata.get("context"),
-        parent_kind=parent.get("kind") if isinstance(parent, dict) else None,
-    )
+    # The caller's per-request context goes after the agent's own prompt.
+    system_prompt = append_context_block(runtime.system_prompt, metadata.get("context"))
     cortex = runtime.get_cortex()
     if cortex is not None and app_id:
         system_prompt = append_context_block(
@@ -568,8 +533,15 @@ async def load_request_context(
         session_id=session_id,
         message=message,
         system_prompt=system_prompt,
+        conversation=is_conversation_request(metadata),
     )
     compaction = dict(context_payload.get("compaction") or {})
+    loaded: dict[str, Any] = {"status": EndStatus.OK.value, "system_prompt": system_prompt}
+    if "board" in context_payload:
+        loaded["board"] = dict(context_payload["board"])
+    else:
+        loaded["history"] = list(context_payload.get("history") or [])
+        loaded["compaction"] = compaction
     await append_runtime_event(
         runtime,
         RuntimeEvent(
@@ -579,12 +551,7 @@ async def load_request_context(
             session_id=session_id,
             event_type=RuntimeEventType.CONTEXT_LOAD_END.value,
             dedupe_key="context.loaded",
-            payload={
-                "status": EndStatus.OK.value,
-                "system_prompt": system_prompt,
-                "history": list(context_payload.get("history") or []),
-                "compaction": compaction,
-            },
+            payload=loaded,
         ),
     )
     return initial_state(
@@ -740,7 +707,7 @@ def apply_plan(
 def counts_as_invocation(result_payload: dict[str, Any]) -> bool:
     """Whether a call was invoked, for the tool-usage signals: a call the user
     denied was not; every other call was, the ones the loop answers itself
-    (AskUser, browser_handoff, ForwardAnswer) included."""
+    (AskUser, browser_handoff) included."""
     metadata = (result_payload.get("result") or {}).get("metadata") or {}
     return not (isinstance(metadata, dict) and metadata.get("denied"))
 
@@ -1006,7 +973,7 @@ async def run_step_tool_batch(
 
     max_parallel = max(1, int(runtime.agent.config.max_parallel_tools))
     async def _run_one(index: int) -> dict[str, Any]:
-        # A RunWorkflow call in the batch gets the dedup key of its position.
+        # A RunSubAgents call in the batch gets the id prefix of its position.
         with bound_subagent_id_prefix(tool_call_payloads[index].get("call_prefix")):
             return await _execute_and_record_tool_call(
                 runtime,
@@ -1141,9 +1108,6 @@ async def persist_completed_turn(
     structured_output = workflow_state.get("structured_output")
     if structured_output is not None:
         response.metadata["structured_output"] = structured_output
-    routes = await _request_routes(runtime, request_id, workflow_state)
-    if routes:
-        response.metadata["routes"] = routes
     turn_payload = await _persist_turn_payload(
         runtime,
         message=message,
@@ -1155,39 +1119,6 @@ async def persist_completed_turn(
         extra_metadata=request_metadata,
     )
     return turn_payload
-
-
-_ROUTED_TOOLS = ("RunSubAgents", "RunWorkflow")
-
-
-async def _request_routes(
-    runtime: "AgentRuntime", request_id: str, workflow_state: dict[str, Any]
-) -> list[dict[str, Any]]:
-    """The agent sessions and workflow runs the request's calls ran in.
-
-    Read from the calls' ``execute_tool`` events, which hold their arguments
-    and full results; only a request that ran ``RunSubAgents`` or
-    ``RunWorkflow`` reads them.
-    """
-    usage = dict(workflow_state.get("tool_usage") or {})
-    if not any(int((usage.get(name) or {}).get("invocations") or 0) for name in _ROUTED_TOOLS):
-        return []
-    arguments: dict[str, dict[str, Any]] = {}
-    calls: list[tuple[str, dict[str, Any], str]] = []
-    for event in await runtime.runtime_store.list_request_events(request_id):
-        payload = dict(event.payload or {})
-        name = str((payload.get("attributes") or {}).get(semconv.GEN_AI_TOOL_NAME) or "")
-        if name not in _ROUTED_TOOLS:
-            continue
-        key = str(event.step_key or "").split(".", 2)[-1]
-        if event.event_type == RuntimeEventType.EXECUTE_TOOL_START.value:
-            arguments[key] = dict(payload.get("arguments") or {})
-        elif event.event_type == RuntimeEventType.EXECUTE_TOOL_END.value:
-            result = dict(payload.get("result") or {})
-            if result.get("is_error"):
-                continue
-            calls.append((name, arguments.get(key, {}), str(result.get("content") or "")))
-    return build_routes(calls)
 
 
 async def persist_failed_turn(
@@ -1217,7 +1148,7 @@ async def persist_failed_turn(
     metadata.update(failed_turn_metadata(error_payload))
     metadata["trace_id"] = resolved_trace_id
     metadata["token_usage"] = {}
-    await runtime.store.save_turn(
+    await runtime.store.append_entry(
         app_id=app_id_from_request_metadata(metadata),
         trace_id=resolved_trace_id,
         session_id=session_id,
@@ -1328,8 +1259,8 @@ def interaction_response_error(schema: Any, response: Any) -> str | None:
 
 
 # Interaction ids are UUID5s in this namespace, derived from a key that names
-# the interaction's place in a request, so a recovered request, and the
-# companion relaying it, arrive at the same id.
+# the interaction's place in a request, so a recovered request arrives at the
+# same id.
 INTERACTION_NAMESPACE = uuid.UUID("3c9a6f52-1d7e-4b8a-9f0c-5e2d8b4a7c16")
 
 
@@ -1369,8 +1300,7 @@ async def emit_interaction_create(
             event_type=RuntimeEventType.INTERACTION_START.value,
             dedupe_key=f"interaction.create.{interaction_id}",
             payload={
-                # Type-specific fields: a browser handoff's url and expires_at,
-                # a relayed interaction's origin.
+                # Type-specific fields: a browser handoff's url and expires_at.
                 **dict(extra or {}),
                 "interaction_id": interaction_id,
                 "type": interaction_type,

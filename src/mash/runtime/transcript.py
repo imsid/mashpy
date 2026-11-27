@@ -1,96 +1,10 @@
-"""A turn's transcript, rebuilt from the event log.
-
-A completed request's events hold everything the model saw and said in it:
-the user message on ``invoke_agent.start``, each step's assistant blocks and
-tool calls on ``chat.end``, and each tool's full result on ``execute_tool.end``.
-The companion's trace tool rebuilds a turn's messages from them, so it can read
-what an agent did in a request, not only its reply.
-"""
+"""Messages as plain text, for the summary of an agent's own session."""
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Optional
+from typing import Iterable
 
-from ..core.context import Message, MessageRole
-from ..core.context import ToolResult as ContextToolResult
-from ..tools.tool_results import context_content
-from .events import RuntimeEvent, RuntimeEventType
-
-
-def _call_id(event: RuntimeEvent) -> str:
-    # step_key is execute_tool.end.<loop>.<tool_call_id>; the id may hold dots.
-    return str((event.step_key or "").split(".", 3)[-1])
-
-
-def turn_messages(
-    events: Iterable[RuntimeEvent],
-    *,
-    limit: int,
-    reply: str = "",
-) -> Optional[list[Message]]:
-    """The turn's messages in order, or None when its events do not hold them all.
-
-    ``reply`` is the turn's saved answer. It closes a transcript whose events
-    end on tool results: a reply the loop made itself, such as a forwarded
-    answer, has no ``chat.end``.
-    """
-    start: Optional[RuntimeEvent] = None
-    chat_ends: dict[int, RuntimeEvent] = {}
-    tool_ends: dict[tuple[int, str], RuntimeEvent] = {}
-    for event in events:
-        if event.event_type == RuntimeEventType.INVOKE_AGENT_START.value:
-            start = start or event
-        elif event.loop_index is None:
-            continue
-        elif event.event_type == RuntimeEventType.CHAT_END.value:
-            chat_ends.setdefault(int(event.loop_index), event)
-        elif event.event_type == RuntimeEventType.EXECUTE_TOOL_END.value:
-            tool_ends.setdefault((int(event.loop_index), _call_id(event)), event)
-    if start is None or not chat_ends:
-        return None
-
-    messages = [Message(role=MessageRole.USER, content=str((start.payload or {}).get("message") or ""))]
-    for loop_index in sorted(chat_ends):
-        payload = dict(chat_ends[loop_index].payload or {})
-        blocks = list(payload.get("assistant_blocks") or [])
-        if blocks:
-            phase = payload.get("phase")
-            messages.append(
-                Message(
-                    role=MessageRole.ASSISTANT,
-                    content=blocks,
-                    metadata={"phase": phase} if phase else {},
-                )
-            )
-        calls = [call for call in payload.get("tool_calls") or [] if isinstance(call, dict)]
-        if not calls:
-            continue
-        results: list[dict[str, Any]] = []
-        for call in calls:
-            call_id = str(call.get("id") or "")
-            end = tool_ends.get((loop_index, call_id))
-            if end is None:
-                return None
-            result = dict((end.payload or {}).get("result") or {})
-            results.append(
-                ContextToolResult(
-                    tool_call_id=call_id,
-                    content=context_content(
-                        str(result.get("content") or ""),
-                        limit=limit,
-                        metadata=result.get("metadata"),
-                    ),
-                    is_error=bool(result.get("is_error")),
-                    images=[dict(image) for image in result.get("images") or []],
-                ).to_dict()
-            )
-        messages.append(Message(role=MessageRole.TOOL, content=results))
-
-    if messages[-1].role != MessageRole.ASSISTANT:
-        if not reply:
-            return None
-        messages.append(Message(role=MessageRole.ASSISTANT, content=reply))
-    return messages
+from ..core.context import Message
 
 
 def render_messages(messages: Iterable[Message]) -> str:
@@ -119,4 +33,4 @@ def render_messages(messages: Iterable[Message]) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["render_messages", "turn_messages"]
+__all__ = ["render_messages"]

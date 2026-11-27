@@ -212,16 +212,19 @@ Inputs:
 - optional `host: object`: the host composition snapshot the request runs against (`host_id`, `primary`, `subagents`)
 - optional `parent: object`: the request or workflow step that issued this request
 
-`parent` has one of two shapes:
+`parent` has one of three shapes:
 
 ```json
 {"kind": "subagent", "request_id": "req_1", "agent_id": "concierge",
  "session_id": "s-1", "started_by": "concierge", "parent_request_id": "req_1"}
+{"kind": "conversation", "request_id": "req_1", "agent_id": "companion",
+ "session_id": "s-1", "started_by": "companion", "parent_request_id": "req_1",
+ "route": {"choice": "research", "picked_by": "classifier"}}
 {"kind": "workflow", "workflow_id": "changelog", "run_id": "run_9",
  "task_id": "summarize"}
 ```
 
-A `subagent` parent names the request, agent and session of the `RunSubAgents` call that started the request. `started_by` MUST equal `agent_id` and `parent_request_id` MUST equal `request_id`; the runtime records them as the request's `started_by` and `parent_request_id`. `invoke_opts` is optional. A `workflow` parent names the workflow, run and step. Requests with a parent are kept out of the agent's replayed conversation history, and a workflow parent's ids are recorded on every event of the request.
+A `subagent` parent names the request, agent and session of the `RunSubAgents` call that started the request. `started_by` MUST equal `agent_id` and `parent_request_id` MUST equal `request_id`; the runtime records them as the request's `started_by` and `parent_request_id`. `invoke_opts` is optional. A `conversation` parent names the companion request that routed a user's message to this agent; the request runs in that request's session, reads the session's entries, and records `route` in its own entry. Its `started_by` and `parent_request_id` follow the `subagent` rules. A `workflow` parent names the workflow, run and step. Requests with a `subagent` or `workflow` parent are kept out of the agent's replayed conversation history, and a workflow parent's ids are recorded on every event of the request.
 
 Rules:
 
@@ -229,7 +232,7 @@ Rules:
 - `session_id` MUST be present and MUST be a non-empty string.
 - `request_id`, when present, MUST be 1 to 255 characters of letters, digits, `.`, `_`, `:` or `-`.
 - `app_id` and `policy_id` MUST be present and MUST each be 1 to 255 characters of letters, digits, `.`, `_`, `:`, `@` or `-`. `policy` MUST be present and MUST be a policy object.
-- A request with a `subagent` parent MUST carry the parent request's `app_id`, `policy_id` and `policy`. A host relay enforces this (section 10.5).
+- A request with a `subagent` or `conversation` parent MUST carry the parent request's `app_id`, `policy_id` and `policy`. A host relay enforces this (section 10.5).
 - A request with a `workflow` parent MUST carry the workflow run's `app_id`, `policy_id` and policy snapshot.
 - A session's requests MUST share one `policy_id`. A request for a session that already has a request under another policy is rejected with `409 SESSION_POLICY_MISMATCH`.
 - Requests that share a `session_id` MUST be accepted. The runtime does not wait for an earlier request in the same session to finish; a host that wants one at a time queues them (section 10.2).
@@ -679,10 +682,10 @@ A host MAY expose named compositions of a primary agent and its subagents. An ev
 
 ### 10.5 Agent Relay
 
-A host whose agents run in separate processes MAY expose a relay that agents use to start, follow and cancel the child requests of their `RunSubAgents` calls. The relay speaks the client-to-agent binding of section 8 under its own prefix (`/h2a` in the reference host), so an agent calls it with an ordinary H2A client.
+A host whose agents run in separate processes MAY expose a relay that agents use to start, follow and cancel child requests: the request the companion routes a message to, and the children of a `RunSubAgents` call. The relay speaks the client-to-agent binding of section 8 under its own prefix (`/h2a` in the reference host), so an agent calls it with an ordinary H2A client.
 
 - Each agent authenticates with its own bearer token. The relay returns `401 UNAUTHORIZED` for a token that matches no agent.
-- `POST /agent/{subagent_id}/request` MUST carry a `parent` of kind `subagent` whose `agent_id` is the caller. Otherwise the relay returns `403 FORBIDDEN`.
+- `POST /agent/{subagent_id}/request` MUST carry a `parent` of kind `subagent` or `conversation` whose `agent_id` is the caller. Otherwise the relay returns `403 FORBIDDEN`. Only the companion may send a `conversation` parent, and its `session_id` MUST be the parent request's session; otherwise the relay returns `403 FORBIDDEN`.
 - The relay looks up the parent request. A parent request it does not know returns `400 INVALID_PARENT`, and one that belongs to another agent returns `403 FORBIDDEN`.
 - `subagent_id` MUST be the caller itself, or be in the `subagents` of the `host` snapshot stored with the parent request; a parent without one may target only the caller. Otherwise the relay returns `403 FORBIDDEN`. The relay forwards that stored snapshot and ignores a `host` in the body, so an agent cannot widen its composition.
 - The relay sets the forwarded request's `app_id`, `policy_id` and `policy` to the parent request's. A value in the body that differs from the parent's returns `403 FORBIDDEN`. An agent cannot act for another app or under another policy through its subagents.

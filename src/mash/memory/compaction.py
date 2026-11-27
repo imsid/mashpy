@@ -1,8 +1,9 @@
-"""Conversation compaction: a summary checkpoint replaces a session's history.
+"""Session compaction: a summary checkpoint replaces an agent's own session history.
 
-The runtime renders every turn since the last checkpoint (each user message,
-its routes and its reply) and passes it here as text. The summary is saved as a ``summary_checkpoint`` turn; replay starts
-from the latest one.
+The runtime renders every turn since the last checkpoint (each user message
+and its reply) and passes it here as text. The summary is saved as a
+``summary_checkpoint`` turn; replay starts from the latest one. A
+conversation's board is compacted once, as a whole, by ``board.compact_board``.
 """
 
 from __future__ import annotations
@@ -23,14 +24,11 @@ Requirements:
 - Capture key decisions, constraints, and open questions.
 - Include any user preferences or stated goals.
 - State what tool calls and their results established, not their raw output.
-- Keep, exactly, the agent id and session id of each agent session, and the
-  workflow id and run id of each workflow run, that the user may come back to.
 - Output plain text with these sections:
   Summary:
   Decisions:
   Open Questions:
   User Preferences:
-  Agent Sessions:
 """
 
 
@@ -84,7 +82,7 @@ async def compact_conversation(
         "agent_id": agent_id,
         "token_usage": {"input": 0, "output": 0},
     }
-    saved_trace_id = await store.save_turn(
+    await store.append_entry(
         trace_id=trace_id,
         session_id=session_id,
         agent_id=agent_id,
@@ -95,4 +93,4 @@ async def compact_conversation(
         metadata=metadata,
     )
 
-    return summary_text, saved_trace_id
+    return summary_text, trace_id

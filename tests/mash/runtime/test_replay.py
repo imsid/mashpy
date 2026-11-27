@@ -1,7 +1,7 @@
 """History: how a request sees its session's earlier turns.
 
 - the text of the last ``conversation_history_turns`` turns: each user message
-  and reply, with a turn's routes before the next user message
+  and reply
 - compaction at a context size summarizes every turn since the last checkpoint
 """
 
@@ -20,7 +20,6 @@ from mash.core.config import AgentConfig
 from mash.core.context import ToolCall
 from mash.core.llm import LLMProvider
 from mash.core.llm.types import LLMContentBlock, LLMRequest, LLMResponse, LLMTokenUsage
-from mash.memory.routes import build_routes, format_routes
 from mash.runtime import AgentRuntime, AgentSpec
 from mash.runtime.engine import loop as loop_module
 from mash.runtime.engine.rebuild import rebuild_request_state
@@ -195,69 +194,6 @@ class HistoryTests(ReplayTestCase):
 
         self.assertEqual(_shape(provider.requests[2]), [("user", ["text"])])
 
-    async def test_routes_go_before_the_next_message(self) -> None:
-        provider = _Provider()
-        runtime = await self._runtime(_Spec(provider))
-        await self._ask(runtime, "small")
-        [turn] = await self.memory_store.get_turns("s-1", "replay-app")
-        routes = [{"agent_id": "web", "session_id": "sess-9", "trace_id": "tr-9", "status": "completed"}]
-        turn["metadata"]["routes"] = routes  # the turn as a companion saves it
-        for stored in self.memory_store._turns:
-            if stored["trace_id"] == turn["trace_id"]:
-                stored["metadata"] = turn["metadata"]
-
-        await self._ask(runtime, "next")
-
-        messages = provider.requests[2].messages
-        self.assertEqual([m.role for m in messages], ["user", "assistant", "user"])
-        self.assertEqual(messages[1].content[0].data["text"], "answered")
-        self.assertEqual(
-            messages[2].content[0].data["text"], format_routes(routes) + "\n\nnext"
-        )
-
-
-class RoutesTests(unittest.TestCase):
-    def test_routes_come_from_full_results(self) -> None:
-        import json
-
-        routes = build_routes(
-            [
-                (
-                    "RunSubAgents",
-                    {"requests": [{"agent_id": "web", "prompt": "p"}]},
-                    json.dumps(
-                        [
-                            {"agent_id": "web", "session_id": "s-a", "trace_id": "t-a",
-                             "status": "completed", "response": "a long answer"},
-                            {"agent_id": "feed", "session_id": "s-b", "status": "failed"},
-                        ]
-                    ),
-                ),
-                ("RunWorkflow", {"workflow_id": "import"}, json.dumps(
-                    {"run_id": "r-1", "trace_id": "t-w", "status": "completed", "result": {}}
-                )),
-                ("RunSubAgents", {}, "not json"),
-            ]
-        )
-        self.assertEqual(
-            routes,
-            [
-                {"agent_id": "web", "session_id": "s-a", "trace_id": "t-a", "status": "completed"},
-                {"agent_id": "feed", "session_id": "s-b", "trace_id": None, "status": "failed"},
-                {"workflow_id": "import", "run_id": "r-1", "trace_id": "t-w", "status": "completed"},
-            ],
-        )
-        self.assertEqual(
-            format_routes(routes).splitlines()[2:],
-            [
-                "- web  session s-a  trace t-a  completed",
-                "- feed  session s-b  failed",
-                "- workflow import  run r-1  trace t-w  completed",
-                "</routes>",
-            ],
-        )
-        self.assertEqual(format_routes([]), "")
-
 
 class CompactionTests(ReplayTestCase):
     async def test_a_session_compacts_once_its_context_reaches_the_threshold(self) -> None:
@@ -338,7 +274,7 @@ class RebuildWithHistoryTests(ReplayTestCase):
         with patch.object(loop_module, "load_request_context", _load):
             second = await self._ask(runtime, "next")
         # A turn saved after the load does not change what a recovery replays.
-        await self.memory_store.save_turn(
+        await self.memory_store.append_entry(
             trace_id="later", session_id="s-1", agent_id="replay-app",
             user_message="later", agent_response="later", signals={}, context_tokens=0,
         )

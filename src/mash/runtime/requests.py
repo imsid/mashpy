@@ -118,6 +118,38 @@ def parent_request_metadata(parent: Any, *, agent_id: str) -> dict[str, Any]:
             "subagent_id": agent_id,
             "subagent_invoke_opts": dict(invoke_opts),
         }
+    if kind == "conversation":
+        # A request the companion routed: it runs in the companion's session
+        # and reads that session's board.
+        normalized = {
+            "kind": "conversation",
+            "request_id": _require_str(parent, "request_id"),
+            "agent_id": _require_str(parent, "agent_id"),
+            "session_id": _require_str(parent, "session_id"),
+            "started_by": _require_str(parent, "started_by"),
+            "parent_request_id": _require_str(parent, "parent_request_id"),
+        }
+        if normalized["started_by"] != normalized["agent_id"]:
+            raise ValueError("parent.started_by must be parent.agent_id")
+        if normalized["parent_request_id"] != normalized["request_id"]:
+            raise ValueError("parent.parent_request_id must be parent.request_id")
+        event_session_id = parent.get("event_session_id")
+        if event_session_id is not None:
+            if not isinstance(event_session_id, str) or not event_session_id.strip():
+                raise ValueError("parent.event_session_id must be a non-empty string")
+            normalized["event_session_id"] = event_session_id.strip()
+        route = parent.get("route")
+        if route is not None and not isinstance(route, dict):
+            raise ValueError("parent.route must be an object")
+        routed: dict[str, Any] = {
+            "parent": normalized,
+            "event_session_id": normalized.get("event_session_id"),
+        }
+        if route:
+            # The classifier's choice, kept on the request's board entry.
+            normalized["route"] = dict(route)
+            routed["route"] = dict(route)
+        return routed
     if kind == "workflow":
         normalized = {
             "kind": "workflow",
@@ -131,7 +163,13 @@ def parent_request_metadata(parent: Any, *, agent_id: str) -> dict[str, Any]:
             "workflow_run_id": normalized["run_id"],
             "task_id": normalized["task_id"],
         }
-    raise ValueError("parent.kind must be 'subagent' or 'workflow'")
+    raise ValueError("parent.kind must be 'subagent', 'conversation' or 'workflow'")
+
+
+def is_conversation_request(request_metadata: dict[str, Any] | None) -> bool:
+    """Whether the request is one the companion routed: it reads its session's board."""
+    parent = (request_metadata or {}).get("parent")
+    return isinstance(parent, dict) and parent.get("kind") == "conversation"
 
 
 async def get_accepted_request(
@@ -288,8 +326,7 @@ def pending_interactions(events: list[RuntimeEvent]) -> list[str]:
     """The ids of the request's open interactions, in the order they opened.
 
     An interaction is open while its ``mash.interaction.start`` has no
-    matching ``mash.interaction.end``. A request waits on one of its own at a
-    time, and on one more per child interaction it relays.
+    matching ``mash.interaction.end``. A request waits on one at a time.
     """
     pending: dict[str, None] = {}
     for event in events:
@@ -353,7 +390,7 @@ async def _submit_request_inner(
     started_by = STARTED_BY_USER
     parent_request_id = None
     parent = (request_metadata or {}).get("parent")
-    if isinstance(parent, dict) and parent.get("kind") == "subagent":
+    if isinstance(parent, dict) and parent.get("kind") in ("subagent", "conversation"):
         started_by = str(parent.get("started_by") or parent.get("agent_id"))
         parent_request_id = parent.get("parent_request_id") or parent.get("request_id")
     host_id = host_id_from_request_metadata(request_metadata)
@@ -552,9 +589,8 @@ def to_public_event(event: RuntimeEvent) -> dict[str, Any]:
             "schema": event.payload.get("schema"),
             "timeout_seconds": event.payload.get("timeout_seconds"),
         }
-        # A browser handoff's live-view link and when it lapses, and the child
-        # a relayed interaction came from.
-        for field_name in ("url", "expires_at", "origin"):
+        # A browser handoff's live-view link and when it lapses.
+        for field_name in ("url", "expires_at"):
             if field_name in event.payload:
                 data[field_name] = event.payload[field_name]
         return {"event": "request.interaction.create", "data": data}

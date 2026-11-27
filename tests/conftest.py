@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from mash.memory.store import BOARD_SUMMARY
 from mash.runtime import Pool
 from mash.testing.agents import LocalAgentProvider
 from mash.otel import semconv
@@ -685,7 +686,7 @@ class _TestMemoryStore:
         del agent_id, session_id, limit
         return []
 
-    async def save_turn(
+    async def append_entry(
         self,
         trace_id: str,
         session_id: str,
@@ -696,23 +697,32 @@ class _TestMemoryStore:
         context_tokens: int,
         metadata: dict[str, Any] | None = None,
         *,
+        tokens: int = 0,
         workflow_id: str | None = None,
         workflow_run_id: str | None = None,
         task_id: str | None = None,
         replayable: bool = True,
         app_id: str | None = None,
-    ) -> str:
-        if any(t["trace_id"] == trace_id for t in self._turns):
-            return trace_id
+    ) -> int:
+        for t in self._turns:
+            if t["trace_id"] == trace_id:
+                return t["seq"]
+        last = await self.last_entry(session_id)
+        is_summary = (metadata or {}).get("type") == BOARD_SUMMARY
+        seq = (last["seq"] if last else 0) + 1
         self._turns.append(
             {
                 "trace_id": trace_id,
                 "session_id": session_id,
+                "seq": seq,
                 "agent_id": agent_id,
                 "user_message": user_message,
                 "agent_response": agent_response,
                 "signals": signals,
                 "context_tokens": context_tokens,
+                "tokens": int(tokens),
+                "board_tokens": int(tokens)
+                + (0 if is_summary or last is None else last["board_tokens"]),
                 "metadata": metadata or {},
                 "workflow_id": workflow_id,
                 "workflow_run_id": workflow_run_id,
@@ -722,7 +732,84 @@ class _TestMemoryStore:
                 "created_at": time.time(),
             }
         )
-        return trace_id
+        return seq
+
+    @staticmethod
+    def _entry(t: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "trace_id": t["trace_id"],
+            "session_id": t["session_id"],
+            "seq": t["seq"],
+            "agent_id": t["agent_id"],
+            "user_message": t.get("user_message", ""),
+            "agent_response": t.get("agent_response", ""),
+            "tokens": t.get("tokens", 0),
+            "board_tokens": t.get("board_tokens", 0),
+            "metadata": t.get("metadata") or {},
+            "created_at": float(t.get("created_at") or 0.0),
+        }
+
+    async def read_entries(
+        self,
+        session_id: str,
+        *,
+        after: int | None = None,
+        before: int | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = sorted(
+            (
+                t
+                for t in self._turns
+                if t["session_id"] == session_id
+                and (after is None or t["seq"] > after)
+                and (before is None or t["seq"] < before)
+            ),
+            key=lambda t: t["seq"],
+        )
+        if limit is not None:
+            rows = rows[-limit:] if after is None and before is not None else rows[:limit]
+        return [self._entry(t) for t in rows]
+
+    async def search_entries(
+        self, session_id: str, query: str, *, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        words = [w.lower() for w in query.split() if w]
+        if not words:
+            return []
+        hits = []
+        for t in sorted(self._turns, key=lambda t: -t["seq"]):
+            if t["session_id"] != session_id:
+                continue
+            text = f"{t.get('user_message', '')}\n{t.get('agent_response', '')}"
+            if all(w in text.lower() for w in words):
+                hits.append(
+                    {
+                        "trace_id": t["trace_id"],
+                        "session_id": session_id,
+                        "seq": t["seq"],
+                        "agent_id": t["agent_id"],
+                        "snippet": text[:200],
+                        "metadata": t.get("metadata") or {},
+                        "created_at": float(t.get("created_at") or 0.0),
+                    }
+                )
+        return hits[:limit]
+
+    async def last_entry(self, session_id: str) -> dict[str, Any] | None:
+        rows = [t for t in self._turns if t["session_id"] == session_id]
+        return self._entry(max(rows, key=lambda t: t["seq"])) if rows else None
+
+    async def read_board(
+        self, session_id: str, *, up_to: int | None = None
+    ) -> list[dict[str, Any]]:
+        rows = await self.read_entries(
+            session_id, before=None if up_to is None else up_to + 1
+        )
+        start = max(
+            (e["seq"] for e in rows if e["metadata"].get("type") == BOARD_SUMMARY), default=0
+        )
+        return [e for e in rows if e["seq"] >= start]
 
     async def get_turns(
         self,
@@ -767,10 +854,24 @@ class _TestMemoryStore:
                 }
         return None
 
+    def _session_rows(self, session_id: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "trace_id": t["trace_id"],
+                "user_message": t.get("user_message", ""),
+                "agent_response": t.get("agent_response", ""),
+                "context_tokens": t.get("context_tokens", 0),
+                "replayable": t.get("replayable", True),
+                "metadata": t.get("metadata") or {},
+                "created_at": float(t.get("created_at") or 0.0),
+            }
+            for t in self._turns
+            if t["session_id"] == session_id
+        ]
+
     async def get_replay_turns(
         self,
         session_id: str,
-        agent_id: str,
         *,
         turns: int | None = None,
         trace_ids: list[str] | None = None,
@@ -779,7 +880,7 @@ class _TestMemoryStore:
             wanted = set(trace_ids)
             rows = [
                 row
-                for row in await self.get_turns(session_id=session_id, agent_id=agent_id)
+                for row in self._session_rows(session_id)
                 if row["trace_id"] in wanted
             ]
             for row in rows:
@@ -787,7 +888,7 @@ class _TestMemoryStore:
             return rows
         rows = [
             row
-            for row in await self.get_turns(session_id=session_id, agent_id=agent_id)
+            for row in self._session_rows(session_id)
             if row["replayable"]
         ]
         for row in rows:
@@ -902,6 +1003,36 @@ class _TestMemoryStore:
                 row["context_tokens"] = int(t["context_tokens"] or 0)
             row["last_activity_at"] = max(row["last_activity_at"], t["created_at"])
         rows = sorted(seen.values(), key=lambda r: r["session_id"])
+        rows.sort(key=lambda r: r["last_activity_at"], reverse=True)
+        return rows[:limit]
+
+    async def list_board_sessions(
+        self, *, limit: int, app_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        # A conversation: a session with an entry the companion routed or wrote
+        # (Postgres reads the sessions table instead).
+        def _conversation(t: dict[str, Any]) -> bool:
+            parent = (t.get("metadata") or {}).get("parent") or {}
+            return t["agent_id"] == "companion" or parent.get("kind") == "conversation"
+
+        conversations = {t["session_id"] for t in self._turns if _conversation(t)}
+        rows = []
+        for session_id in conversations:
+            entries = sorted(
+                (t for t in self._turns if t["session_id"] == session_id), key=lambda t: t["seq"]
+            )
+            if app_id is not None and not any(t.get("app_id") == app_id for t in entries):
+                continue
+            rows.append(
+                {
+                    "session_id": session_id,
+                    "turn_count": len(entries),
+                    "last_activity_at": max(t["created_at"] for t in entries),
+                    "context_tokens": int(entries[-1].get("board_tokens") or 0),
+                    "first_message": str(entries[0].get("user_message") or "")[:200],
+                }
+            )
+        rows.sort(key=lambda r: r["session_id"])
         rows.sort(key=lambda r: r["last_activity_at"], reverse=True)
         return rows[:limit]
 

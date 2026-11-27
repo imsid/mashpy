@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING, Any, Optional
 
 from ..core.context import (
@@ -16,9 +17,12 @@ from ..core.context import (
 from ..core.context import ToolResult as ContextToolResult
 from ..memory.compaction import compact_conversation
 from ..memory.failed_turns import format_failed_request, is_failed_turn
-from ..memory.routes import format_routes
+from ..logging import get_request_id
+from ..memory.board import board_label, compact_board
+from ..memory.store import BOARD_SUMMARY
 from ..tools.tool_results import context_content
 from . import sessions
+from .factory import is_companion
 from .transcript import render_messages
 
 if TYPE_CHECKING:
@@ -70,17 +74,32 @@ async def compact_session(
     *,
     reason: str = "manual",
 ) -> tuple[Optional[str], Optional[str]]:
-    """Summarize every turn since the last checkpoint into a summary checkpoint.
+    """Summarize the session; the summary's text and trace id.
 
-    The summary reads each turn's text: the user message, the agents and
-    workflows that handled it, and the reply.
+    On the companion the session is a conversation, and its board gets a
+    summary entry. Elsewhere every turn since the last checkpoint becomes a
+    summary checkpoint, from each turn's user message and reply.
     """
     session_id_value = str(session_id or self.session_id).strip()
     if not session_id_value:
         raise ValueError("session_id is required")
-    turns = await self.store.get_replay_turns(
-        session_id=session_id_value, agent_id=self.agent_id
-    )
+    if is_companion(self):
+        trace_id = str(uuid.uuid4())
+        entry = await compact_board(
+            self.store,
+            self.agent.llm,
+            session_id=session_id_value,
+            agent_id=self.agent_id,
+            trace_id=trace_id,
+            threshold=self.agent.config.compaction_token_threshold,
+            max_tokens=self.agent.config.max_tokens,
+            temperature=self.agent.config.compaction_temperature,
+            reason=reason,
+        )
+        if entry is None:
+            return "", ""
+        return str(entry["agent_response"]), trace_id
+    turns = await self.store.get_replay_turns(session_id=session_id_value)
     messages, pending, history = _history(turns)
     if pending:
         messages.append(Message(role=MessageRole.USER, content=pending))
@@ -113,12 +132,9 @@ def _history(
     """
     messages: list[Message] = []
     history: list[tuple[str, str]] = []
-    # A reply's routes go before the user message that follows it: in the
-    # reply itself the model reads them as its own writing and copies them
-    # into new replies. A failed request has no reply; its message and error
-    # go there too, after the routes, so "try again" refers to it. Only the
-    # model sees these blocks: stored turns keep their text.
-    routes_text = ""
+    # A failed request has no reply; its message and error go before the user
+    # message that follows, so "try again" refers to it. Only the model sees
+    # this block: stored turns keep their text.
     failed_text = ""
     for turn in turns:
         trace_id = str(turn.get("trace_id"))
@@ -146,17 +162,16 @@ def _history(
             messages.append(
                 Message(
                     role=MessageRole.USER,
-                    content=_blocks(routes_text, failed_text, user_text),
+                    content=_blocks(failed_text, user_text),
                     metadata=dict(source),
                 )
             )
-            routes_text = failed_text = ""
+            failed_text = ""
         if reply:
             messages.append(
                 Message(role=MessageRole.ASSISTANT, content=reply, metadata=dict(source))
             )
-        routes_text = format_routes(meta.get("routes") or [])
-    return messages, _blocks(routes_text, failed_text), history
+    return messages, failed_text, history
 
 
 async def build_context_with_history(
@@ -167,14 +182,16 @@ async def build_context_with_history(
     system_prompt: Any = None,
     trace_ids: list[str] | None = None,
 ) -> tuple[Context, list[str]]:
-    """The request's context, and the trace ids of the turns it replays.
+    """The context of a request in the agent's own session, and the trace ids
+    of the turns it replays.
 
     The turns are the latest summary checkpoint and the session's last
-    ``AgentConfig.conversation_history_turns`` turns after it. Workflow,
-    subagent and command turns share the session but are not part of the
-    user's conversation, so the store leaves them out. With ``trace_ids``,
-    those turns: the ones a request recorded at its context load, so a
-    recovered request rebuilds the same context.
+    ``AgentConfig.conversation_history_turns`` turns after it. Workflow task
+    turns share the session but are not part of the conversation, so the
+    store leaves them out. With ``trace_ids``, those turns: the ones a request
+    recorded at its context load, so a recovered request rebuilds the same
+    context. A request the companion routed reads the board instead
+    (``build_board_context``).
     """
     context = Context(
         system_prompt=system_prompt if system_prompt is not None else self.system_prompt
@@ -184,7 +201,6 @@ async def build_context_with_history(
     if trace_ids is not None or history_turns > 0:
         turns = await self.store.get_replay_turns(
             session_id=session_id,
-            agent_id=self.agent_id,
             turns=history_turns,
             trace_ids=trace_ids,
         )
@@ -198,17 +214,135 @@ def _blocks(*parts: str) -> str:
     return "\n\n".join(part for part in parts if part)
 
 
+def board_messages(entries: list[dict[str, Any]]) -> tuple[list[Message], str]:
+    """The board as messages, and the text that goes before the next user message.
+
+    Each entry is a user message headed by its label, then its reply. A
+    failed entry has no reply; its label and error go before the next user
+    message. Labels sit only in user messages, so the model does not copy them
+    into its replies.
+    """
+    messages: list[Message] = []
+    pending = ""
+    for entry in entries:
+        meta = entry.get("metadata") or {}
+        label = board_label(entry)
+        user_text = str(entry.get("user_message") or "")
+        reply = str(entry.get("agent_response") or "")
+        source = {"source": "board", "seq": entry.get("seq"), "trace_id": entry.get("trace_id")}
+        if is_failed_turn(entry):
+            pending = _blocks(pending, label, format_failed_request(user_text, meta))
+            continue
+        if meta.get("type") == BOARD_SUMMARY:
+            user_text = ""
+        messages.append(
+            Message(
+                role=MessageRole.USER,
+                content=_blocks(pending, f"{label}\n{user_text}".strip()),
+                metadata=dict(source),
+            )
+        )
+        pending = ""
+        if reply:
+            messages.append(
+                Message(
+                    role=MessageRole.ASSISTANT,
+                    content=reply,
+                    metadata={**source, "summary": meta.get("type") == BOARD_SUMMARY},
+                )
+            )
+    return messages, pending
+
+
+async def build_board_context(
+    self: "AgentRuntime",
+    session_id: str,
+    message: str,
+    *,
+    system_prompt: Any = None,
+    up_to: int | None = None,
+) -> tuple[Context, int]:
+    """The context of a request the companion routed, and the board position it read.
+
+    The board is the latest summary and every entry after it, in full, each
+    labelled with its number and author; there is no turn window. The
+    position is the number of the last entry read, 0 for an empty board.
+    With ``up_to``, the board as it was at that position: a recovered request
+    rebuilds the context its context load recorded.
+    """
+    context = Context(
+        system_prompt=system_prompt if system_prompt is not None else self.system_prompt
+    )
+    entries = await self.store.read_board(session_id, up_to=up_to)
+    messages, pending = board_messages(entries)
+    context.messages.extend(messages)
+    context.add_user_message(_blocks(pending, message))
+    position = up_to if up_to is not None else max((e["seq"] for e in entries), default=0)
+    return context, int(position)
+
+
+# A board summary's trace id is derived from the request that wrote it, so a
+# recovered request that runs the check again finds the summary stored.
+BOARD_SUMMARY_NAMESPACE = uuid.UUID("0b7a52c4-3f1e-4d0a-9c86-1e5f2a7d9b43")
+
+
+async def compact_board_if_full(
+    self: "AgentRuntime", session_id: str, request_id: str
+) -> Optional[dict[str, Any]]:
+    """Write the board's summary when its last entry reached the companion's threshold.
+
+    The companion runs this as its request starts, before it routes the
+    message, with its own model and its ``compaction_token_threshold``.
+    Returns the summary entry, or None.
+    """
+    return await compact_board(
+        self.store,
+        self.agent.llm,
+        session_id=session_id,
+        agent_id=self.agent_id,
+        trace_id=str(uuid.uuid5(BOARD_SUMMARY_NAMESPACE, request_id)),
+        threshold=self.agent.config.compaction_token_threshold,
+        max_tokens=self.agent.config.max_tokens,
+        temperature=self.agent.config.compaction_temperature,
+    )
+
+
 async def build_context_payload(
     self: "AgentRuntime",
     *,
     session_id: str,
     message: str,
     system_prompt: Any = None,
+    conversation: bool = False,
 ) -> dict[str, Any]:
+    """The request's context and what its context load records.
+
+    A request the companion routed (``conversation``) reads the board and
+    records the position it read; the board is compacted by the companion,
+    before the request starts. Other requests replay the agent's own session
+    and compact it at the agent's threshold.
+    """
+    if conversation:
+        context, position = await build_board_context(
+            self, session_id, message, system_prompt=system_prompt
+        )
+        return {
+            "context": serialize_context(context),
+            "board": {"up_to": position},
+            "compaction": {},
+        }
     compaction_summary_text: Optional[str] = None
     compaction_summary_trace_id: Optional[str] = None
     threshold = self.agent.config.compaction_token_threshold
-    if threshold > 0 and await get_context_tokens(self, session_id) >= threshold:
+    if is_companion(self):
+        # The companion's session is a conversation: its board is compacted
+        # once, as a whole.
+        request_id = get_request_id()
+        summary = await compact_board_if_full(self, session_id, request_id) if request_id else None
+        if summary is not None:
+            compaction_summary_text = str(summary["agent_response"])
+            compaction_summary_trace_id = str(summary["trace_id"])
+    elif threshold > 0 and await get_context_tokens(self, session_id) >= threshold:
         compaction_summary_text, compaction_summary_trace_id = await compact_session(
             self, session_id, reason="auto"
         )

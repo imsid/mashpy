@@ -8,8 +8,8 @@ code and path instead of its text, and reads the file with ``run_code``. The
 path comes from the call's ids, so a call run again after a crash writes the
 same file.
 
-``execute_tool.end`` keeps the full result: ``ForwardAnswer``, the trace views
-and replay read it there, and replay shows the same note. On a request without
+``execute_tool.end`` keeps the full result; recovery rebuilds the context
+from it and shows the same note. On a request without
 a sandbox there is nowhere to put the file, and the model gets the full result.
 """
 

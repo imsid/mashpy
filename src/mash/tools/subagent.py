@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import json
 import logging
 import time
 import uuid
-from contextlib import contextmanager
-from typing import Any, AsyncIterator, Callable, Dict, Iterator, Optional, Protocol
+from typing import Any, AsyncIterator, Callable, Dict, Optional, Protocol
 
 from ..logging import (
     get_event_session_id,
@@ -17,8 +15,7 @@ from ..logging import (
     get_request_metadata,
     get_subagent_id_prefix,
 )
-from ..runtime.client import InteractionClosedError
-from ..runtime.errors import classify_error, is_retryable, retry_transient
+from ..runtime.errors import classify_error, is_retryable
 from .base import ToolResult
 
 logger = logging.getLogger(__name__)
@@ -75,44 +72,6 @@ class SupportsChildClient(Protocol):
         self, request_id: str, *, interaction_id: str, response: Any
     ) -> Dict[str, Any]:
         """Answer one of the child's interactions."""
-
-
-class InteractionRelay(Protocol):
-    """The calling request's side of its children's interactions.
-
-    The request loop binds one around a RunSubAgents call. It shows each
-    interaction a child opens to the user as an interaction of the calling
-    request, under an id derived from the child's request and interaction ids.
-    """
-
-    async def open(self, interaction: Dict[str, Any]) -> str:
-        """Open the relayed copy of a child's ``request.interaction.create``; return its id."""
-
-    async def wait(self, interaction_id: str) -> Dict[str, Any]:
-        """Wait for the relayed interaction to close; return its ack payload."""
-
-    async def close(self, interaction_id: str, ack: Dict[str, Any]) -> None:
-        """Close the relayed interaction as the child's ack closed the child's."""
-
-
-_interaction_relay: contextvars.ContextVar[Optional[InteractionRelay]] = (
-    contextvars.ContextVar("mash_interaction_relay", default=None)
-)
-
-
-def get_interaction_relay() -> Optional[InteractionRelay]:
-    """The relay bound for the current RunSubAgents call, if any."""
-    return _interaction_relay.get()
-
-
-@contextmanager
-def bound_interaction_relay(relay: Optional[InteractionRelay]) -> Iterator[None]:
-    """Bind the relay for one RunSubAgents call."""
-    token = _interaction_relay.set(relay)
-    try:
-        yield
-    finally:
-        _interaction_relay.reset(token)
 
 
 class _Budget:
@@ -181,7 +140,7 @@ class RunSubAgentsTool:
         "cancelled or timed_out), and its response, structured output or "
         "error, plus the session_id it ran in and its trace_id. When a child "
         "asked the user something (an approval, a question, a sign-in), its "
-        "entry lists those interactions with the user's response. Each item runs "
+        "entry lists those interactions with the response. Each item runs "
         "in a session of its own: pass an earlier entry's session_id to "
         "continue that session, where the agent sees its own earlier work, or "
         "leave it out to start a new one."
@@ -438,24 +397,19 @@ class RunSubAgentsTool:
     async def _follow(
         self, entry: Dict[str, Any], client: Any, request_id: str, budget: _Budget
     ) -> None:
-        """Read the child's stream into ``entry``, relaying its interactions.
+        """Read the child's stream into ``entry``.
 
-        A stream that breaks before the child's terminal event (its process
-        died and the host is restarting it, or the connection dropped) is read
-        again after the last event seen: the child recovers and finishes, and
-        only the child's own terminal event, or the budget running out, ends
-        its entry. An error that cannot pass, such as an unknown request,
-        fails the entry. A rerun call reads the stream from the start, so it
-        opens and closes the relayed interactions again; both are no-ops on
-        ids already stored.
+        A child that asks the user something waits on its own request; its
+        budget's clock stops meanwhile, and its entry lists each interaction
+        with the response. A stream that breaks before the child's terminal
+        event (its process died and the host is restarting it, or the
+        connection dropped) is read again after the last event seen: the
+        child recovers and finishes, and only the child's own terminal event,
+        or the budget running out, ends its entry. An error that cannot pass,
+        such as an unknown request, fails the entry.
         """
-        relay = get_interaction_relay()
         opened: Dict[str, Dict[str, Any]] = {}  # child interaction id -> its create
-        relayed: Dict[str, str] = {}  # child interaction id -> relayed id
-        closed: set[str] = set()  # child interaction ids already acked
-        forwards: list[asyncio.Task[None]] = []
         interactions: list[Dict[str, Any]] = []
-        stopped = False
         last_seq = 0
         attempt = 0
         try:
@@ -472,34 +426,17 @@ class RunSubAgentsTool:
                         data = event.get("data")
                         if not isinstance(data, dict):
                             data = {}
-                        if event_name == "request.interaction.create" and relay is not None:
+                        if event_name == "request.interaction.create":
                             child_interaction_id = str(data.get("interaction_id") or "")
-                            if child_interaction_id in relayed or child_interaction_id in closed:
-                                # Read again after a reconnect without a seq.
-                                continue
-                            relayed_id = await relay.open(data)
-                            opened[child_interaction_id] = data
-                            relayed[child_interaction_id] = relayed_id
-                            budget.pause()
-                            forwards.append(
-                                asyncio.ensure_future(
-                                    self._forward(
-                                        relay, client, request_id, child_interaction_id, relayed_id
-                                    )
-                                )
-                            )
+                            if child_interaction_id and child_interaction_id not in opened:
+                                opened[child_interaction_id] = data
+                                budget.pause()
                             continue
                         if event_name == "request.interaction.ack":
-                            child_interaction_id = str(data.get("interaction_id") or "")
-                            relayed_id = relayed.pop(child_interaction_id, None)
-                            if relayed_id is None:
-                                continue
-                            closed.add(child_interaction_id)
-                            await relay.close(relayed_id, data)
-                            budget.resume()
-                            interactions.append(
-                                _interaction_item(opened.pop(child_interaction_id), data)
-                            )
+                            created = opened.pop(str(data.get("interaction_id") or ""), None)
+                            if created is not None:
+                                budget.resume()
+                                interactions.append(_interaction_item(created, data))
                             continue
                         if event_name == "request.completed":
                             response = data.get("response")
@@ -535,53 +472,9 @@ class RunSubAgentsTool:
                     delay,
                 )
                 await asyncio.sleep(delay)
-        except asyncio.CancelledError:
-            # The call stops here (its budget ran out, or the process is
-            # going down); a rerun call picks the open interactions up again.
-            stopped = True
-            raise
         finally:
-            for task in forwards:
-                task.cancel()
-            await asyncio.gather(*forwards, return_exceptions=True)
-            if not stopped:
-                # The child ended or its stream failed: nothing answers these now.
-                for relayed_id in relayed.values():
-                    await relay.close(relayed_id, {"response": None, "cancelled": True})
             if interactions:
                 entry["interactions"] = interactions
-
-    async def _forward(
-        self,
-        relay: InteractionRelay,
-        client: Any,
-        request_id: str,
-        child_interaction_id: str,
-        relayed_id: str,
-    ) -> None:
-        """Send the user's answer to the relayed interaction on to the child."""
-        ack = await relay.wait(relayed_id)
-        if ack.get("cancelled") or ack.get("timed_out"):
-            return
-        try:
-            await retry_transient(
-                lambda: client.post_interaction(
-                    request_id,
-                    interaction_id=child_interaction_id,
-                    response=ack.get("response"),
-                )
-            )
-        except InteractionClosedError:
-            # The child already has an answer: its own timeout, or this one
-            # forwarded before a restart.
-            pass
-        except Exception:
-            logger.warning(
-                "could not answer interaction %s of child request %s",
-                child_interaction_id,
-                request_id,
-                exc_info=True,
-            )
 
     def to_llm_format(self) -> Dict[str, Any]:
         return {

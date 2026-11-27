@@ -6,6 +6,12 @@ from typing import Any, Dict, List, Optional, Protocol
 
 from ..search.types import SearchColumn
 
+# An entry with this metadata ``type`` summarizes the board before it.
+BOARD_SUMMARY = "summary"
+# An entry with this metadata ``type`` records a workflow run the companion
+# started: its inputs and outcome.
+WORKFLOW_RESULT = "workflow_result"
+
 
 class MemoryStore(Protocol):
     """Async protocol for conversation storage."""
@@ -53,7 +59,7 @@ class MemoryStore(Protocol):
         """List recent trace summaries from persisted logs."""
         ...
 
-    async def save_turn(
+    async def append_entry(
         self,
         trace_id: str,
         session_id: str,
@@ -64,22 +70,78 @@ class MemoryStore(Protocol):
         context_tokens: int,
         metadata: Optional[Dict[str, Any]] = None,
         *,
+        tokens: int = 0,
         workflow_id: Optional[str] = None,
         workflow_run_id: Optional[str] = None,
         task_id: Optional[str] = None,
         replayable: bool = True,
         app_id: Optional[str] = None,
-    ) -> str:
-        """Save a conversation turn with signals.
+    ) -> int:
+        """Append an entry (a turn) to the session with the session's next ``seq``.
 
+        Returns the entry's ``seq``. ``tokens`` is the entry's size and
+        ``board_tokens`` becomes the previous entry's ``board_tokens`` plus
+        ``tokens``, or ``tokens`` alone for a ``BOARD_SUMMARY`` entry.
         ``context_tokens`` is the size of the turn's context: the input and
-        output tokens of its last model call. Saving a ``trace_id`` that is
-        already stored is a no-op, so a replayed persist step never fails on
-        the existing row.
+        output tokens of its last model call. Appending a ``trace_id`` that is
+        already stored is a no-op that returns its ``seq``, so a replayed
+        persist step never fails on the existing row.
 
         Workflow task turns carry their ``workflow_id`` / ``workflow_run_id`` /
         ``task_id`` and are marked ``replayable=False`` so they are excluded from
         the conversation history replayed into the model.
+        """
+        ...
+
+    async def read_entries(
+        self,
+        session_id: str,
+        *,
+        after: Optional[int] = None,
+        before: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """The session's entries with ``after < seq < before``, in ``seq`` order.
+
+        With ``limit``, the first ``limit`` after ``after``, or with only
+        ``before``, the last ``limit`` before it. Each entry has ``trace_id``,
+        ``session_id``, ``seq``, ``agent_id``, ``user_message``,
+        ``agent_response``, ``tokens``, ``board_tokens``, ``metadata`` and
+        ``created_at``.
+        """
+        ...
+
+    async def search_entries(
+        self,
+        session_id: str,
+        query: str,
+        *,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """The session's entries matching ``query``, best first.
+
+        Uses the full-text indexes on ``user_message`` and ``agent_response``.
+        Each result has ``trace_id``, ``session_id``, ``seq``, ``agent_id``,
+        ``snippet``, ``metadata`` and ``created_at``.
+        """
+        ...
+
+    async def last_entry(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """The session's entry with the highest ``seq``, or None."""
+        ...
+
+    async def read_board(
+        self,
+        session_id: str,
+        *,
+        up_to: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """The board an agent starts from, in ``seq`` order.
+
+        The latest ``BOARD_SUMMARY`` entry and every entry after it, or every
+        entry when there is none. With ``up_to``, only entries with
+        ``seq <= up_to``: the position a request recorded at its context load.
+        Entries are shaped as ``read_entries`` returns them.
         """
         ...
 
@@ -109,7 +171,6 @@ class MemoryStore(Protocol):
     async def get_replay_turns(
         self,
         session_id: str,
-        agent_id: str,
         *,
         turns: Optional[int] = None,
         trace_ids: Optional[List[str]] = None,
@@ -183,6 +244,22 @@ class MemoryStore(Protocol):
 
         With ``app_id``, only sessions with that app's turns. Each row carries
         ``first_message``, the start of the session's first user message.
+        """
+        ...
+
+    async def list_board_sessions(
+        self,
+        *,
+        limit: int,
+        app_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """The ``limit`` most recently active conversations, newest first.
+
+        A conversation is a host session (a row of ``sessions``) with entries;
+        its rows count every agent's entries. With ``app_id``, only sessions
+        with that app's entries. Each row has ``session_id``, ``turn_count``,
+        ``last_activity_at``, ``context_tokens`` (the last entry's
+        ``board_tokens``) and ``first_message``.
         """
         ...
 

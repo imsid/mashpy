@@ -66,13 +66,14 @@ with `thinking_level` `low`; `COMPANION_AGENT_THINKING_LEVEL` sets another.
 
 ## How Host Routing Works
 
-Every message to a host is an event in a session. Each event runs as one
-request on the companion, which gets, for that request only, a directory of the host's agents built from their
-`AgentMetadata`. The companion hands work to them with `RunSubAgents`, which
-runs one or more child requests at the same time, each in a session of its
-own; a follow-up goes back to the session that answered. Only the companion
-routes: the host's agents never get `RunSubAgents`. Routing quality is a
-prompt-engineering surface: vague `usage_guidance` produces vague routing. To
+Every message to a host is an event in a session. Each event starts as a
+request on the companion, whose classifier picks one of the host's agents or
+workflows from their `AgentMetadata` and workflow `metadata` descriptions,
+answers "what can you do" itself, or asks the user to pick an agent when none
+fits. The picked agent runs in the conversation's session and reads every
+earlier entry there, whichever agent wrote it. Routing quality depends on the
+descriptions: a vague `description` or `usage_guidance` produces vague
+routing. To
 talk to one agent, define a host with only that agent.
 
 ```bash

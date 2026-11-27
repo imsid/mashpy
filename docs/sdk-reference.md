@@ -57,8 +57,9 @@ agent's and each sandbox's token.
 - **Session and event** — every input to a host is an event, posted to
   `POST /api/v1/sessions/{session_id}/events`. A session is one conversation,
   for example a Slack thread; its first event binds it to a host and a
-  policy. Events in a session run one at a time, in arrival order, each as one
-  request on the host's companion; the rest wait in the session's queue.
+  policy. Events in a session run one at a time, in arrival order, each
+  starting as a request on the host's companion, which routes it to one agent
+  or workflow; the rest wait in the session's queue.
 - **Sandbox** — a container per policy, started on first use, where the code an
   agent's model writes runs. It runs Mash's sandbox image
   (Python, Node, SQLite, git) and holds that policy's workspaces, one folder per
@@ -80,8 +81,8 @@ agent's and each sandbox's token.
   agent hands the browser to the user through a live-view link; Mash never
   sees the password. Code in the sandbox has no route to the browser.
 - **Host** — an immutable composition over the pool (`host_id`, `agents`,
-  `workflows`). Every request to a host goes to the built-in `companion`,
-  which routes it to the host's agents and workflows. The unit of composition: define hosts in code at
+  `workflows`). Every request to a host starts on the built-in `companion`,
+  which routes it to one of the host's agents or workflows. The unit of composition: define hosts in code at
   build time or dynamically over the API, and send events to one by naming
   its `host_id`. Hosts are in-memory; redefine them after a restart. A host
   with one agent is how an app talks to that agent.
@@ -281,10 +282,10 @@ request at once, so a tool or LLM provider keeps no per-request state on
 `self`: it reads the request's context with
 `mash.logging.get_request_metadata()`, `get_session_id()`, `get_trace_id()`
 and the other `mash.logging` helpers. `get_session_id()` is the request's own
-session; inside a `RunSubAgents` child that is the child's session.
+session; a request the companion routed runs in the conversation's session.
 `get_event_session_id()` is the session the user's event was posted to (the
-one `/resume` and `POST /sessions/{id}/events` use), at any subagent depth,
-and `None` in a request a workflow started. The runtime calls a tool's `shutdown()`, `close()` or
+one `/resume` and `POST /sessions/{id}/events` use), and `None` in a request a
+workflow started. The runtime calls a tool's `shutdown()`, `close()` or
 `aclose()` once, when the process shuts down.
 
 ## AgentConfig Fields
@@ -299,10 +300,10 @@ AgentConfig(
     skills_enabled=True,                  # register the Skill meta-tool when skills exist
     prompt_caching_enabled=True,          # provider prompt caching
     streaming_enabled=True,               # stream tokens + emit chat.delta events
-    conversation_history_turns=3,         # earlier turns replayed as text (0 = none)
+    conversation_history_turns=3,         # earlier turns of an agent's own session replayed as text (0 = none)
     max_parallel_tools=8,                  # cap on parallel-safe tool calls run concurrently per turn
     subagent_timeout_seconds=3600,        # RunSubAgents wait: the default and the most a call may ask for
-    compaction_token_threshold=500_000,   # summarize once the last turn's context reaches this (0 = off)
+    compaction_token_threshold=500_000,   # summarize an own session once the last turn's context reaches this (0 = off)
     tool_result_context_chars=20_000,     # longer tool results are saved to a sandbox file the model reads
     compaction_temperature=0.0,           # sampling temperature for the summary pass
     provider_options={},                  # sent with every model call, provider-specific (e.g. {"thinking_level": "low"} on Gemini)
@@ -310,9 +311,11 @@ AgentConfig(
 )
 ```
 
-A request replays the text of its session's last `conversation_history_turns`
-turns: each user message and reply, with the agents and workflows that handled
-it before the next message. Tool calls and results are not replayed. Each turn
+A request in an agent's own session (a direct request, not one the companion
+routed) replays the text of the session's last `conversation_history_turns`
+turns: each user message and reply. Tool calls and results are not replayed.
+A request the companion routed reads the conversation's board instead (see
+The board). Each turn
 records `context_tokens`, the context its last model call read and wrote
 (all input, cached included, plus output, as the provider reports it);
 once the latest turn's reaches `compaction_token_threshold`, every turn since
@@ -627,10 +630,8 @@ until it restarts. Web search providers behave the same way.
 Register all agents into a flat pool, then compose hosts over it. A host is a
 set of agents and workflows; every agent in it is the same kind of member.
 Every pool has the built-in `companion` agent, and every event to a host
-runs on it: for each message the companion decides which of the host's
-agents run, how many, and whether each continues an earlier session of that
-agent or starts a new one, or runs one of the host's workflows. It waits for
-them and writes the answer.
+starts on it. For each message the companion picks one of the host's agents
+or workflows with a classifier and hands the message to it.
 
 ```python
 from mash import AgentMetadata, Host, HostBuilder
@@ -653,88 +654,82 @@ pool = (
 ```
 
 A host never lists `companion`; it routes for every host. Each agent's
-`AgentMetadata` is what the companion routes by: a host request gives the
-companion an `AGENTS` directory of the host's agents in its prompt, for that
-request only, with guidance to split a task only when its parts do not depend
-on each other.
+`AgentMetadata` is what the companion routes by.
 
-The companion routes with `RunSubAgents`, which only it has, and only on a
-request that runs an event.
-`RunSubAgents(requests=[{agent_id, prompt, session_id?, output_schema?}], timeout_seconds)`
-runs each item as its own child request on one of the host's agents, all at
-the same time, and returns when all of them are done. The result has one entry
-per item, in order: the child's `request_id`, its `session_id` and
-`trace_id`, its `status` (`completed`, `failed`, `cancelled` or
-`timed_out`), and its response, structured output or error, plus
-`interactions` when the child asked the user something. One child's failure
-stays in its entry. A call takes at most 16 items. `timeout_seconds` defaults
-to the companion's `AgentConfig.subagent_timeout_seconds` (3600), which is
-also the most a call may ask for. Each child gets that budget, its clock
-stopped while it waits on the user; when a child's budget runs out, the tool
-cancels it. If a child's agent process dies, the tool waits for the host to
-restart it and reads on from the child's last event, so the child's recovered
-outcome is what its entry reports. Two items may not continue the same
-session.
+### Routing
 
-Each child is a request in a session of its own, started by the
-companion, with `parent_request_id` set to the companion's request. Without
-`session_id` the child starts a new session, named after its request id. With
-the `session_id` of an earlier entry it continues that session and replays its
-turns, so the agent sees its own earlier work there; the relay accepts only a
-session of the same agent started from the companion's session. The
-companion's saved turn keeps the routes of its children (agent and session,
-or workflow and run, with trace and status) in `metadata["routes"]`; it replays
-its last 10 turns, with each reply's routes before the next user message, so a
-follow-up can go back to the session that answered.
-After reading the results, the companion forwards one child's completed
-answer unchanged with `ForwardAnswer(request_id)`, which ends the request with
-that answer as the reply and no further model call, or reruns the session with
-a corrected brief, or writes its own reply. The
-companion's process starts children through the host's `/h2a` relay, which
-checks each against the host composition stored with the companion's request
-(not one the caller sends) and forwards it to the child agent's process.
-Cancelling a request cancels its running children.
+The companion runs no agent loop. Its request makes one structured output call
+whose only field, `route`, is an enum of the host's agent ids, the host's
+workflow ids (its own, not the pool defaults that `enable_evals()` adds),
+`about` and `unclear`. The call reads each agent's metadata, each workflow's
+`metadata["display_name"]` and `metadata["description"]`, the conversation's
+board as text, and the new message.
 
-The app talks only to the companion's request, and the companion relays its
-children's interactions there without a model call. When a child pauses on an
-approval, an `AskUser` question or a `browser_handoff`, `RunSubAgents` opens
-the same interaction on the companion's request, with an `origin` naming the
-child (`agent_id`, `request_id`, `session_id`, `trace_id`, `interaction_id`).
-Its id is derived from the child's request id and interaction id, and every
-interaction id is derived from its request and its place in the loop, so a
-recovered request arrives at the same ids. The app answers it like any other
-interaction, on the event (see Sessions and Events), and the tool forwards
-the answer to the child through `/h2a`. The child keeps
-its deadline and its timeout default; when the child's interaction closes, the
-companion's copy closes with the same response. The child's entry in the
-result lists each relayed interaction with the response, so the companion's
-model knows what the user decided.
+- An agent id: the companion starts that agent's request in its own session,
+  the conversation's, with the message unchanged and the event's `context`,
+  `metadata` and `structured_output`. The request's id is derived from the
+  companion's, its parent is of kind `conversation`, and its board entry keeps
+  the choice in `metadata["route"]` (`choice`, `picked_by`). The companion's
+  request ends with `routed` (`agent_id`, `request_id`) in its response
+  metadata, and the event follows the routed request from there.
+- A workflow id: a second structured output call fills the workflow's
+  `input_model` schema, every field nullable. For each required field left
+  null the companion asks the user (an `info` interaction). The run starts
+  under the request's app and policy and runs standalone: its steps never read
+  or write the board. Its outcome goes to the user, and the companion writes
+  one board entry with the run's input and outcome. A failed run's error goes
+  to the user; nothing retries it.
+- `about`: the companion answers from the agents' and workflows' descriptions,
+  with no model call.
+- `unclear`: the companion asks the user to pick one of the host's agents (a
+  `choice` interaction), then routes to it.
 
-When the host lists workflows (its own, not the pool defaults that
-`enable_evals()` adds), each request gets a `WORKFLOWS` list in its context:
-every workflow's id, `metadata["display_name"]`, `metadata["description"]` and
-input schema. The companion runs one with
-`RunWorkflow(workflow_id, input, timeout_seconds)`, which starts a run under
-the request's app and policy through the host's `/h2a` relay and waits for its
-result. On a timeout it returns `timed_out` with the `run_id`, and the run
-keeps going. The REPL shows the step the run is on, and `/subagent` lists the
-last request's children or shows one (`/subagent 2`). A child stops when its
-parent's event is cancelled.
+Each step is recorded with a dedupe key, so a companion request recovered
+after a crash makes no model call twice and starts no second request or run.
+The companion's process starts the routed request and the workflow run
+through the host's `/h2a` relay, which takes the host composition, app and
+policy from the companion's request as stored, and accepts a `conversation`
+request only from the companion and only into its own session.
 
-The companion reads what its agents did with three tools, each keyed by an
-`agent_id` with a `session_id` and/or `trace_id` from its routes or a
-`RunSubAgents` result: `ListAgentTraces` (an agent session's recent requests),
-`InspectAgentTrace` (one trace's analysis by default, its messages, tool calls
-and results with `view="transcript"`, or its events with `view="events"`) and
-`GetAgentTurns` (what an agent was asked and answered). Each refuses a trace or
-session that is not a child of the companion in the request's session.
+### The board
+
+A conversation's board is the companion session's turns, numbered by `seq`:
+one final entry per request, written at commit with the agent that wrote it,
+the user's message and the reply. A failed request writes the failure marker.
+Tool calls, tool results and thinking stay in each request's event log.
+
+A routed request reads the board at context load: the latest summary entry
+and every entry after it, in full, each headed `[entry N · author]`. There is
+no turn window, so `conversation_history_turns` does not apply. The context
+load records the position it read, and a recovered request rebuilds from that
+position. A routed request also gets two tools over its own session, neither
+taking a session id:
+
+- `read_board(after=, before=, limit=)`: entries by number, in full.
+- `search_board(query)`: matching entries with their number, author and a
+  snippet, from the full-text indexes.
+
+Each entry records `tokens`, the request's context size, and `board_tokens`,
+the board's size since its last summary. When the last entry's `board_tokens`
+reaches the companion's `compaction_token_threshold` (100,000), the companion
+writes one summary entry with its own model before it routes the next
+message. Entries before a summary stay readable with `read_board`. A routed
+request never compacts on its own; `/compact` on a conversation summarizes
+the board.
+
+The routed agent's reply, approvals and questions reach the app on the event
+as the request runs, with no model call in between.
+
+`RunSubAgents` stays in `mash.tools.subagent` but no agent gets it: it ran
+child requests in sessions of their own, and a child that asks the user waits
+on its own request.
 
 `companion` picks its provider like masher's agents;
-`COMPANION_AGENT_<PROVIDER>_MODEL` overrides the model. On Gemini it routes
-with `thinking_level` `low` (about 1.5-2s faster per model call than the
-default); `COMPANION_AGENT_THINKING_LEVEL` sets another level, and an empty
-value leaves the model's default. Without any provider key it still starts,
-and an event fails with an error that names the keys to set.
+`COMPANION_AGENT_<PROVIDER>_MODEL` overrides the classifier's model. On Gemini
+it runs with `thinking_level` `low`; `COMPANION_AGENT_THINKING_LEVEL` sets
+another level, and an empty value leaves the model's default. Without any
+provider key it still starts, and an event fails with an error that names the
+keys to set.
 
 Hosts can also be defined dynamically on a running pool, in code or over the
 API:
@@ -845,19 +840,20 @@ curl -X POST http://127.0.0.1:8000/api/v1/sessions/slack:T1:1731864100.0001/even
 - Events in a session run one at a time, in arrival order, and the others
   wait `queued`. Work that should run in parallel goes to another session.
 
-Each event runs as one request on the host's companion. Its status is
-`queued`, `running`, `waiting` (the request has an open interaction), then
-`completed`, `failed` or `cancelled`. When the request ends, the host copies
-its `response` or `error` onto the event, which keeps them after retention
-deletes the request.
+Each event starts as one request on the host's companion; when it routes the
+message to an agent, the event follows that agent's request. Its status is
+`queued`, `running`, `waiting` (the companion's or the routed request has an
+open interaction), then `completed`, `failed` or `cancelled`. When the last
+request ends, the host copies its `response` or `error` onto the event, which
+keeps them after retention deletes the requests.
 
 | Route | What it does |
 |---|---|
-| `GET /api/v1/sessions/{session_id}/events/{event_id}/stream?after=` | The request's SSE stream: deltas, tool calls, interactions and the end frame, each with its `seq` as `id:` for reconnects. A queued event's stream holds with an `event.queued` frame and keepalives until it starts; one cancelled while queued gets `event.cancelled`. |
+| `GET /api/v1/sessions/{session_id}/events/{event_id}/stream?after=` | The SSE stream of the companion's request, then the routed request's: deltas, tool calls, interactions and one end frame, each with a `seq` as `id:` for reconnects; the routed request's are numbered on from the companion's. A queued event's stream holds with an `event.queued` frame and keepalives until it starts; one cancelled while queued gets `event.cancelled`. |
 | `GET /api/v1/sessions/{session_id}/events/{event_id}` | The event's state: `request_id`, `seq`, `status`, open `interactions`, `response`, `error` and timestamps. |
 | `GET /api/v1/sessions/{session_id}/events` | The session's ledger in `seq` order, filtered by `status` (comma-separated), `after_seq` and `limit`. |
 | `GET /api/v1/hosts/{host_id}/events` | The same across every session on the host; `status=running,waiting` finds what an app was following before it restarted. |
-| `POST /api/v1/sessions/{session_id}/events/{event_id}/cancel` | Cancels a queued event, or a running one's request and its children. `409 EVENT_TERMINAL` once it has ended. |
+| `POST /api/v1/sessions/{session_id}/events/{event_id}/cancel` | Cancels a queued event, or a running one's requests: the companion's and the one it routed to. `409 EVENT_TERMINAL` once it has ended. |
 
 An app answers an interaction by posting to the same endpoint with the
 event's id:
@@ -878,21 +874,22 @@ reruns or cancels a request directly. The agent read routes stay: a
 request's status and events, sessions, history and traces.
 `GET /api/v1/agent/{agent_id}/sessions/{session_id}/requests` lists a
 session's requests newest first, filtered by `status` and `started_by`
-(`user`, or the agent that started a `RunSubAgents` child).
+(`user`, or `companion` for the request it routed).
 
 `metadata` is opaque caller context for code, never shown to the model (the
 inverse of `context`, which is prompt text). It is stored on the request, so
 a crash-replayed request reruns with the same metadata; tools read it during
-execution via `mash.logging.get_request_metadata()`, and the companion's
-children inherit it.
+execution via `mash.logging.get_request_metadata()`, and the companion
+passes it to the request it routes to.
 
 A body under `/api/v1` may be at most 4 MiB; a larger one gets
 `413 BODY_TOO_LARGE` before the API key is checked.
 
 The host is the trust boundary. The app asserts `app_id` and `policy_id`,
 and the host stores them on the request and its turns and never shows them
-to the model. The companion's children carry the same app and policy, set by
-the host's `/h2a` relay, so an agent cannot act under another policy.
+to the model. The request the companion routes to carries the same app and
+policy, set by the host's `/h2a` relay, so an agent cannot act under another
+policy.
 `search_conversations` takes scope `session` (this agent's turns in this
 session, the default) or `app` (this agent's turns in every session of the
 app).
@@ -1022,9 +1019,9 @@ host. Without it the pool has none of them.
 
 ## Structured Output
 
-An event's `structured_output` is a JSON schema. It becomes the companion
-request's structured-output schema, and the event's `response` carries the
-`structured_output` the request returned. A schema that fails validation
+An event's `structured_output` is a JSON schema. The companion passes it to
+the request it routes to as that request's structured-output schema, and the
+event's `response` carries the `structured_output` the request returned. A schema that fails validation
 gets `400 INVALID_STRUCTURED_OUTPUT` and no event is stored.
 
 ```json
@@ -1066,8 +1063,8 @@ endpoint depends on observability being enabled.
 Every request is recorded as OpenTelemetry spans: `invoke_agent <agent>` for
 the run, `chat <model>` for each model call (token usage under `gen_ai.usage.*`),
 `execute_tool <tool>` for each tool call, and `mash.step <n>`,
-`mash.context_load` and `mash.interaction <type>` for the rest. `RunSubAgents`
-children nest under the call that started them. The admin UI's trace drawer
+`mash.context_load` and `mash.interaction <type>` for the rest. The
+companion's request records its classifier call as `chat <model>` too. The admin UI's trace drawer
 and `GET /api/v1/telemetry/trace/analysis` show these spans, and `/trace` in
 the REPL summarizes them.
 

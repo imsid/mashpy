@@ -79,7 +79,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
     ) -> str:
         self._turn_counter += 1
         turn_id = f"turn-{self._turn_counter}"
-        await self.store.save_turn(
+        await self.store.append_entry(
             trace_id=turn_id,
             session_id=session_id,
             agent_id=agent_id or self.agent_id,
@@ -100,7 +100,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         """Save turns (name, replayable, summary) at created_at 1, 2, 3, ..."""
         for index, (name, replayable, summary) in enumerate(spec, start=1):
             trace_id = f"{self.agent_id}-{name}"
-            await self.store.save_turn(
+            await self.store.append_entry(
                 trace_id=trace_id,
                 session_id=session_id,
                 agent_id=self.agent_id,
@@ -117,31 +117,33 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
                     (float(index), trace_id),
                 )
 
+    def _sid(self, name: str) -> str:
+        return f"{name}-{self.agent_id}"
+
     def _names(self, turns: list[dict[str, Any]]) -> list[str]:
         return [turn["trace_id"].removeprefix(f"{self.agent_id}-") for turn in turns]
 
     async def test_replay_turns_without_a_summary_are_every_replayable_turn(self) -> None:
         await self._replay_fixture(
-            "replay-1",
+            self._sid("replay-1"),
             [("t1", True, False), ("t2", True, False), ("wf", False, False), ("t3", True, False)],
         )
 
-        turns = await self.store.get_replay_turns("replay-1", self.agent_id)
+        turns = await self.store.get_replay_turns(self._sid("replay-1"))
 
         self.assertEqual(self._names(turns), ["t1", "t2", "t3"])
         self.assertNotIn("signals", turns[0])
         self.assertEqual(turns[0]["user_message"], "u-t1")
-        self.assertEqual(await self.store.get_replay_turns("replay-none", self.agent_id), [])
+        self.assertEqual(await self.store.get_replay_turns(self._sid("replay-none")), [])
 
     async def test_replay_turns_by_trace_id_are_those_turns_in_order(self) -> None:
         await self._replay_fixture(
-            "replay-3",
+            self._sid("replay-3"),
             [("t1", True, False), ("t2", True, False), ("t3", True, False)],
         )
 
         turns = await self.store.get_replay_turns(
-            "replay-3",
-            self.agent_id,
+            self._sid("replay-3"),
             trace_ids=[f"{self.agent_id}-t3", f"{self.agent_id}-t1", "not-in-session"],
         )
 
@@ -149,14 +151,14 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         # Another session's turn is not returned even when named.
         self.assertEqual(
             await self.store.get_replay_turns(
-                "replay-other", self.agent_id, trace_ids=[f"{self.agent_id}-t1"]
+                self._sid("replay-other"), trace_ids=[f"{self.agent_id}-t1"]
             ),
             [],
         )
 
     async def test_replay_turns_start_at_the_latest_summary(self) -> None:
         await self._replay_fixture(
-            "replay-2",
+            self._sid("replay-2"),
             [
                 ("t1", True, False),
                 ("sum-old", True, True),
@@ -170,34 +172,34 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(
-            self._names(await self.store.get_replay_turns("replay-2", self.agent_id)),
+            self._names(await self.store.get_replay_turns(self._sid("replay-2"))),
             ["sum-new", "t3", "t4", "t5"],
         )
         # With a turn count, the summary and the last turns after it.
         self.assertEqual(
-            self._names(await self.store.get_replay_turns("replay-2", self.agent_id, turns=2)),
+            self._names(await self.store.get_replay_turns(self._sid("replay-2"), turns=2)),
             ["sum-new", "t4", "t5"],
         )
         self.assertEqual(
-            self._names(await self.store.get_replay_turns("replay-2", self.agent_id, turns=0)),
+            self._names(await self.store.get_replay_turns(self._sid("replay-2"), turns=0)),
             ["sum-new"],
         )
 
     async def test_replay_turns_with_a_count_are_the_last_turns(self) -> None:
         await self._replay_fixture(
-            "replay-4",
+            self._sid("replay-4"),
             [("t1", True, False), ("t2", True, False), ("wf", False, False), ("t3", True, False)],
         )
 
         self.assertEqual(
-            self._names(await self.store.get_replay_turns("replay-4", self.agent_id, turns=2)),
+            self._names(await self.store.get_replay_turns(self._sid("replay-4"), turns=2)),
             ["t2", "t3"],
         )
 
-    async def test_save_turn_is_a_no_op_for_an_existing_trace_id(self) -> None:
+    async def test_append_entry_is_a_no_op_for_an_existing_trace_id(self) -> None:
         trace_id = f"replayed-{uuid.uuid4().hex}"
         for total in (42, 99):
-            await self.store.save_turn(
+            await self.store.append_entry(
                 trace_id=trace_id,
                 session_id="session-1",
                 agent_id=self.agent_id,
@@ -528,7 +530,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
                 context_tokens=tokens,
             )
         # Saving a turn again (a replayed turn.persist) changes nothing.
-        await self.store.save_turn(
+        await self.store.append_entry(
             trace_id="turn-3",
             session_id="s-1",
             agent_id=self.agent_id,
@@ -808,6 +810,147 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(math.isclose(float(results[0]["score"]), 0.5))
         self.assertTrue(math.isclose(float(results[1]["score"]), 1.0 / 3.0))
         self.assertTrue(math.isclose(float(results[2]["score"]), 0.25))
+
+    async def _entry(
+        self,
+        session_id: str,
+        name: str,
+        *,
+        agent_id: str | None = None,
+        tokens: int = 0,
+        summary: bool = False,
+        user_message: str | None = None,
+        agent_response: str | None = None,
+    ) -> int:
+        return await self.store.append_entry(
+            trace_id=f"{self.agent_id}-{name}",
+            session_id=session_id,
+            agent_id=agent_id or self.agent_id,
+            user_message=user_message if user_message is not None else f"u-{name}",
+            agent_response=agent_response if agent_response is not None else f"a-{name}",
+            signals={},
+            context_tokens=tokens,
+            tokens=tokens,
+            metadata={"type": "summary"} if summary else None,
+        )
+
+    async def test_append_entry_numbers_a_session_and_counts_its_board(self) -> None:
+        session_id = f"board-{uuid.uuid4().hex}"
+        other_session = f"board-{uuid.uuid4().hex}"
+
+        self.assertEqual(await self._entry(session_id, "e1", tokens=10), 1)
+        self.assertEqual(
+            await self._entry(session_id, "e2", agent_id=self.other_agent_id, tokens=5), 2
+        )
+        self.assertEqual(await self._entry(other_session, "x1", tokens=7), 1)
+        self.assertEqual(await self._entry(session_id, "s3", tokens=3, summary=True), 3)
+        self.assertEqual(await self._entry(session_id, "e4", tokens=4), 4)
+        # Appending a stored trace id again returns its number and adds nothing.
+        self.assertEqual(await self._entry(session_id, "e2", tokens=99), 2)
+
+        entries = await self.store.read_entries(session_id)
+
+        self.assertEqual([e["seq"] for e in entries], [1, 2, 3, 4])
+        self.assertEqual([e["board_tokens"] for e in entries], [10, 15, 3, 7])
+        self.assertEqual(entries[1]["agent_id"], self.other_agent_id)
+        last = await self.store.last_entry(session_id)
+        self.assertEqual((last["seq"], last["board_tokens"]), (4, 7))
+        self.assertIsNone(await self.store.last_entry(f"board-{uuid.uuid4().hex}"))
+
+    async def test_read_entries_by_range(self) -> None:
+        session_id = f"board-{uuid.uuid4().hex}"
+        for index in range(1, 7):
+            await self._entry(session_id, f"e{index}")
+
+        async def seqs(**kwargs: Any) -> list[int]:
+            return [e["seq"] for e in await self.store.read_entries(session_id, **kwargs)]
+
+        self.assertEqual(await seqs(after=2), [3, 4, 5, 6])
+        self.assertEqual(await seqs(after=2, limit=2), [3, 4])
+        self.assertEqual(await seqs(before=5), [1, 2, 3, 4])
+        self.assertEqual(await seqs(before=5, limit=2), [3, 4])
+        self.assertEqual(await seqs(after=1, before=4), [2, 3])
+
+    async def test_search_entries_stays_in_its_session(self) -> None:
+        session_id = f"board-{uuid.uuid4().hex}"
+        await self._entry(session_id, "e1", user_message="book a flight to lisbon")
+        await self._entry(
+            session_id, "e2", agent_id=self.other_agent_id, agent_response="the lisbon itinerary"
+        )
+        await self._entry(session_id, "e3", user_message="something else")
+        await self._entry(f"board-{uuid.uuid4().hex}", "x1", user_message="lisbon too")
+
+        results = await self.store.search_entries(session_id, "lisbon")
+
+        self.assertEqual(sorted(r["seq"] for r in results), [1, 2])
+        by_seq = {r["seq"]: r for r in results}
+        self.assertEqual(by_seq[2]["agent_id"], self.other_agent_id)
+        self.assertIn("lisbon", by_seq[1]["snippet"])
+        self.assertEqual(await self.store.search_entries(session_id, "  "), [])
+
+    async def test_read_board_starts_at_the_latest_summary(self) -> None:
+        session_id = f"board-{uuid.uuid4().hex}"
+        await self._entry(session_id, "e1")
+        await self._entry(session_id, "s2", summary=True)
+        await self._entry(session_id, "e3", agent_id=self.other_agent_id)
+        await self._entry(session_id, "s4", summary=True)
+        await self._entry(session_id, "e5")
+
+        async def seqs(**kwargs: Any) -> list[int]:
+            return [e["seq"] for e in await self.store.read_board(session_id, **kwargs)]
+
+        self.assertEqual(await seqs(), [4, 5])
+        # A recovered request reads the board as it was at its context load.
+        self.assertEqual(await seqs(up_to=3), [2, 3])
+        self.assertEqual(await seqs(up_to=1), [1])
+        self.assertEqual(await self.store.read_board(f"board-{uuid.uuid4().hex}"), [])
+
+    async def test_list_board_sessions_counts_every_agents_entries(self) -> None:
+        conversation = f"board-{uuid.uuid4().hex}"
+        own = f"board-{uuid.uuid4().hex}"
+        with psycopg.connect(self.database_url, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO sessions (session_id, host_id, policy_id) VALUES (%s, 'h', 'p')",
+                (conversation,),
+            )
+        self.addCleanup(self._delete_session_row, conversation)
+        await self.store.append_entry(
+            trace_id=f"{self.agent_id}-c1", session_id=conversation, agent_id=self.agent_id,
+            user_message="first message", agent_response="a", signals={},
+            context_tokens=4, tokens=4, app_id="app-board",
+        )
+        await self.store.append_entry(
+            trace_id=f"{self.agent_id}-c2", session_id=conversation,
+            agent_id=self.other_agent_id, user_message="second", agent_response="b",
+            signals={}, context_tokens=6, tokens=6, app_id="app-board",
+        )
+        # A session outside the sessions table is an agent's own, not a conversation.
+        await self._entry(own, "o1")
+
+        rows = await self.store.list_board_sessions(limit=50, app_id="app-board")
+
+        [row] = rows
+        self.assertEqual(
+            (row["session_id"], row["turn_count"], row["context_tokens"], row["first_message"]),
+            (conversation, 2, 10, "first message"),
+        )
+        self.assertEqual(await self.store.list_board_sessions(limit=50, app_id="nobody"), [])
+
+    def _delete_session_row(self, session_id: str) -> None:
+        with psycopg.connect(self.database_url, autocommit=True) as conn:
+            conn.execute("DELETE FROM sessions WHERE session_id = %s", (session_id,))
+
+    async def test_board_indexes_exist(self) -> None:
+        with psycopg.connect(self.database_url, autocommit=True) as conn:
+            names = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT indexname FROM pg_indexes WHERE tablename IN ('memory_turns', 'sessions')"
+                )
+            }
+        self.assertIn("idx_memory_turns_session_seq", names)
+        self.assertIn("sessions_host_policy", names)
+        self.assertNotIn("sessions_host", names)
 
     async def test_semantic_search_is_not_implemented(self) -> None:
         with self.assertRaises(NotImplementedError):

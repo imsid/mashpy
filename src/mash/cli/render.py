@@ -744,7 +744,7 @@ def _activity(
             running = sum(1 for child in view.children if not child.ended)
             return f"waiting on {running} agent" + ("" if running == 1 else "s")
         display = tool_display(tool, tool_lines)
-        return f"{display} · {tool.note}" if tool.note else display
+        return display
     if view.phase in ("answering", "starting", "finishing"):
         return view.phase
     return "thinking"

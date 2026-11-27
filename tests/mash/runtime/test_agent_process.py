@@ -35,7 +35,7 @@ from mash.runtime.factory import build_turn_agent
 from mash.tools.sandbox import RunCodeTool, SandboxGetTool, SandboxPutTool
 from mash.testing.runtime_fixtures import (
     DEFAULT_POLICY,
-    DelegatingLLMProvider,
+    RoutingLLMProvider,
     build_spec,
     metadata,
     patch_companion_llm,
@@ -447,7 +447,7 @@ class H2ARelayAuthTests(unittest.TestCase):
             parent=_parent("req-1"), session_id=session_id,
         )
         asyncio.run(
-            self.memory.save_turn(
+            self.memory.append_entry(
                 trace_id=f"{session_id}-t",
                 session_id=session_id,
                 agent_id=agent_id,
@@ -618,12 +618,8 @@ class H2ARelayAuthTests(unittest.TestCase):
 
 
 class AgentProcessEndToEndTests(unittest.IsolatedAsyncioTestCase):
-    async def test_the_companion_runs_a_host_agent_through_the_host_relay(self) -> None:
-        router = patch_companion_llm(
-            DelegatingLLMProvider(
-                final_text="delegated-ok", subagent_id="research", subagent_prompt="analyze"
-            )
-        )
+    async def test_the_companion_routes_to_a_host_agent_through_the_host_relay(self) -> None:
+        router = patch_companion_llm(RoutingLLMProvider("research"))
         router.start()
         self.addCleanup(router.stop)
         # One shared Postgres: every process's stores see the same rows.
@@ -681,35 +677,31 @@ class AgentProcessEndToEndTests(unittest.IsolatedAsyncioTestCase):
                         accepted["request_id"], timeout=10
                     )
                 ]
-                # The subagent ran in its own process, in a session of its own.
+                route = events[-1]["data"]["response"]["metadata"]["routed"]
+                routed = [
+                    event
+                    async for event in host_pool.get_client("research").stream_response(
+                        route["request_id"], timeout=10
+                    )
+                ]
+                # The routed request ran in its own process, in the
+                # conversation's session.
                 [child] = await runtime_store.list_child_requests(accepted["request_id"])
-                turns = await memory_store.get_turns(
-                    session_id=child["session_id"], agent_id="research"
-                )
+                entries = await memory_store.read_entries("s-1")
                 turn_apps = {(t["agent_id"], t["app_id"]) for t in memory_store._turns}
         finally:
             await primary_server.runtime.shutdown()
             await research_server.runtime.shutdown()
 
         self.assertEqual(events[-1]["event"], "request.completed")
-        self.assertEqual(events[-1]["data"]["response"]["text"], "delegated-ok")
-        # The parent's RunSubAgents call names its child, whose events stay in
-        # the child's own log.
-        call_starts = [
-            event["data"]["payload"]
-            for event in events
-            if event["event"] == "agent.trace"
-            and event["data"]["event_type"] == "execute_tool.start"
-            and event["data"]["payload"]["attributes"]["gen_ai.tool.name"] == "RunSubAgents"
-        ]
-        self.assertEqual(len(call_starts), 1)
-        self.assertEqual(
-            [child["agent_id"] for child in call_starts[0]["subagents"]], ["research"]
-        )
-        self.assertEqual(turns[-1]["user_message"], "analyze")
-        # The host copied the companion request's app onto the child, so both
-        # turns are stored for that app.
-        self.assertEqual(turn_apps, {("companion", "app-1"), ("research", "app-1")})
+        self.assertEqual(route["agent_id"], "research")
+        self.assertEqual(routed[-1]["event"], "request.completed")
+        self.assertEqual(routed[-1]["data"]["response"]["text"], "research-ok")
+        self.assertEqual((child["request_id"], child["session_id"]), (route["request_id"], "s-1"))
+        self.assertEqual([e["user_message"] for e in entries], ["delegate"])
+        # The host copied the companion request's app onto the routed request,
+        # whose entry is the only one: the companion writes none.
+        self.assertEqual(turn_apps, {("research", "app-1")})
 
 
 if __name__ == "__main__":

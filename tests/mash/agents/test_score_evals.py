@@ -210,7 +210,20 @@ class RunExperimentWorkflowTests(unittest.TestCase):
                 if phase == "execute":
                     if row_id in (host_failures or set()):
                         raise RuntimeError(f"host failed {row_id}")
-                    return _host_payload(f"out-{row_id}")
+                    if _agent_id == "companion":
+                        # The companion routes the row to pilot and ends.
+                        return {
+                            "response": {
+                                "text": "",
+                                "metadata": {
+                                    "routed": {
+                                        "agent_id": "pilot",
+                                        "request_id": f"{request_id}-child",
+                                    }
+                                },
+                            }
+                        }
+                    return _host_payload(f"out-{row_id.removesuffix('-child')}")
                 scores = judge_map.get(row_id)
                 if scores is None:
                     return {"response": {"structured_output": {"json_text": "bad"}}}
@@ -281,10 +294,11 @@ class RunExperimentWorkflowTests(unittest.TestCase):
         runs = asyncio.run(service.list_runs(result.experiment_id, limit=1000))
         self.assertTrue(all(run.status == "scored" for run in runs))
         self.assertTrue(all(run.metrics is not None for run in runs))
-        # A row counts the companion's request and the child it ran on pilot,
-        # which ran in a session of its own.
+        # A row counts the companion's request and the request it routed to
+        # pilot, and its output is pilot's answer.
         self.assertEqual(runs[0].metrics["steps"], 2)
         self.assertEqual([a["agent_id"] for a in runs[0].metrics["agents"]], ["pilot"])
+        self.assertEqual(sorted(run.actual_output for run in runs), ["out-0", "out-1"])
 
     def test_host_and_judge_failures_are_isolated(self) -> None:
         result, service, calls = self._run(
