@@ -35,6 +35,7 @@ from ..host.directory import append_context_block
 from ..requests import (
     app_id_from_request_metadata,
     append_runtime_event,
+    is_conversation_request,
     policy_from_request_metadata,
 )
 
@@ -437,6 +438,8 @@ async def _persist_turn_payload(
         agent_response=response.text,
         signals=signals,
         context_tokens=int(context_tokens),
+        # The entry's size on the board: the request's context size.
+        tokens=int(context_tokens),
         metadata=response_metadata,
         workflow_id=workflow_id,
         workflow_run_id=workflow_run_id,
@@ -547,7 +550,9 @@ async def load_request_context(
 
     The event holds what a recovered request needs to build the same context:
     the system prompt as rendered now (the Cortex profile changes over time),
-    the trace ids of the turns replayed, and the compaction this load ran.
+    and for a request the companion routed the board position it read
+    (``board.up_to``), or else the trace ids of the turns replayed and the
+    compaction this load ran.
     """
     metadata = dict(request_metadata or {})
     app_id = app_id_from_request_metadata(metadata)
@@ -568,8 +573,15 @@ async def load_request_context(
         session_id=session_id,
         message=message,
         system_prompt=system_prompt,
+        conversation=is_conversation_request(metadata),
     )
     compaction = dict(context_payload.get("compaction") or {})
+    loaded: dict[str, Any] = {"status": EndStatus.OK.value, "system_prompt": system_prompt}
+    if "board" in context_payload:
+        loaded["board"] = dict(context_payload["board"])
+    else:
+        loaded["history"] = list(context_payload.get("history") or [])
+        loaded["compaction"] = compaction
     await append_runtime_event(
         runtime,
         RuntimeEvent(
@@ -579,12 +591,7 @@ async def load_request_context(
             session_id=session_id,
             event_type=RuntimeEventType.CONTEXT_LOAD_END.value,
             dedupe_key="context.loaded",
-            payload={
-                "status": EndStatus.OK.value,
-                "system_prompt": system_prompt,
-                "history": list(context_payload.get("history") or []),
-                "compaction": compaction,
-            },
+            payload=loaded,
         ),
     )
     return initial_state(

@@ -8,6 +8,9 @@ from ..search.types import SearchColumn
 
 # An entry with this metadata ``type`` summarizes the board before it.
 BOARD_SUMMARY = "summary"
+# An entry with this metadata ``type`` records a workflow run the companion
+# started: its inputs and outcome.
+WORKFLOW_RESULT = "workflow_result"
 
 
 class MemoryStore(Protocol):
@@ -127,6 +130,21 @@ class MemoryStore(Protocol):
         """The session's entry with the highest ``seq``, or None."""
         ...
 
+    async def read_board(
+        self,
+        session_id: str,
+        *,
+        up_to: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """The board an agent starts from, in ``seq`` order.
+
+        The latest ``BOARD_SUMMARY`` entry and every entry after it, or every
+        entry when there is none. With ``up_to``, only entries with
+        ``seq <= up_to``: the position a request recorded at its context load.
+        Entries are shaped as ``read_entries`` returns them.
+        """
+        ...
+
     async def get_turns(
         self,
         session_id: str,
@@ -153,7 +171,6 @@ class MemoryStore(Protocol):
     async def get_replay_turns(
         self,
         session_id: str,
-        agent_id: str,
         *,
         turns: Optional[int] = None,
         trace_ids: Optional[List[str]] = None,

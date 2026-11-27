@@ -466,6 +466,35 @@ class PostgresStore(MemoryStore):
             )
         return self._entry_from_row(rows[0]) if rows else None
 
+    async def read_board(
+        self,
+        session_id: str,
+        *,
+        up_to: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        bound = "AND seq <= %s" if up_to is not None else ""
+        bound_params: List[Any] = [int(up_to)] if up_to is not None else []
+        await self.open()
+        async with self._pool.connection() as conn:
+            rows = await self._fetchall(
+                conn,
+                f"""
+                WITH summary AS (
+                    SELECT seq FROM memory_turns
+                    WHERE session_id = %s AND metadata ->> 'type' = %s {bound}
+                    ORDER BY seq DESC
+                    LIMIT 1
+                )
+                SELECT {self._ENTRY_COLUMNS}
+                FROM memory_turns
+                WHERE session_id = %s
+                  AND seq >= COALESCE((SELECT seq FROM summary), 0) {bound}
+                ORDER BY seq ASC
+                """,
+                [session_id, BOARD_SUMMARY, *bound_params, session_id, *bound_params],
+            )
+        return [self._entry_from_row(row) for row in rows]
+
     async def get_turns(
         self,
         session_id: str,
@@ -567,7 +596,6 @@ class PostgresStore(MemoryStore):
     async def get_replay_turns(
         self,
         session_id: str,
-        agent_id: str,
         *,
         turns: Optional[int] = None,
         trace_ids: Optional[List[str]] = None,
@@ -582,10 +610,10 @@ class PostgresStore(MemoryStore):
                     SELECT trace_id, user_message, agent_response, context_tokens,
                            replayable, metadata, created_at
                     FROM memory_turns
-                    WHERE trace_id = ANY(%s) AND session_id = %s AND agent_id = %s
-                    ORDER BY created_at ASC, trace_id ASC
+                    WHERE trace_id = ANY(%s) AND session_id = %s
+                    ORDER BY seq ASC
                     """,
-                    (list(trace_ids), session_id, agent_id),
+                    (list(trace_ids), session_id),
                 )
             else:
                 # The latest summary checkpoint, then the last ``turns`` turns
@@ -594,35 +622,32 @@ class PostgresStore(MemoryStore):
                     conn,
                     """
                     WITH summary AS (
-                        SELECT trace_id, created_at FROM memory_turns
-                        WHERE session_id = %s AND agent_id = %s
+                        SELECT trace_id, seq FROM memory_turns
+                        WHERE session_id = %s
                           AND replayable AND metadata ->> 'type' = 'summary_checkpoint'
-                        ORDER BY created_at DESC, trace_id DESC
+                        ORDER BY seq DESC
                         LIMIT 1
                     ),
                     tail AS (
                         SELECT trace_id FROM memory_turns AS turn
-                        WHERE session_id = %s AND agent_id = %s
+                        WHERE session_id = %s
                           AND replayable
                           AND (
                               NOT EXISTS (SELECT 1 FROM summary)
-                              OR (turn.created_at, turn.trace_id)
-                                  > (SELECT created_at, trace_id FROM summary)
+                              OR turn.seq > (SELECT seq FROM summary)
                           )
-                        ORDER BY created_at DESC, trace_id DESC
+                        ORDER BY seq DESC
                         LIMIT %s
                     )
                     SELECT trace_id, user_message, agent_response, context_tokens,
                            replayable, metadata, created_at
                     FROM memory_turns
                     WHERE trace_id IN (SELECT trace_id FROM summary UNION ALL SELECT trace_id FROM tail)
-                    ORDER BY created_at ASC, trace_id ASC
+                    ORDER BY seq ASC
                     """,
                     (
                         session_id,
-                        agent_id,
                         session_id,
-                        agent_id,
                         None if turns is None else max(0, int(turns)),
                     ),
                 )

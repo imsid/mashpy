@@ -118,6 +118,30 @@ def parent_request_metadata(parent: Any, *, agent_id: str) -> dict[str, Any]:
             "subagent_id": agent_id,
             "subagent_invoke_opts": dict(invoke_opts),
         }
+    if kind == "conversation":
+        # A request the companion routed: it runs in the companion's session
+        # and reads that session's board.
+        normalized = {
+            "kind": "conversation",
+            "request_id": _require_str(parent, "request_id"),
+            "agent_id": _require_str(parent, "agent_id"),
+            "session_id": _require_str(parent, "session_id"),
+            "started_by": _require_str(parent, "started_by"),
+            "parent_request_id": _require_str(parent, "parent_request_id"),
+        }
+        if normalized["started_by"] != normalized["agent_id"]:
+            raise ValueError("parent.started_by must be parent.agent_id")
+        if normalized["parent_request_id"] != normalized["request_id"]:
+            raise ValueError("parent.parent_request_id must be parent.request_id")
+        event_session_id = parent.get("event_session_id")
+        if event_session_id is not None:
+            if not isinstance(event_session_id, str) or not event_session_id.strip():
+                raise ValueError("parent.event_session_id must be a non-empty string")
+            normalized["event_session_id"] = event_session_id.strip()
+        return {
+            "parent": normalized,
+            "event_session_id": normalized.get("event_session_id"),
+        }
     if kind == "workflow":
         normalized = {
             "kind": "workflow",
@@ -131,7 +155,13 @@ def parent_request_metadata(parent: Any, *, agent_id: str) -> dict[str, Any]:
             "workflow_run_id": normalized["run_id"],
             "task_id": normalized["task_id"],
         }
-    raise ValueError("parent.kind must be 'subagent' or 'workflow'")
+    raise ValueError("parent.kind must be 'subagent', 'conversation' or 'workflow'")
+
+
+def is_conversation_request(request_metadata: dict[str, Any] | None) -> bool:
+    """Whether the request is one the companion routed: it reads its session's board."""
+    parent = (request_metadata or {}).get("parent")
+    return isinstance(parent, dict) and parent.get("kind") == "conversation"
 
 
 async def get_accepted_request(
@@ -353,7 +383,7 @@ async def _submit_request_inner(
     started_by = STARTED_BY_USER
     parent_request_id = None
     parent = (request_metadata or {}).get("parent")
-    if isinstance(parent, dict) and parent.get("kind") == "subagent":
+    if isinstance(parent, dict) and parent.get("kind") in ("subagent", "conversation"):
         started_by = str(parent.get("started_by") or parent.get("agent_id"))
         parent_request_id = parent.get("parent_request_id") or parent.get("request_id")
     host_id = host_id_from_request_metadata(request_metadata)

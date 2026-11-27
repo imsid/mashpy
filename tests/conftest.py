@@ -800,6 +800,17 @@ class _TestMemoryStore:
         rows = [t for t in self._turns if t["session_id"] == session_id]
         return self._entry(max(rows, key=lambda t: t["seq"])) if rows else None
 
+    async def read_board(
+        self, session_id: str, *, up_to: int | None = None
+    ) -> list[dict[str, Any]]:
+        rows = await self.read_entries(
+            session_id, before=None if up_to is None else up_to + 1
+        )
+        start = max(
+            (e["seq"] for e in rows if e["metadata"].get("type") == BOARD_SUMMARY), default=0
+        )
+        return [e for e in rows if e["seq"] >= start]
+
     async def get_turns(
         self,
         session_id: str,
@@ -843,10 +854,24 @@ class _TestMemoryStore:
                 }
         return None
 
+    def _session_rows(self, session_id: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "trace_id": t["trace_id"],
+                "user_message": t.get("user_message", ""),
+                "agent_response": t.get("agent_response", ""),
+                "context_tokens": t.get("context_tokens", 0),
+                "replayable": t.get("replayable", True),
+                "metadata": t.get("metadata") or {},
+                "created_at": float(t.get("created_at") or 0.0),
+            }
+            for t in self._turns
+            if t["session_id"] == session_id
+        ]
+
     async def get_replay_turns(
         self,
         session_id: str,
-        agent_id: str,
         *,
         turns: int | None = None,
         trace_ids: list[str] | None = None,
@@ -855,7 +880,7 @@ class _TestMemoryStore:
             wanted = set(trace_ids)
             rows = [
                 row
-                for row in await self.get_turns(session_id=session_id, agent_id=agent_id)
+                for row in self._session_rows(session_id)
                 if row["trace_id"] in wanted
             ]
             for row in rows:
@@ -863,7 +888,7 @@ class _TestMemoryStore:
             return rows
         rows = [
             row
-            for row in await self.get_turns(session_id=session_id, agent_id=agent_id)
+            for row in self._session_rows(session_id)
             if row["replayable"]
         ]
         for row in rows:

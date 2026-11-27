@@ -4,7 +4,8 @@ The event log is the only record of a running request. The loop keeps its
 state in memory and writes each step's output as events with dedupe keys;
 a request recovered after a crash rebuilds the state from those events:
 
-- ``mash.context_load.end``: the system prompt and the replayed turns
+- ``mash.context_load.end``: the system prompt, and the board position read
+  (a request the companion routed) or the replayed turns
 - ``chat.start`` / ``chat.end``: each model call and its assistant message
 - ``execute_tool.end``: each tool result, the loop's own (AskUser, browser
   handoffs, denied calls) included
@@ -90,13 +91,25 @@ async def rebuild_request_state(
             "the request's context load records no system prompt; it started "
             "before this version of Mash and cannot be continued"
         )
-    context, _ = await context_helpers.build_context_with_history(
-        runtime,
-        session_id,
-        message,
-        system_prompt=loaded["system_prompt"],
-        trace_ids=[str(trace_id) for trace_id in loaded.get("history") or []],
-    )
+    board = loaded.get("board")
+    if isinstance(board, dict):
+        # The board as it was at the context load: entries added since do not
+        # change a recovered request.
+        context, _ = await context_helpers.build_board_context(
+            runtime,
+            session_id,
+            message,
+            system_prompt=loaded["system_prompt"],
+            up_to=int(board.get("up_to") or 0),
+        )
+    else:
+        context, _ = await context_helpers.build_context_with_history(
+            runtime,
+            session_id,
+            message,
+            system_prompt=loaded["system_prompt"],
+            trace_ids=[str(trace_id) for trace_id in loaded.get("history") or []],
+        )
     state = initial_state(
         context=context_helpers.serialize_context(context),
         compaction=dict(loaded.get("compaction") or {}),
