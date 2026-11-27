@@ -81,9 +81,10 @@ profiles are kept.
 | `builder` | Builds Mash apps in its folder of your sandbox (`/home/agent/workspaces/builder/apps/<name>`), installs mashpy with uv, and checks them by importing the pool and running the app's tests. |
 
 The `guide` host is `pilot`, `builder` and the `pilot-changelog` workflow.
-Every request to it goes to the built-in `companion`, which picks `pilot`,
-`builder`, both, or the workflow for each message, continues an agent's
-earlier session when you follow up on its work, and writes the answer.
+Every request to it starts on the built-in `companion`, whose classifier
+picks `pilot`, `builder` or the workflow for each message. The agent it picks
+answers you directly, and every agent in the conversation reads the same
+board of earlier entries, so a follow-up can go to either one.
 
 ## A workflow it ships
 
