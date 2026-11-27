@@ -338,7 +338,7 @@ class RebuildWithHistoryTests(ReplayTestCase):
         with patch.object(loop_module, "load_request_context", _load):
             second = await self._ask(runtime, "next")
         # A turn saved after the load does not change what a recovery replays.
-        await self.memory_store.save_turn(
+        await self.memory_store.append_entry(
             trace_id="later", session_id="s-1", agent_id="replay-app",
             user_message="later", agent_response="later", signals={}, context_tokens=0,
         )

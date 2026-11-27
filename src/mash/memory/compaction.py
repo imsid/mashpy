@@ -84,7 +84,7 @@ async def compact_conversation(
         "agent_id": agent_id,
         "token_usage": {"input": 0, "output": 0},
     }
-    saved_trace_id = await store.save_turn(
+    await store.append_entry(
         trace_id=trace_id,
         session_id=session_id,
         agent_id=agent_id,
@@ -95,4 +95,4 @@ async def compact_conversation(
         metadata=metadata,
     )
 
-    return summary_text, saved_trace_id
+    return summary_text, trace_id

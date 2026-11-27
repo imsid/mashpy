@@ -428,7 +428,7 @@ async def _persist_turn_payload(
     workflow_id = response_metadata.get("workflow_id") or None
     workflow_run_id = response_metadata.get("workflow_run_id") or None
     task_id = response_metadata.get("task_id") or None
-    await runtime.store.save_turn(
+    await runtime.store.append_entry(
         app_id=app_id_from_request_metadata(response_metadata),
         trace_id=resolved_trace_id,
         session_id=session_id,
@@ -1217,7 +1217,7 @@ async def persist_failed_turn(
     metadata.update(failed_turn_metadata(error_payload))
     metadata["trace_id"] = resolved_trace_id
     metadata["token_usage"] = {}
-    await runtime.store.save_turn(
+    await runtime.store.append_entry(
         app_id=app_id_from_request_metadata(metadata),
         trace_id=resolved_trace_id,
         session_id=session_id,

@@ -164,7 +164,7 @@ def _save_workflow_turn(
     memory_store = _runtime_state(client).pool.get_memory_store("changelog-agent")
     turn_id = f"trace-{run_id.replace(':', '-')}"
     asyncio.run(
-        memory_store.save_turn(
+        memory_store.append_entry(
             trace_id=turn_id,
             session_id=f"session-{run_id.replace(':', '-')}",
             agent_id="changelog-agent",

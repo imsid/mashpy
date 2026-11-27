@@ -79,7 +79,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
     ) -> str:
         self._turn_counter += 1
         turn_id = f"turn-{self._turn_counter}"
-        await self.store.save_turn(
+        await self.store.append_entry(
             trace_id=turn_id,
             session_id=session_id,
             agent_id=agent_id or self.agent_id,
@@ -100,7 +100,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         """Save turns (name, replayable, summary) at created_at 1, 2, 3, ..."""
         for index, (name, replayable, summary) in enumerate(spec, start=1):
             trace_id = f"{self.agent_id}-{name}"
-            await self.store.save_turn(
+            await self.store.append_entry(
                 trace_id=trace_id,
                 session_id=session_id,
                 agent_id=self.agent_id,
@@ -197,7 +197,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
     async def test_save_turn_is_a_no_op_for_an_existing_trace_id(self) -> None:
         trace_id = f"replayed-{uuid.uuid4().hex}"
         for total in (42, 99):
-            await self.store.save_turn(
+            await self.store.append_entry(
                 trace_id=trace_id,
                 session_id="session-1",
                 agent_id=self.agent_id,
@@ -528,7 +528,7 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
                 context_tokens=tokens,
             )
         # Saving a turn again (a replayed turn.persist) changes nothing.
-        await self.store.save_turn(
+        await self.store.append_entry(
             trace_id="turn-3",
             session_id="s-1",
             agent_id=self.agent_id,
@@ -808,6 +808,95 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(math.isclose(float(results[0]["score"]), 0.5))
         self.assertTrue(math.isclose(float(results[1]["score"]), 1.0 / 3.0))
         self.assertTrue(math.isclose(float(results[2]["score"]), 0.25))
+
+    async def _entry(
+        self,
+        session_id: str,
+        name: str,
+        *,
+        agent_id: str | None = None,
+        tokens: int = 0,
+        summary: bool = False,
+        user_message: str | None = None,
+        agent_response: str | None = None,
+    ) -> int:
+        return await self.store.append_entry(
+            trace_id=f"{self.agent_id}-{name}",
+            session_id=session_id,
+            agent_id=agent_id or self.agent_id,
+            user_message=user_message if user_message is not None else f"u-{name}",
+            agent_response=agent_response if agent_response is not None else f"a-{name}",
+            signals={},
+            context_tokens=tokens,
+            tokens=tokens,
+            metadata={"type": "summary"} if summary else None,
+        )
+
+    async def test_append_entry_numbers_a_session_and_counts_its_board(self) -> None:
+        session_id = f"board-{uuid.uuid4().hex}"
+        other_session = f"board-{uuid.uuid4().hex}"
+
+        self.assertEqual(await self._entry(session_id, "e1", tokens=10), 1)
+        self.assertEqual(
+            await self._entry(session_id, "e2", agent_id=self.other_agent_id, tokens=5), 2
+        )
+        self.assertEqual(await self._entry(other_session, "x1", tokens=7), 1)
+        self.assertEqual(await self._entry(session_id, "s3", tokens=3, summary=True), 3)
+        self.assertEqual(await self._entry(session_id, "e4", tokens=4), 4)
+        # Appending a stored trace id again returns its number and adds nothing.
+        self.assertEqual(await self._entry(session_id, "e2", tokens=99), 2)
+
+        entries = await self.store.read_entries(session_id)
+
+        self.assertEqual([e["seq"] for e in entries], [1, 2, 3, 4])
+        self.assertEqual([e["board_tokens"] for e in entries], [10, 15, 3, 7])
+        self.assertEqual(entries[1]["agent_id"], self.other_agent_id)
+        last = await self.store.last_entry(session_id)
+        self.assertEqual((last["seq"], last["board_tokens"]), (4, 7))
+        self.assertIsNone(await self.store.last_entry(f"board-{uuid.uuid4().hex}"))
+
+    async def test_read_entries_by_range(self) -> None:
+        session_id = f"board-{uuid.uuid4().hex}"
+        for index in range(1, 7):
+            await self._entry(session_id, f"e{index}")
+
+        async def seqs(**kwargs: Any) -> list[int]:
+            return [e["seq"] for e in await self.store.read_entries(session_id, **kwargs)]
+
+        self.assertEqual(await seqs(after=2), [3, 4, 5, 6])
+        self.assertEqual(await seqs(after=2, limit=2), [3, 4])
+        self.assertEqual(await seqs(before=5), [1, 2, 3, 4])
+        self.assertEqual(await seqs(before=5, limit=2), [3, 4])
+        self.assertEqual(await seqs(after=1, before=4), [2, 3])
+
+    async def test_search_entries_stays_in_its_session(self) -> None:
+        session_id = f"board-{uuid.uuid4().hex}"
+        await self._entry(session_id, "e1", user_message="book a flight to lisbon")
+        await self._entry(
+            session_id, "e2", agent_id=self.other_agent_id, agent_response="the lisbon itinerary"
+        )
+        await self._entry(session_id, "e3", user_message="something else")
+        await self._entry(f"board-{uuid.uuid4().hex}", "x1", user_message="lisbon too")
+
+        results = await self.store.search_entries(session_id, "lisbon")
+
+        self.assertEqual(sorted(r["seq"] for r in results), [1, 2])
+        by_seq = {r["seq"]: r for r in results}
+        self.assertEqual(by_seq[2]["agent_id"], self.other_agent_id)
+        self.assertIn("lisbon", by_seq[1]["snippet"])
+        self.assertEqual(await self.store.search_entries(session_id, "  "), [])
+
+    async def test_board_indexes_exist(self) -> None:
+        with psycopg.connect(self.database_url, autocommit=True) as conn:
+            names = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT indexname FROM pg_indexes WHERE tablename IN ('memory_turns', 'sessions')"
+                )
+            }
+        self.assertIn("idx_memory_turns_session_seq", names)
+        self.assertIn("sessions_host_policy", names)
+        self.assertNotIn("sessions_host", names)
 
     async def test_semantic_search_is_not_implemented(self) -> None:
         with self.assertRaises(NotImplementedError):

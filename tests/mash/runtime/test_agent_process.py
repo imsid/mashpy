@@ -447,7 +447,7 @@ class H2ARelayAuthTests(unittest.TestCase):
             parent=_parent("req-1"), session_id=session_id,
         )
         asyncio.run(
-            self.memory.save_turn(
+            self.memory.append_entry(
                 trace_id=f"{session_id}-t",
                 session_id=session_id,
                 agent_id=agent_id,

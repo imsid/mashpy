@@ -185,12 +185,12 @@ class FailedTurnCompactionTests(unittest.IsolatedAsyncioTestCase):
         from mash.runtime import context as context_helpers
 
         runtime_store, store = build_test_stores()
-        await store.save_turn(
+        await store.append_entry(
             trace_id="t0", session_id="s", agent_id="a", user_message="asked",
             agent_response="answered", signals={}, context_tokens=0,
         )
         failed_metadata = failed_turn_metadata({"error_code": "timeout", "error": "boom"})
-        await store.save_turn(
+        await store.append_entry(
             trace_id="t1", session_id="s", agent_id="a", user_message="failed ask",
             agent_response="", signals={}, context_tokens=0, metadata=failed_metadata,
         )

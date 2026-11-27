@@ -1168,7 +1168,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 )
                 await runtime.open()
                 runtime.agent.config.compaction_token_threshold = 10
-                await runtime.store.save_turn(
+                await runtime.store.append_entry(
                     trace_id="turn-0",
                     session_id=runtime.session_id,
                     agent_id=runtime.agent_id,
@@ -1366,7 +1366,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 runtime = AgentRuntime.from_spec(definition, session_id="host-session", **_test_stores())
                 try:
                     await runtime.open()
-                    await runtime.store.save_turn(
+                    await runtime.store.append_entry(
                         trace_id="turn-1",
                         session_id="s-compact",
                         agent_id=runtime.agent_id,
