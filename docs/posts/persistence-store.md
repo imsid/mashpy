@@ -85,7 +85,7 @@ flowchart TD
 
 A request that fails mid-loop leaves a complete trail in `runtime_event_log` but no row in `memory_turns` or `memory_signals`. The next request in that session sees conversation history as if the failed attempt never happened.
 
-A request in flight keeps its loop state in memory. Its events are its only record: a request recovered after a crash rebuilds the state from them, and replay rebuilds a completed turn's transcript from them too. That is why retention keeps the events of every turn a session still replays.
+A request in flight keeps its loop state in memory. Its events are its only record: a request recovered after a crash rebuilds the state from them.
 
 ## The two protocols side by side
 

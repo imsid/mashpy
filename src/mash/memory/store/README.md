@@ -96,15 +96,16 @@ Behavior:
 - The contract is chronological turn order.
 - `agent_id` is required and scopes reads to one agent.
 
-`get_replay_turns(session_id, agent_id, *, trace_ids=None) -> list[dict]`
+`get_replay_turns(session_id, agent_id, *, turns=None, trace_ids=None) -> list[dict]`
 - The turns a request replays into its context, oldest first: the latest
-  replayable `summary_checkpoint` turn, if any, then every replayable turn
-  after it. Same shape as `get_turns`, without `signals`.
+  replayable `summary_checkpoint` turn, if any, then the last `turns`
+  replayable turns after it, or every one when `turns` is None (compaction).
+  Same shape as `get_turns`, without `signals`.
 - With `trace_ids`, those turns of the session instead: the ones a request
   recorded on `mash.context_load.end`, so a recovered request replays the same
   turns.
-- The runtime calls it when it loads a request's context, unless the agent's
-  `AgentConfig.replay` is `"none"`; compaction bounds how many turns there are.
+- The runtime calls it with `AgentConfig.conversation_history_turns` when it
+  loads a request's context, unless that is 0.
 
 `get_turn(trace_id, agent_id, session_id=None) -> dict | None`
 - One turn by its trace id, the primary key, when it belongs to `agent_id` (and to `session_id` when given). The row has `trace_id`, `session_id`, `user_message`, `agent_response`, `metadata` and `created_at`.

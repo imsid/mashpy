@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any, Optional
 
 from ..core.context import (
@@ -14,19 +13,16 @@ from ..core.context import (
     Response,
     ToolCall,
 )
-from ..core.agent import MAX_CONTEXT_IMAGES
 from ..core.context import ToolResult as ContextToolResult
 from ..memory.compaction import compact_conversation
 from ..memory.failed_turns import format_failed_request, is_failed_turn
 from ..memory.routes import format_routes
 from ..tools.tool_results import context_content
 from . import sessions
-from .transcript import TRANSCRIPT_EVENT_TYPES, group_by_trace, render_messages, turn_messages
+from .transcript import render_messages
 
 if TYPE_CHECKING:
     from .service import AgentRuntime
-
-log = logging.getLogger(__name__)
 
 
 async def get_history_turns(
@@ -74,15 +70,18 @@ async def compact_session(
     *,
     reason: str = "manual",
 ) -> tuple[Optional[str], Optional[str]]:
-    """Summarize the history a request would replay into a summary checkpoint.
+    """Summarize every turn since the last checkpoint into a summary checkpoint.
 
-    The summary reads every turn since the last checkpoint, rendered from the
-    messages replay builds: tool calls and their results included.
+    The summary reads each turn's text: the user message, the agents and
+    workflows that handled it, and the reply.
     """
     session_id_value = str(session_id or self.session_id).strip()
     if not session_id_value:
         raise ValueError("session_id is required")
-    messages, pending, history = await _history(self, session_id_value)
+    turns = await self.store.get_replay_turns(
+        session_id=session_id_value, agent_id=self.agent_id
+    )
+    messages, pending, history = _history(turns)
     if pending:
         messages.append(Message(role=MessageRole.USER, content=pending))
     replaced = [
@@ -103,43 +102,15 @@ async def compact_session(
     )
 
 
-async def _history(
-    self: "AgentRuntime",
-    session_id: str,
-    *,
-    trace_ids: list[str] | None = None,
+def _history(
+    turns: list[dict[str, Any]],
 ) -> tuple[list[Message], str, list[tuple[str, str]]]:
-    """The replayed history: its messages, the blocks that go before the next
-    user message, and each replayed turn's trace id and kind.
+    """The turns as messages, the blocks that go before the next user message,
+    and each turn's trace id and kind.
 
-    The turns are the latest summary checkpoint and every replayable turn
-    after it, or with ``trace_ids`` the turns a request recorded at its
-    context load. Workflow, subagent and command turns share the session but
-    are not part of the user's conversation, so the store leaves them out.
-    ``AgentConfig.replay`` picks the form (see ``REPLAY_MODES``).
+    Each turn is its user message and reply. A summary checkpoint is its
+    summary.
     """
-    mode = self.agent.config.replay
-    if mode == "none" and not trace_ids:
-        return [], "", []
-    turns = await self.store.get_replay_turns(
-        session_id=session_id, agent_id=self.agent_id, trace_ids=trace_ids
-    )
-    grouped: dict[str, list[Any]] = {}
-    if mode == "transcript":
-        wanted = [
-            str(turn.get("trace_id"))
-            for turn in turns
-            if not is_failed_turn(turn)
-            and (turn.get("metadata") or {}).get("type") != "summary_checkpoint"
-        ]
-        if wanted:
-            grouped = group_by_trace(
-                await self.runtime_store.list_trace_events(
-                    self.agent_id, wanted, TRANSCRIPT_EVENT_TYPES
-                )
-            )
-
-    limit = self.agent.config.tool_result_context_chars
     messages: list[Message] = []
     history: list[tuple[str, str]] = []
     # A reply's routes go before the user message that follows it: in the
@@ -154,6 +125,7 @@ async def _history(
         meta = turn.get("metadata") or {}
         user_text = str(turn.get("user_message") or "")
         reply = str(turn.get("agent_response") or "")
+        source = {"source": "history", "trace_id": trace_id}
         if is_failed_turn(turn):
             history.append((trace_id, "failed"))
             failed_text = _blocks(failed_text, format_failed_request(user_text, meta))
@@ -165,39 +137,25 @@ async def _history(
                     Message(
                         role=MessageRole.ASSISTANT,
                         content=reply,
-                        metadata={"source": "history", "trace_id": trace_id, "summary": True},
+                        metadata={**source, "summary": True},
                     )
                 )
             continue
         history.append((trace_id, "turn"))
-        turn_msgs = None
-        if mode == "transcript":
-            turn_msgs = turn_messages(grouped.get(trace_id, []), limit=limit, reply=reply)
-            if turn_msgs is None:
-                log.warning(
-                    "turn %s of session %s has incomplete events; replaying its text",
-                    trace_id,
-                    session_id,
+        if user_text:
+            messages.append(
+                Message(
+                    role=MessageRole.USER,
+                    content=_blocks(routes_text, failed_text, user_text),
+                    metadata=dict(source),
                 )
-        if turn_msgs is None:
-            turn_msgs = []
-            if user_text:
-                turn_msgs.append(Message(role=MessageRole.USER, content=user_text))
-            if reply:
-                turn_msgs.append(Message(role=MessageRole.ASSISTANT, content=reply))
-        prefix = _blocks(routes_text, failed_text)
-        if prefix and turn_msgs and turn_msgs[0].role == MessageRole.USER:
-            turn_msgs[0].content = _blocks(prefix, str(turn_msgs[0].content))
+            )
             routes_text = failed_text = ""
-        for turn_message in turn_msgs:
-            turn_message.metadata = {
-                **dict(turn_message.metadata or {}),
-                "source": "history",
-                "trace_id": trace_id,
-            }
-            messages.append(turn_message)
-        if mode == "replies":
-            routes_text = format_routes(meta.get("routes") or [])
+        if reply:
+            messages.append(
+                Message(role=MessageRole.ASSISTANT, content=reply, metadata=dict(source))
+            )
+        routes_text = format_routes(meta.get("routes") or [])
     return messages, _blocks(routes_text, failed_text), history
 
 
@@ -211,18 +169,28 @@ async def build_context_with_history(
 ) -> tuple[Context, list[str]]:
     """The request's context, and the trace ids of the turns it replays.
 
-    With ``trace_ids``, those turns: the ones a request recorded at its
-    context load, so a recovered request rebuilds the same context.
+    The turns are the latest summary checkpoint and the session's last
+    ``AgentConfig.conversation_history_turns`` turns after it. Workflow,
+    subagent and command turns share the session but are not part of the
+    user's conversation, so the store leaves them out. With ``trace_ids``,
+    those turns: the ones a request recorded at its context load, so a
+    recovered request rebuilds the same context.
     """
     context = Context(
         system_prompt=system_prompt if system_prompt is not None else self.system_prompt
     )
-    messages, pending, history = await _history(self, session_id, trace_ids=trace_ids)
+    turns: list[dict[str, Any]] = []
+    history_turns = self.agent.config.conversation_history_turns
+    if trace_ids is not None or history_turns > 0:
+        turns = await self.store.get_replay_turns(
+            session_id=session_id,
+            agent_id=self.agent_id,
+            turns=history_turns,
+            trace_ids=trace_ids,
+        )
+    messages, pending, history = _history(turns)
     context.messages.extend(messages)
     context.add_user_message(_blocks(pending, message))
-    # Replayed tool results may carry images; keep the most recent few, as a
-    # running request does.
-    context.drop_old_images(MAX_CONTEXT_IMAGES)
     return context, [trace_id for trace_id, _ in history]
 
 

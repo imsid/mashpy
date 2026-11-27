@@ -86,7 +86,6 @@ class RetentionPurgeTests(unittest.IsolatedAsyncioTestCase):
             conn.execute("DELETE FROM eval WHERE eval_id LIKE %s", (like,))
             conn.execute("DELETE FROM events WHERE session_id LIKE %s", (like,))
             conn.execute("DELETE FROM sessions WHERE session_id LIKE %s", (like,))
-            conn.execute("DELETE FROM memory_turns WHERE trace_id LIKE %s", (like,))
         await release_pool(self.url)
 
     def _sql(self, sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
@@ -134,22 +133,6 @@ class RetentionPurgeTests(unittest.IsolatedAsyncioTestCase):
             (run_id, OLD),
         )
         return run_id
-
-    def _turn(self, name: str, created_at: float, *, summary: bool = False) -> str:
-        trace_id = f"{self.tag}-{name}"
-        self._sql(
-            "INSERT INTO memory_turns (trace_id, session_id, agent_id, user_message, "
-            "agent_response, context_tokens, replayable, metadata, created_at) "
-            "VALUES (%s, %s, %s, 'u', 'a', 0, true, %s::jsonb, %s)",
-            (
-                trace_id,
-                f"{self.tag}-s",
-                f"{self.tag}-app",
-                '{"type": "summary_checkpoint"}' if summary else "{}",
-                created_at,
-            ),
-        )
-        return trace_id
 
     def _exists(self, table: str, column: str, value: str) -> bool:
         return bool(self._sql(f"SELECT 1 FROM {table} WHERE {column} = %s", (value,)))
@@ -232,27 +215,6 @@ class RetentionPurgeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertGreaterEqual(counts["requests"], 2)
         self.assertGreaterEqual(counts["workflow_runs"], 1)
-
-    async def test_purge_keeps_requests_whose_turns_are_still_replayed(self) -> None:
-        replayed = self._request("replayed", "completed", OLD)
-        summarized = self._request("summarized", "completed", OLD)
-        for request_id, created_at in ((summarized, 1.0), (replayed, 3.0)):
-            trace_id = self._turn(request_id.removeprefix(f"{self.tag}-"), created_at)
-            self._sql(
-                "UPDATE runtime_request SET trace_id = %s WHERE request_id = %s",
-                (trace_id, request_id),
-            )
-        # A summary checkpoint sits between the two turns: replay starts there.
-        self._turn("checkpoint", 2.0, summary=True)
-
-        await purge(self.pool, cutoff=CUTOFF)
-
-        self.assertTrue(self._exists("runtime_request", "request_id", replayed))
-        self.assertEqual(
-            len(self._sql("SELECT 1 FROM runtime_event_log WHERE request_id = %s", (replayed,))),
-            2,
-        )
-        self.assertFalse(self._exists("runtime_request", "request_id", summarized))
 
     async def test_purge_drains_more_than_one_batch(self) -> None:
         from mash.storage import retention as retention_module

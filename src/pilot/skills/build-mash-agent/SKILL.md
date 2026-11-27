@@ -296,7 +296,7 @@ AgentConfig(
     skills_enabled=True,                  # set False to disable the Skill meta-tool
     prompt_caching_enabled=True,          # cache the system prompt + tools with the provider
     streaming_enabled=True,               # stream tokens and emit chat.delta events
-    replay="transcript",                  # earlier turns: "transcript" (with tool calls and results), "replies" or "none"
+    conversation_history_turns=3,         # earlier turns replayed as text: message and reply (0 = none)
     max_parallel_tools=8,                 # cap on parallel-safe tool calls run concurrently per turn
     subagent_timeout_seconds=3600,       # RunSubAgents wait: the default and the most a call may ask for
     compaction_token_threshold=500_000,   # summarize history once the last turn's context reaches this (0 = off)
@@ -307,8 +307,8 @@ AgentConfig(
 )
 ```
 
-A request replays every turn since the session's last summary checkpoint.
-Once the latest turn's context (all input of its last model call, cached
+A request replays the text of the session's last `conversation_history_turns`
+turns. Once the latest turn's context (all input of its last model call, cached
 included, plus its output, as the provider reports it) reaches
 `compaction_token_threshold`, the session is summarized before
 the next request. Lower it for a model with a small context window.

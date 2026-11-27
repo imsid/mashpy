@@ -202,7 +202,7 @@ class FailedTurnCompactionTests(unittest.IsolatedAsyncioTestCase):
             runtime_store=runtime_store,
             agent=SimpleNamespace(
                 llm=llm,
-                config=AgentConfig(agent_id="a", system_prompt="x", replay="replies"),
+                config=AgentConfig(agent_id="a", system_prompt="x"),
             ),
         )
 

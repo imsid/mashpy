@@ -422,6 +422,7 @@ class PostgresStore(MemoryStore):
         session_id: str,
         agent_id: str,
         *,
+        turns: Optional[int] = None,
         trace_ids: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         await self.open()
@@ -440,6 +441,8 @@ class PostgresStore(MemoryStore):
                     (list(trace_ids), session_id, agent_id),
                 )
             else:
+                # The latest summary checkpoint, then the last ``turns`` turns
+                # after it (every one when ``turns`` is None).
                 rows = await self._fetchall(
                     conn,
                     """
@@ -449,20 +452,32 @@ class PostgresStore(MemoryStore):
                           AND replayable AND metadata ->> 'type' = 'summary_checkpoint'
                         ORDER BY created_at DESC, trace_id DESC
                         LIMIT 1
+                    ),
+                    tail AS (
+                        SELECT trace_id FROM memory_turns AS turn
+                        WHERE session_id = %s AND agent_id = %s
+                          AND replayable
+                          AND (
+                              NOT EXISTS (SELECT 1 FROM summary)
+                              OR (turn.created_at, turn.trace_id)
+                                  > (SELECT created_at, trace_id FROM summary)
+                          )
+                        ORDER BY created_at DESC, trace_id DESC
+                        LIMIT %s
                     )
                     SELECT trace_id, user_message, agent_response, context_tokens,
                            replayable, metadata, created_at
-                    FROM memory_turns AS turn
-                    WHERE session_id = %s AND agent_id = %s
-                      AND replayable
-                      AND (
-                          NOT EXISTS (SELECT 1 FROM summary)
-                          OR (turn.created_at, turn.trace_id)
-                              >= (SELECT created_at, trace_id FROM summary)
-                      )
+                    FROM memory_turns
+                    WHERE trace_id IN (SELECT trace_id FROM summary UNION ALL SELECT trace_id FROM tail)
                     ORDER BY created_at ASC, trace_id ASC
                     """,
-                    (session_id, agent_id, session_id, agent_id),
+                    (
+                        session_id,
+                        agent_id,
+                        session_id,
+                        agent_id,
+                        None if turns is None else max(0, int(turns)),
+                    ),
                 )
         return self._replay_turns_from_rows(rows)
 

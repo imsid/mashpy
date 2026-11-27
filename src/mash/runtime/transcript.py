@@ -3,9 +3,8 @@
 A completed request's events hold everything the model saw and said in it:
 the user message on ``invoke_agent.start``, each step's assistant blocks and
 tool calls on ``chat.end``, and each tool's full result on ``execute_tool.end``.
-Replay rebuilds a turn's messages from them, so an agent continuing a session
-sees its own earlier tool calls and results, not only its replies. A result
-the request saved to a file shows as the same note it showed then.
+The companion's trace tool rebuilds a turn's messages from them, so it can read
+what an agent did in a request, not only its reply.
 """
 
 from __future__ import annotations
@@ -16,12 +15,6 @@ from ..core.context import Message, MessageRole
 from ..core.context import ToolResult as ContextToolResult
 from ..tools.tool_results import context_content
 from .events import RuntimeEvent, RuntimeEventType
-
-TRANSCRIPT_EVENT_TYPES = [
-    RuntimeEventType.INVOKE_AGENT_START.value,
-    RuntimeEventType.CHAT_END.value,
-    RuntimeEventType.EXECUTE_TOOL_END.value,
-]
 
 
 def _call_id(event: RuntimeEvent) -> str:
@@ -100,13 +93,6 @@ def turn_messages(
     return messages
 
 
-def group_by_trace(events: Iterable[RuntimeEvent]) -> dict[str, list[RuntimeEvent]]:
-    grouped: dict[str, list[RuntimeEvent]] = {}
-    for event in events:
-        grouped.setdefault(str(event.trace_id or ""), []).append(event)
-    return grouped
-
-
 def render_messages(messages: Iterable[Message]) -> str:
     """Messages as plain text, for the compaction summary."""
     lines: list[str] = []
@@ -133,4 +119,4 @@ def render_messages(messages: Iterable[Message]) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["TRANSCRIPT_EVENT_TYPES", "group_by_trace", "render_messages", "turn_messages"]
+__all__ = ["render_messages", "turn_messages"]

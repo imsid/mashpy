@@ -173,6 +173,26 @@ class PostgresStoreTests(unittest.IsolatedAsyncioTestCase):
             self._names(await self.store.get_replay_turns("replay-2", self.agent_id)),
             ["sum-new", "t3", "t4", "t5"],
         )
+        # With a turn count, the summary and the last turns after it.
+        self.assertEqual(
+            self._names(await self.store.get_replay_turns("replay-2", self.agent_id, turns=2)),
+            ["sum-new", "t4", "t5"],
+        )
+        self.assertEqual(
+            self._names(await self.store.get_replay_turns("replay-2", self.agent_id, turns=0)),
+            ["sum-new"],
+        )
+
+    async def test_replay_turns_with_a_count_are_the_last_turns(self) -> None:
+        await self._replay_fixture(
+            "replay-4",
+            [("t1", True, False), ("t2", True, False), ("wf", False, False), ("t3", True, False)],
+        )
+
+        self.assertEqual(
+            self._names(await self.store.get_replay_turns("replay-4", self.agent_id, turns=2)),
+            ["t2", "t3"],
+        )
 
     async def test_save_turn_is_a_no_op_for_an_existing_trace_id(self) -> None:
         trace_id = f"replayed-{uuid.uuid4().hex}"

@@ -17,7 +17,7 @@
   message among the host's agents and workflows. After reading a
   `RunSubAgents` result it forwards one agent's answer unchanged with
   `ForwardAnswer`, reruns a session with a corrected brief, or writes its own
-  reply. It replays its turns as replies (`AgentConfig.replay="replies"`):
+  reply. It replays its last 10 turns (`conversation_history_turns=10`):
   each user message, the routes behind the reply, and the reply. Its
   `logs.py` holds `ListAgentTraces`, `InspectAgentTrace` (`view` `summary`,
   `transcript` or `events`) and `GetAgentTurns`, which read an agent's traces

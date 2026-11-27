@@ -299,10 +299,9 @@ lifecycle.
   - `RunSubAgents`, `ForwardAnswer` and `RunWorkflow` wiring for the companion on a request that runs an event, over the host's agents and workflows; no other agent routes
 
 - [`context.py`](./context.py)
-  - session history loading, in the agent's `AgentConfig.replay` form:
-    `transcript` (each turn rebuilt from the event log, tool calls and
-    results included), `replies` (each turn's message and reply, with routes
-    before the next message) or `none`
+  - session history loading: the text of the last
+    `AgentConfig.conversation_history_turns` turns, each user message and
+    reply, with a turn's routes before the next message
   - compaction once the latest turn's `context_tokens` reaches
     `compaction_token_threshold`
   - context serialization/deserialization
@@ -312,8 +311,9 @@ lifecycle.
 
 - [`transcript.py`](./transcript.py)
   - `turn_messages(events, ...)`: one turn's messages from its
-    `invoke_agent.start`, `chat.end` and `execute_tool.end` events, read for
-    every replayed turn in one `list_trace_events` query
+    `invoke_agent.start`, `chat.end` and `execute_tool.end` events, for the
+    companion's `InspectAgentTrace(view="transcript")`
+  - `render_messages(messages)`: messages as plain text, for the compaction summary
 
 - [`requests.py`](./requests.py)
   - request submission helpers

@@ -5,8 +5,7 @@ when it starts and every hour after. Each pass deletes, in batches so no
 statement holds locks for long:
 
 - finished requests (not ``running``) last updated before the window, with
-  their events and their seq counter, except a request whose turn a session
-  still replays (a replayable turn with no summary checkpoint after it);
+  their events and their seq counter;
 - events that belong to no request, created before the window;
 - finished workflow runs before the window, with their steps and step
   events, unless an eval experiment points at the run.
@@ -54,9 +53,7 @@ def retention_days() -> float | None:
 # The requests are locked first and skipped when another transaction holds
 # them, such as a resume in progress. The outer DELETE repeats the filter, so
 # a row changed while this waited is checked again. A request whose event is
-# still started is kept: its watcher has not copied its outcome yet. So is a
-# request whose turn a session still replays, a replayable turn with no
-# summary checkpoint after it: replay rebuilds the turn from its events.
+# still started is kept: its watcher has not copied its outcome yet.
 _PURGE_REQUESTS = """
     WITH expired AS (
         SELECT request_id FROM runtime_request AS r
@@ -64,20 +61,6 @@ _PURGE_REQUESTS = """
           AND NOT EXISTS (
               SELECT 1 FROM events AS e
               WHERE e.request_id = r.request_id AND e.status = 'started'
-          )
-          AND NOT EXISTS (
-              SELECT 1 FROM memory_turns AS t
-              WHERE t.trace_id = r.trace_id
-                AND t.replayable
-                AND t.metadata ->> 'type' IS DISTINCT FROM 'summary_checkpoint'
-                AND NOT EXISTS (
-                    SELECT 1 FROM memory_turns AS c
-                    WHERE c.session_id = t.session_id
-                      AND c.agent_id = t.agent_id
-                      AND c.replayable
-                      AND c.metadata ->> 'type' = 'summary_checkpoint'
-                      AND (c.created_at, c.trace_id) > (t.created_at, t.trace_id)
-                )
           )
         ORDER BY updated_at
         LIMIT %(batch)s

@@ -282,22 +282,6 @@ class _TestRuntimeStore:
             return filtered[-max(1, int(limit)) :]
         return filtered
 
-    async def list_trace_events(
-        self,
-        agent_id: str,
-        trace_ids: list[str],
-        event_types: list[str],
-    ) -> list[RuntimeEvent]:
-        wanted_traces, wanted_types = set(trace_ids), set(event_types)
-        async with self._lock:
-            return [
-                event
-                for event in self._events
-                if event.agent_id == agent_id
-                and event.trace_id in wanted_traces
-                and event.event_type in wanted_types
-            ]
-
     async def has_request(self, request_id: str) -> bool:
         async with self._lock:
             return request_id in self._events_by_request
@@ -788,6 +772,7 @@ class _TestMemoryStore:
         session_id: str,
         agent_id: str,
         *,
+        turns: int | None = None,
         trace_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         if trace_ids is not None:
@@ -815,9 +800,11 @@ class _TestMemoryStore:
             ),
             None,
         )
-        if summary_index is None:
-            return rows
-        return rows[summary_index:]
+        summary = [] if summary_index is None else [rows[summary_index]]
+        tail = rows if summary_index is None else rows[summary_index + 1 :]
+        if turns is not None:
+            tail = tail[len(tail) - max(0, int(turns)) :] if turns > 0 else []
+        return summary + tail
 
     def _app_turns(self, app_id: str, after: float) -> list[dict[str, Any]]:
         rows = [

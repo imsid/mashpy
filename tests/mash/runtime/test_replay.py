@@ -1,9 +1,8 @@
-"""Replay: how a request sees its session's earlier turns.
+"""History: how a request sees its session's earlier turns.
 
-- ``transcript`` (the default): each turn's messages rebuilt from the event log
-- ``replies``: each turn's user message and reply, with its routes before the
-  next user message (the companion)
-- compaction at a context size summarizes what replay would show
+- the text of the last ``conversation_history_turns`` turns: each user message
+  and reply, with a turn's routes before the next user message
+- compaction at a context size summarizes every turn since the last checkpoint
 """
 
 from __future__ import annotations
@@ -30,10 +29,6 @@ from mash.skills.registry import SkillRegistry
 from mash.testing.runtime_fixtures import TEST_IDENTITY
 from mash.tools.base import ToolResult
 from mash.tools.registry import ToolRegistry
-from mash.tools.tool_results import SAVED_TO, context_content, result_file_path
-
-BIG = "y" * 25_000
-
 
 class _Fetch:
     name = "fetch"
@@ -43,7 +38,7 @@ class _Fetch:
     parameters = {"type": "object", "properties": {"what": {"type": "string"}}}
 
     async def execute(self, args: dict[str, Any]) -> ToolResult:
-        return ToolResult.success(BIG if args.get("what") == "big" else f"got {args.get('what')}")
+        return ToolResult.success(f"got {args.get('what')}")
 
     def to_llm_format(self) -> dict[str, Any]:
         return {"name": self.name, "description": self.description, "input_schema": self.parameters}
@@ -168,93 +163,41 @@ class ReplayTestCase(unittest.IsolatedAsyncioTestCase):
         self.fail("the request never ended")
 
 
-class TranscriptReplayTests(ReplayTestCase):
-    async def test_a_later_request_sees_the_earlier_tool_calls_and_results(self) -> None:
+class HistoryTests(ReplayTestCase):
+    async def test_a_later_request_sees_the_earlier_messages_and_replies(self) -> None:
         provider = _Provider()
         runtime = await self._runtime(_Spec(provider))
-        first = await self._ask(runtime, "small")
+        await self._ask(runtime, "small")
         await self._ask(runtime, "next")
 
-        second_turn_first_call = provider.requests[2]
+        # The earlier turn's tool call and result are not replayed.
         self.assertEqual(
-            _shape(second_turn_first_call),
-            [
-                ("user", ["text"]),
-                ("assistant", ["thinking", "tool_call"]),
-                ("tool", ["tool_result"]),
-                ("assistant", ["text"]),
-                ("user", ["text"]),
-            ],
+            [(m.role, m.content[0].data.get("text")) for m in provider.requests[2].messages],
+            [("user", "small"), ("assistant", "answered"), ("user", "next")],
         )
-        history = second_turn_first_call.messages
-        self.assertEqual(history[0].content[0].data["text"], "small")
-        # The thinking block replays as stored, signature included.
-        self.assertEqual(history[1].content[0].data["signature"], "sig")
-        self.assertEqual(history[2].content[0].data["content"], "got small")
-        self.assertEqual(history[3].content[0].data["text"], "answered")
-        self.assertEqual(history[4].content[0].data["text"], "next")
-        self.assertEqual(first.payload["response"]["text"], "answered")
 
-    async def test_a_saved_result_replays_as_its_note(self) -> None:
+    async def test_a_request_replays_only_the_last_turns(self) -> None:
         provider = _Provider()
-        runtime = await self._runtime(_Spec(provider))
-        written: dict[str, bytes] = {}
-
-        async def write(*, path: str, data: bytes, **_: Any) -> None:
-            written[path] = data
-
-        with patch(
-            "mash.runtime.factory.request_sandbox", return_value=("http://host", "tok")
-        ), patch("mash.runtime.engine.steps.write_sandbox_file", side_effect=write):
-            first = await self._ask(runtime, "big")
-        await self._ask(runtime, "next")
-
-        path = result_file_path(first.trace_id, "call-1")
-        self.assertEqual(written, {path: BIG.encode()})
-        live = provider.requests[1].messages[-1].content[0].data["content"]
-        replayed = provider.requests[2].messages[2].content[0].data["content"]
-        note = context_content(BIG, limit=20_000, metadata={SAVED_TO: path})
-        self.assertEqual(live, note)
-        self.assertEqual(replayed, note)
-
-    async def test_without_a_sandbox_a_large_result_replays_whole(self) -> None:
-        provider = _Provider()
-        runtime = await self._runtime(_Spec(provider))
-        await self._ask(runtime, "big")
-        await self._ask(runtime, "next")
-
-        self.assertEqual(provider.requests[2].messages[2].content[0].data["content"], BIG)
-
-    async def test_a_turn_with_incomplete_events_replays_as_its_text(self) -> None:
-        provider = _Provider()
-        runtime = await self._runtime(_Spec(provider))
-        # A turn whose events are gone (purged, or saved by an older version).
-        await self.memory_store.save_turn(
-            trace_id="orphan", session_id="s-1", agent_id="replay-app",
-            user_message="old question", agent_response="old answer", signals={},
-            context_tokens=0,
-        )
-        with self.assertLogs("mash.runtime.context", level="WARNING"):
-            await self._ask(runtime, "next")
+        runtime = await self._runtime(_Spec(provider, conversation_history_turns=2))
+        for message in ("one", "two", "three", "four"):
+            await self._ask(runtime, message)
 
         self.assertEqual(
-            [(m.role, m.content[0].data.get("text")) for m in provider.requests[0].messages],
-            [("user", "old question"), ("assistant", "old answer"), ("user", "next")],
+            [m.content[0].data.get("text") for m in provider.requests[6].messages],
+            ["two", "answered", "three", "answered", "four"],
         )
 
-    async def test_replay_none_shows_no_history(self) -> None:
+    async def test_zero_history_turns_shows_no_history(self) -> None:
         provider = _Provider()
-        runtime = await self._runtime(_Spec(provider, replay="none"))
+        runtime = await self._runtime(_Spec(provider, conversation_history_turns=0))
         await self._ask(runtime, "small")
         await self._ask(runtime, "next")
 
         self.assertEqual(_shape(provider.requests[2]), [("user", ["text"])])
 
-
-class RepliesReplayTests(ReplayTestCase):
-    async def test_replies_show_routes_before_the_next_message(self) -> None:
+    async def test_routes_go_before_the_next_message(self) -> None:
         provider = _Provider()
-        runtime = await self._runtime(_Spec(provider, replay="replies"))
+        runtime = await self._runtime(_Spec(provider))
         await self._ask(runtime, "small")
         [turn] = await self.memory_store.get_turns("s-1", "replay-app")
         routes = [{"agent_id": "web", "session_id": "sess-9", "trace_id": "tr-9", "status": "completed"}]
@@ -326,9 +269,8 @@ class CompactionTests(ReplayTestCase):
         second = await self._ask(runtime, "next")
 
         [summary_input] = provider.summaries
-        self.assertIn("User: small", summary_input)
-        self.assertIn("Assistant called fetch: {'what': 'small'}", summary_input)
-        self.assertIn("Tool result: got small", summary_input)
+        self.assertEqual(summary_input.count("User: small\nAssistant: answered"), 1)
+        self.assertNotIn("fetch", summary_input)
         self.assertEqual(second.payload["compaction_summary_text"], "the summary")
         # The request replays the summary in place of the first turn.
         self.assertEqual(
@@ -355,6 +297,21 @@ class CompactionTests(ReplayTestCase):
 
         await self._ask(runtime, "next")
         self.assertEqual(len(provider.summaries), 1)
+
+    async def test_compaction_summarizes_turns_older_than_the_history(self) -> None:
+        provider = _Provider()
+        runtime = await self._runtime(_Spec(provider, conversation_history_turns=1))
+        first = await self._ask(runtime, "small")
+        second = await self._ask(runtime, "next")
+
+        await runtime.compact_session("s-1")
+
+        [summary_input] = provider.summaries
+        self.assertIn("User: small", summary_input)
+        self.assertIn("User: next", summary_input)
+        turns = await self.memory_store.get_turns("s-1", "replay-app")
+        checkpoint = next(t for t in turns if t["metadata"].get("type") == "summary_checkpoint")
+        self.assertEqual(checkpoint["metadata"]["turn_ids"], [first.trace_id, second.trace_id])
 
     async def test_a_threshold_of_zero_never_compacts(self) -> None:
         provider = _Provider(usage=600)

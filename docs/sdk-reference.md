@@ -299,7 +299,7 @@ AgentConfig(
     skills_enabled=True,                  # register the Skill meta-tool when skills exist
     prompt_caching_enabled=True,          # provider prompt caching
     streaming_enabled=True,               # stream tokens + emit chat.delta events
-    replay="transcript",                  # earlier turns: "transcript", "replies" or "none"
+    conversation_history_turns=3,         # earlier turns replayed as text (0 = none)
     max_parallel_tools=8,                  # cap on parallel-safe tool calls run concurrently per turn
     subagent_timeout_seconds=3600,        # RunSubAgents wait: the default and the most a call may ask for
     compaction_token_threshold=500_000,   # summarize once the last turn's context reaches this (0 = off)
@@ -310,15 +310,13 @@ AgentConfig(
 )
 ```
 
-A request replays every turn of its session since the last summary
-checkpoint. With `replay="transcript"` each turn is rebuilt from the event log:
-the user message, the assistant's messages and tool calls as the model wrote
-them, and the tool results. `replay="replies"` replays each turn's message and
-reply only (the companion), and `replay="none"` replays nothing. Each turn
+A request replays the text of its session's last `conversation_history_turns`
+turns: each user message and reply, with the agents and workflows that handled
+it before the next message. Tool calls and results are not replayed. Each turn
 records `context_tokens`, the context its last model call read and wrote
 (all input, cached included, plus output, as the provider reports it);
-once the latest turn's reaches `compaction_token_threshold`, the session is
-summarized before the next request, tool calls included, and replay starts
+once the latest turn's reaches `compaction_token_threshold`, every turn since
+the last summary is summarized before the next request, and replay starts
 from that summary. Lower the threshold for a model with a small context
 window.
 
@@ -686,8 +684,8 @@ turns, so the agent sees its own earlier work there; the relay accepts only a
 session of the same agent started from the companion's session. The
 companion's saved turn keeps the routes of its children (agent and session,
 or workflow and run, with trace and status) in `metadata["routes"]`; it replays
-its turns as replies (`replay="replies"`), with each reply's routes before the
-next user message, so a follow-up can go back to the session that answered.
+its last 10 turns, with each reply's routes before the next user message, so a
+follow-up can go back to the session that answered.
 After reading the results, the companion forwards one child's completed
 answer unchanged with `ForwardAnswer(request_id)`, which ends the request with
 that answer as the reply and no further model call, or reruns the session with

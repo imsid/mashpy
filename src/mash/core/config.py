@@ -7,15 +7,6 @@ from typing import Any, Dict, List
 
 SystemPrompt = str | List[Dict[str, Any]]
 
-# How a request replays its session's earlier turns:
-# - "transcript": each turn's messages, rebuilt from the event log: the user
-#   message, the assistant's messages and tool calls, and the tool results
-# - "replies": each turn's user message and reply, with the agents and
-#   workflows that handled it (the companion)
-# - "none": no history
-REPLAY_MODES = ("transcript", "replies", "none")
-
-
 @dataclass
 class AgentConfig:
     """Configuration for agent behavior."""
@@ -28,13 +19,16 @@ class AgentConfig:
     skills_enabled: bool = True
     prompt_caching_enabled: bool = True
     streaming_enabled: bool = True
-    replay: str = "transcript"
+    # A request replays the text of the session's last this-many turns: each
+    # user message and reply, with the agents and workflows that handled it.
+    # Tool calls and results are not replayed. 0 is no history.
+    conversation_history_turns: int = 3
     max_parallel_tools: int = 8
     # How long a RunSubAgents call waits for its children, by default and at most.
     subagent_timeout_seconds: int = 3600
     # The session compacts before a request once the latest turn's context
     # (all input of its last model call, cached included, plus output) reaches this. 0
-    # turns compaction off, and the history then grows without bound.
+    # turns compaction off.
     compaction_token_threshold: int = 500_000
     # A tool result longer than this is saved whole to a file in the agent's
     # sandbox folder, and the model gets a note with its size and path to read
@@ -61,8 +55,8 @@ class AgentConfig:
             raise ValueError("max_steps must be positive")
         if self.max_tokens <= 0:
             raise ValueError("max_tokens must be positive")
-        if self.replay not in REPLAY_MODES:
-            raise ValueError(f"replay must be one of {', '.join(REPLAY_MODES)}")
+        if self.conversation_history_turns < 0:
+            raise ValueError("conversation_history_turns must be >= 0")
         if self.max_parallel_tools < 1:
             raise ValueError("max_parallel_tools must be >= 1")
         if isinstance(self.subagent_timeout_seconds, bool) or self.subagent_timeout_seconds <= 0:

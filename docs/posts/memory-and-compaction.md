@@ -1,6 +1,6 @@
 ---
 title: Memory and Compaction
-description: How a session's history becomes the next request's context. Transcripts from the event log, summary checkpoints, compaction by context size, and the signals that make sessions queryable.
+description: How a session's history becomes the next request's context. The last few turns as text, summary checkpoints, compaction by context size, and the signals that make sessions queryable.
 date: 2026-06-10
 author: imsid
 tags:
@@ -10,32 +10,24 @@ tags:
 
 # Memory and Compaction
 
-A session that runs for weeks accumulates hundreds of turns, while the model's context window and your token budget stay fixed. Mash's memory layer is the set of rules for deciding what the next request actually sees. It's built from turns replayed as transcripts, summary checkpoints written when the context gets large, and per-turn signals.
+A session that runs for weeks accumulates hundreds of turns, while the model's context window and your token budget stay fixed. Mash's memory layer is the set of rules for deciding what the next request actually sees. It's built from the last few turns replayed as text, summary checkpoints written when the context gets large, and per-turn signals.
 
 ## What context loading actually loads
 
-The `context.load` step from [the durable loop post](durable-agent-loop.md) asks the memory store for the session's latest **summary checkpoint** and every turn after it:
+The `context.load` step from [the durable loop post](durable-agent-loop.md) asks the memory store for the session's latest **summary checkpoint** and the last `conversation_history_turns` turns after it (3 by default):
 
 ```sql
 -- memory_turns, through idx_memory_turns_session_order
-WITH summary AS (latest replayable summary_checkpoint of the session)
+WITH summary AS (latest replayable summary_checkpoint of the session),
+tail AS (the last N replayable turns after the summary)
 SELECT ... FROM memory_turns
-WHERE session_id = $1 AND agent_id = $2 AND replayable
-  AND (no summary OR (created_at, trace_id) >= the summary's)
+WHERE trace_id IN (summary, tail)
 ORDER BY created_at, trace_id
 ```
 
-A summary checkpoint is a turn whose content is a generated summary of everything before it. When one exists, context becomes the summary plus the turns after it. The full early history is still in the store, but it stops being loaded.
+A summary checkpoint is a turn whose content is a generated summary of everything before it. When one exists, context becomes the summary plus the last turns after it. The full early history is still in the store, but it stops being loaded.
 
-Each turn after the checkpoint is replayed in the form the agent's `AgentConfig.replay` picks:
-
-| `replay` | What a turn becomes |
-|---|---|
-| `transcript` (default) | its messages rebuilt from the event log: the user message, each step's assistant blocks and tool calls as the model wrote them, and each tool result |
-| `replies` | its user message and reply, with the agent sessions behind the reply before the next message (the companion) |
-| `none` | nothing |
-
-A transcript comes from the turn's `invoke_agent.start`, `chat.end` and `execute_tool.end` events, read for every replayed turn in one query on the trace index. An agent continuing a session sees what it fetched and what it changed there, not only what it said. A tool result longer than `tool_result_context_chars` was saved to a file in the agent's sandbox when it ran, and replays as the same note the request showed, naming the file for the model to read with `run_code`.
+Each turn is replayed as text: the user message and the reply. Tool calls and their results are not replayed; an agent continuing a session sees what it said there, and reads files or runs commands again when it needs the detail. A turn that called other agents or workflows carries their routes (agent and session, or workflow and run), which replay puts before the next user message so a follow-up can go back to the session that answered. The companion keeps 10 turns, since its turns are short.
 
 Not every turn is a candidate. A workflow run's turns share a session without being part of a conversation, so they are persisted as **non-replayable** and skipped here, and pipeline work never crowds the context. The companion's `RunSubAgents` children run in sessions of their own: each replays its own agent's earlier work, and the companion keeps the routes to their sessions instead of their turns.
 
@@ -67,7 +59,7 @@ if threshold > 0 and await get_context_tokens(self, session_id) >= threshold:
 
 Manually: `POST /api/v1/agent/{agent_id}/sessions/{session_id}/compact` does the same on demand. This is useful when you know a session just finished a phase and the detail won't matter again.
 
-The summary reads the history a request would replay, rendered as text: user messages, replies, tool calls and their results. The knobs live in `AgentConfig`:
+The summary reads every turn since the last checkpoint, rendered as text: user messages, their routes and replies, including turns older than the ones a request replays. The knobs live in `AgentConfig`:
 
 | Field | Default | Meaning |
 |---|---|---|
