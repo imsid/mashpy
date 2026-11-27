@@ -281,8 +281,8 @@ def build_sessions_router() -> APIRouter:
         """A new live-view link for an open ``browser`` interaction of the event.
 
         It lasts ``MASH_BROWSER_HANDOFF_SECONDS``; earlier links keep working
-        until they expire or the interaction closes. A relayed interaction's
-        link opens the asking child's tab.
+        until they expire or the interaction closes. The link opens the tab
+        of the request that asked: the routed agent's.
         """
         service = _service(request)
         state = state_from_request(request)

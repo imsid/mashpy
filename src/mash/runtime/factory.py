@@ -10,7 +10,6 @@ from mash.tools.mcp import MCPToolAdapter
 from mash.skills.tool import SkillTool
 
 from ..core.agent import Agent
-from ..core.config import SystemPrompt
 from ..browser.sites import check_sites, request_sites
 from ..tools.browser import (
     BROWSER_NAVIGATE,
@@ -23,14 +22,6 @@ from ..tools.browser import (
 from ..tools.sandbox import SANDBOX_TOOL_NAMES, build_sandbox_tools
 from ..tools.runtime import RuntimeToolBuilder
 from ..tools.board import board_tools
-from ..tools.forward import ForwardAnswerTool
-from ..tools.subagent import RunSubAgentsTool
-from ..tools.workflow import RunWorkflowTool
-from .host.directory import (
-    AgentMetadata,
-    append_context_block,
-    build_agent_directory,
-)
 
 if TYPE_CHECKING:
     from .service import AgentRuntime
@@ -40,55 +31,6 @@ def is_companion(self: "AgentRuntime") -> bool:
     from mash.agents.companion import COMPANION_AGENT_ID
 
     return self.agent_id == COMPANION_AGENT_ID
-
-
-def resolve_host_agents(
-    self: "AgentRuntime",
-    host: dict[str, Any] | None,
-    parent_kind: str | None = None,
-) -> dict[str, AgentMetadata]:
-    """Resolve a host snapshot's agent ids to pool metadata.
-
-    Only the companion routes, on a request the user started; a request a
-    RunSubAgents call started gets no agents, so routing is one level deep.
-    """
-    if parent_kind == "subagent" or not host or not is_companion(self):
-        return {}
-    agent_ids = [str(value) for value in host.get("agents") or []]
-    if not agent_ids:
-        return {}
-    access = self.get_host_access()
-    if access is None:
-        raise RuntimeError(
-            f"agent '{self.agent_id}' received a host snapshot but has no host access"
-        )
-    resolved: dict[str, AgentMetadata] = {}
-    for agent_id in agent_ids:
-        metadata = access.get_agent_metadata(agent_id)
-        if metadata is None:
-            raise RuntimeError(
-                f"host '{host.get('host_id')}' references unknown agent '{agent_id}'"
-            )
-        resolved[agent_id] = metadata
-    return resolved
-
-
-def resolve_host_system_prompt(
-    self: "AgentRuntime",
-    host: dict[str, Any] | None,
-    context: str | None = None,
-    *,
-    parent_kind: str | None = None,
-) -> SystemPrompt:
-    """Render the base prompt with the agent directory and request context.
-
-    The directory is appended first, then any caller-supplied per-request
-    ``context`` after it.
-    """
-    prompt = build_agent_directory(
-        self.system_prompt, resolve_host_agents(self, host, parent_kind)
-    )
-    return append_context_block(prompt, context)
 
 
 def register_sandbox_tools(self: "AgentRuntime", agent: Agent) -> None:
@@ -185,15 +127,13 @@ def build_turn_agent(
     tools bound to the request: the conversation tools for its session and
     app, and ``search_cortex`` for its app. The request's policy narrows the
     sandbox and browser tools. A request the companion routed gets
-    ``read_board`` and ``search_board`` over its session. The companion, on a
-    host request the user started, also gets ``RunSubAgents`` over the host's agents and
-    ``RunWorkflow`` over its workflows.
+    ``read_board`` and ``search_board`` over its session. No agent gets
+    ``RunSubAgents``; ``host`` is the request's composition, kept for callers.
     """
+    del host
     base = self.agent
     config = replace(base.config)
     config.system_prompt = self.system_prompt
-    host_agents = resolve_host_agents(self, host, parent_kind)
-    config.system_prompt = build_agent_directory(config.system_prompt, host_agents)
 
     agent = Agent(llm=base.llm, tools=base.tools.copy(), skills=base.skills, config=config)
     agent.set_signal_collector(self.signal_collector)
@@ -210,12 +150,6 @@ def build_turn_agent(
     if cortex is not None and app_id:
         agent.tools.register(cortex.search_tool(app_id))
     apply_policy(self, agent, policy)
-    for name in ("RunSubAgents", "ForwardAnswer", "RunWorkflow"):
-        if name in agent.tools:
-            agent.tools.unregister(name)
-    if parent_kind != "subagent":
-        configure_run_subagents(self, agent, session_id=session_id, host=host, agents=host_agents)
-        configure_run_workflow(self, agent, host=host)
     return agent
 
 
@@ -288,55 +222,6 @@ def _mcp_executor(manager: MCPManager, server_name: str, tool_name: str):
         return extract_mcp_text(await manager.call_tool(server_name, tool_name, args))
 
     return executor
-
-
-def configure_run_subagents(
-    self: "AgentRuntime",
-    agent: Agent,
-    *,
-    session_id: str,
-    host: dict[str, Any] | None,
-    agents: dict[str, AgentMetadata],
-) -> None:
-    """Register ``RunSubAgents`` for the companion, over the host's agents, and
-    ``ForwardAnswer`` to pass one child's answer to the user unchanged."""
-    if not agents:
-        return
-    access = self.get_host_access()
-    host_id = str((host or {}).get("host_id") or "")
-
-    def client_resolver(agent_id: str) -> Any:
-        if agent_id not in agents:
-            raise ValueError(f"agent '{agent_id}' is not in host '{host_id}'")
-        return access.get_client(agent_id)
-
-    agent.tools.register(
-        RunSubAgentsTool(
-            client_resolver=client_resolver,
-            caller_agent_id=self.agent_id,
-            session_id=session_id,
-            host=host,
-            timeout_seconds=agent.config.subagent_timeout_seconds,
-        )
-    )
-    # Passes one child's answer to the user unchanged; the loop handles it.
-    agent.tools.register(ForwardAnswerTool())
-
-
-def configure_run_workflow(
-    self: "AgentRuntime", agent: Agent, *, host: dict[str, Any] | None
-) -> None:
-    """Register ``RunWorkflow`` for the companion when its host has workflows."""
-    workflow_ids = [str(value) for value in (host or {}).get("workflows") or []]
-    if not is_companion(self) or not workflow_ids:
-        return
-    access = self.get_host_access()
-    get_workflow_client = getattr(access, "get_workflow_client", None)
-    if get_workflow_client is None:
-        return
-    agent.tools.register(
-        RunWorkflowTool(relay=get_workflow_client(), workflow_ids=workflow_ids)
-    )
 
 
 def extract_mcp_text(result: Any) -> tuple[str, bool]:

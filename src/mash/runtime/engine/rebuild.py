@@ -65,8 +65,6 @@ def result_payload_from_tool_end(
     }
     if "structured_output" in payload:
         result_payload["structured_output"] = payload["structured_output"]
-    if "reply" in payload:
-        result_payload["reply"] = payload["reply"]
     return result_payload
 
 

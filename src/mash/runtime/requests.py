@@ -326,8 +326,7 @@ def pending_interactions(events: list[RuntimeEvent]) -> list[str]:
     """The ids of the request's open interactions, in the order they opened.
 
     An interaction is open while its ``mash.interaction.start`` has no
-    matching ``mash.interaction.end``. A request waits on one of its own at a
-    time, and on one more per child interaction it relays.
+    matching ``mash.interaction.end``. A request waits on one at a time.
     """
     pending: dict[str, None] = {}
     for event in events:
@@ -590,9 +589,8 @@ def to_public_event(event: RuntimeEvent) -> dict[str, Any]:
             "schema": event.payload.get("schema"),
             "timeout_seconds": event.payload.get("timeout_seconds"),
         }
-        # A browser handoff's live-view link and when it lapses, and the child
-        # a relayed interaction came from.
-        for field_name in ("url", "expires_at", "origin"):
+        # A browser handoff's live-view link and when it lapses.
+        for field_name in ("url", "expires_at"):
             if field_name in event.payload:
                 data[field_name] = event.payload[field_name]
         return {"event": "request.interaction.create", "data": data}

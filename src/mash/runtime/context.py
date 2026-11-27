@@ -20,7 +20,6 @@ from ..memory.failed_turns import format_failed_request, is_failed_turn
 from ..logging import get_request_id
 from ..memory.board import board_label, compact_board
 from ..memory.store import BOARD_SUMMARY
-from ..memory.routes import format_routes
 from ..tools.tool_results import context_content
 from . import sessions
 from .factory import is_companion
@@ -133,12 +132,9 @@ def _history(
     """
     messages: list[Message] = []
     history: list[tuple[str, str]] = []
-    # A reply's routes go before the user message that follows it: in the
-    # reply itself the model reads them as its own writing and copies them
-    # into new replies. A failed request has no reply; its message and error
-    # go there too, after the routes, so "try again" refers to it. Only the
-    # model sees these blocks: stored turns keep their text.
-    routes_text = ""
+    # A failed request has no reply; its message and error go before the user
+    # message that follows, so "try again" refers to it. Only the model sees
+    # this block: stored turns keep their text.
     failed_text = ""
     for turn in turns:
         trace_id = str(turn.get("trace_id"))
@@ -166,17 +162,16 @@ def _history(
             messages.append(
                 Message(
                     role=MessageRole.USER,
-                    content=_blocks(routes_text, failed_text, user_text),
+                    content=_blocks(failed_text, user_text),
                     metadata=dict(source),
                 )
             )
-            routes_text = failed_text = ""
+            failed_text = ""
         if reply:
             messages.append(
                 Message(role=MessageRole.ASSISTANT, content=reply, metadata=dict(source))
             )
-        routes_text = format_routes(meta.get("routes") or [])
-    return messages, _blocks(routes_text, failed_text), history
+    return messages, failed_text, history
 
 
 async def build_context_with_history(

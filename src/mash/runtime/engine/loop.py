@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -34,8 +33,6 @@ from ...logging import (
     bound_trace_id,
 )
 from ...logging.trace_context import bound_workflow_ids
-from ...tools.forward import FORWARD_ANSWER
-from ...tools.subagent import bound_interaction_relay
 from .. import context as context_helpers
 from ..errors import classify_error, retry_transient
 from ..events import RuntimeEventType
@@ -323,27 +320,6 @@ class RequestRun:
             ),
         }
 
-    async def _await_close(self, interaction_id: str) -> dict[str, Any]:
-        """Wait, without a deadline, for an interaction's ``interaction.end``.
-
-        A relayed interaction has no deadline of its own: the child's closes it.
-        """
-        waiter = asyncio.Event()
-        self._interaction_waiters[interaction_id] = waiter
-        try:
-            while True:
-                # Cleared before the read, so an answer stored after the read
-                # still wakes the wait.
-                waiter.clear()
-                end = await self._interaction_end(interaction_id)
-                if end is not None:
-                    return dict(end.payload or {})
-                if self.cancelled.is_set():
-                    return {"response": None, "cancelled": True}
-                await waiter.wait()
-        finally:
-            self._interaction_waiters.pop(interaction_id, None)
-
     # --- tool calls ----------------------------------------------------------
 
     async def _ask_user(
@@ -443,77 +419,6 @@ class RequestRun:
             "result": result,
         }
 
-    async def _forward_answer(
-        self, state: dict[str, Any], *, tool_call: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Check a ForwardAnswer call; its result payload, with the reply when accepted.
-
-        The child is looked up in the full ``RunSubAgents`` results this request
-        recorded on ``execute_tool.end``, so an answer the context shows as a
-        saved file's note still forwards whole. A refusal is an error result,
-        and the model goes on.
-        """
-
-        def refused(message: str) -> dict[str, Any]:
-            return {
-                "tool_call_id": tool_call.get("id", ""),
-                "tool_name": FORWARD_ANSWER,
-                "duration_ms": 0,
-                "result": {"content": message, "is_error": True, "metadata": {}},
-            }
-
-        calls = list((state.get("action") or {}).get("tool_calls") or [])
-        if len(calls) != 1:
-            return refused(
-                "ForwardAnswer must be the only tool call in its step; call it alone "
-                "after RunSubAgents has returned."
-            )
-        request_id = str((tool_call.get("arguments") or {}).get("request_id") or "").strip()
-        if not request_id:
-            return refused("request_id is required")
-        entry = None
-        for event in await self.runtime.runtime_store.list_request_events(self.request_id):
-            payload = event.payload or {}
-            if (
-                event.event_type != RuntimeEventType.EXECUTE_TOOL_END.value
-                or (payload.get("attributes") or {}).get("gen_ai.tool.name") != "RunSubAgents"
-            ):
-                continue
-            result = payload.get("result") or {}
-            if result.get("is_error"):
-                continue
-            try:
-                entries = json.loads(str(result.get("content") or ""))
-            except ValueError:
-                continue
-            for candidate in entries if isinstance(entries, list) else []:
-                if isinstance(candidate, dict) and candidate.get("request_id") == request_id:
-                    entry = candidate
-        if entry is None:
-            return refused(
-                f"no RunSubAgents entry with request_id '{request_id}' in this turn"
-            )
-        status = entry.get("status")
-        if status != "completed":
-            return refused(
-                f"the child request is {status}, not completed: inspect it with "
-                "InspectAgentTrace and report what happened instead of forwarding"
-            )
-        response = entry.get("response")
-        if not isinstance(response, str) or not response.strip():
-            return refused("the child has no text response to forward; write your own reply")
-        return {
-            "tool_call_id": tool_call.get("id", ""),
-            "tool_name": FORWARD_ANSWER,
-            "duration_ms": 0,
-            "result": {
-                "content": json.dumps({"forwarded": request_id}),
-                "is_error": False,
-                "metadata": {"forwarded": request_id},
-            },
-            "reply": response,
-        }
-
     async def _loop_handled_call(
         self,
         state: dict[str, Any],
@@ -554,13 +459,6 @@ class RequestRun:
         tool_call: dict[str, Any],
     ) -> dict[str, Any]:
         name = str(tool_call.get("name") or "")
-        if name == FORWARD_ANSWER:
-            return await self._loop_handled_call(
-                state,
-                tool_call=tool_call,
-                loop_index=loop_index,
-                run=lambda: self._forward_answer(state, tool_call=tool_call),
-            )
         handler = {"AskUser": self._ask_user, "browser_handoff": self._browser_handoff}.get(name)
         if handler is not None:
             return await self._loop_handled_call(
@@ -571,15 +469,13 @@ class RequestRun:
                     tool_call=tool_call, loop_index=loop_index, call_index=call_index
                 ),
             )
-        # A RunSubAgents or RunWorkflow call derives its child ids or run
-        # dedup key from its position, so a rerun gets back the children or
-        # run already started.
+        # A RunSubAgents call derives its child ids from its position, so a
+        # rerun gets back the children already started.
         prefix = self._call_prefix(name, loop_index, call_index)
         # Such a call only waits, on children that may need this agent's
-        # slots or on a workflow run, so it gives its own back meanwhile.
+        # slots, so it gives its own back meanwhile.
         wait = self._slot_released() if prefix else contextlib.nullcontext()
-        relay = ChildInteractionRelay(self) if name == "RunSubAgents" else None
-        with bound_subagent_id_prefix(prefix), bound_interaction_relay(relay):
+        with bound_subagent_id_prefix(prefix):
             async with wait:
                 return await retry_transient(
                     lambda: run_step_tool_call(
@@ -595,8 +491,6 @@ class RequestRun:
     def _call_prefix(self, name: str, loop_index: int, call_index: int) -> str | None:
         if name == "RunSubAgents":
             return f"{self.request_id}-sub-{loop_index}-{call_index}"
-        if name == "RunWorkflow":
-            return f"{self.request_id}-wf-{loop_index}-{call_index}"
         return None
 
     async def _act(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -834,67 +728,4 @@ class RequestRun:
             await complete_request(runtime, request_id, session_id, trace_id, turn_payload)
 
 
-class ChildInteractionRelay:
-    """Relays a RunSubAgents call's child interactions onto the calling request.
-
-    Each interaction a child opens becomes an interaction of this request, the
-    one the user talks to, with an id derived from the child's request id and
-    interaction id and an ``origin`` naming the child. The event log is the
-    only state: a create or an ack with an id already stored is a no-op.
-    """
-
-    def __init__(self, run: RequestRun) -> None:
-        self._run = run
-
-    async def open(self, interaction: dict[str, Any]) -> str:
-        run = self._run
-        interaction_id = relayed_interaction_id(
-            str(interaction.get("request_id") or ""),
-            str(interaction.get("interaction_id") or ""),
-        )
-        extra: dict[str, Any] = {
-            "origin": {
-                key: interaction.get(key)
-                for key in ("agent_id", "request_id", "session_id", "trace_id", "interaction_id")
-            }
-        }
-        interaction_type = str(interaction.get("type") or "info")
-        schema = interaction.get("schema")
-        await emit_interaction_create(
-            run.runtime,
-            run.request_id,
-            run.session_id,
-            run.trace_id,
-            interaction_id=interaction_id,
-            interaction_type=interaction_type,
-            prompt=str(interaction.get("prompt") or ""),
-            schema=schema if isinstance(schema, dict) else interaction_schema(interaction_type),
-            timeout_seconds=int(interaction.get("timeout_seconds") or 0),
-            extra=extra,
-        )
-        return interaction_id
-
-    async def wait(self, interaction_id: str) -> dict[str, Any]:
-        return await self._run._await_close(interaction_id)
-
-    async def close(self, interaction_id: str, ack: dict[str, Any]) -> None:
-        run = self._run
-        await emit_interaction_ack(
-            run.runtime,
-            run.request_id,
-            run.session_id,
-            run.trace_id,
-            interaction_id=interaction_id,
-            response=ack.get("response"),
-            timed_out=bool(ack.get("timed_out")),
-            cancelled=bool(ack.get("cancelled")),
-        )
-        run.wake_interaction(interaction_id)
-
-
-def relayed_interaction_id(child_request_id: str, child_interaction_id: str) -> str:
-    """The id of a child's interaction as relayed onto the calling request."""
-    return derive_interaction_id(f"{child_request_id}:{child_interaction_id}")
-
-
-__all__ = ["ChildInteractionRelay", "RequestCancelled", "RequestRun", "relayed_interaction_id"]
+__all__ = ["RequestCancelled", "RequestRun"]

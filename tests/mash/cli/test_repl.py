@@ -636,58 +636,6 @@ def test_subagent_lists_and_shows_children() -> None:
 # --- workflows started by the companion ---------------------------------------
 
 
-def _workflow_script(host: FakeHost, run_events: list[Any]) -> Gate:
-    gate = Gate()
-    host.script(
-        "r-1",
-        tool_start(
-            "t1", "RunWorkflow", {"workflow_id": "export", "input": {}},
-            workflow_run={"workflow_id": "export", "dedup_key": "r-1-0-0"},
-        ),
-        gate,
-        tool_end("t1", "RunWorkflow"),
-        chat_end("response", text="Exported."),
-        completed("Exported."),
-    )
-    host.workflow_runs["export"] = [
-        {"run_id": "run-old", "dedup_key": "other"},
-        {"run_id": "run-7", "dedup_key": "r-1-0-0"},
-    ]
-    host.workflow_scripts["run-7"] = run_events
-    return gate
-
-
-def _step(name: str, step_id: str) -> dict[str, Any]:
-    return {"event": name, "data": {"step_id": step_id}}
-
-
-def test_a_workflow_calls_row_shows_the_step_its_run_is_on() -> None:
-    host = FakeHost()
-    step_gate = Gate()
-    gate = _workflow_script(
-        host,
-        [_step("step.started", "scan"), _step("step.completed", "scan"),
-         _step("step.started", "summarize"), step_gate,
-         _step("step.completed", "summarize"), {"event": "workflow.completed", "data": {}}],
-    )
-
-    async def script(d: ReplDriver) -> None:
-        d.type("export it" + ENTER)
-        await d.until(lambda: d.repl.running() and d.repl.foreground.current_tool() is not None
-                      and d.repl.foreground.current_tool().note == "step summarize")
-        rows = "".join(text for _, text in d.repl._message())
-        assert "RunWorkflow(workflow_id=export, input={}) · step summarize" in rows
-        step_gate.open()
-        gate.open()
-        await d.idle()
-
-    out = run(script, host, debug=True).output
-    assert ("export", "run-7", 0) in host.stream_calls
-    # The detail level prints each step of the run as it ends.
-    assert "export │ ✓ step scan" in out
-    assert "Exported." in out
-
-
 def test_a_sent_paste_is_printed_as_its_placeholder_and_sent_in_full() -> None:
     host = FakeHost()
     host.script("r-1", *simple("Read it."))
@@ -725,41 +673,6 @@ def test_the_unfinished_block_is_drawn_above_the_live_row() -> None:
     assert out.count("Done paragraph.") == 1
     assert out.count("Still writing.") == 1
     assert out.index("› go") < out.index("Done paragraph.") < out.index("Still writing.")
-
-
-def test_a_workflow_run_that_cannot_be_read_leaves_the_request_alone() -> None:
-    host = FakeHost()
-    gate = _workflow_script(host, [MashHostClientError("stream broke")])
-
-    async def script(d: ReplDriver) -> None:
-        d.type("export it" + ENTER)
-        await d.until(lambda: ("export", "run-7", 0) in host.stream_calls)
-        gate.open()
-        await d.idle()
-
-    out = run(script, host).output
-    assert "stream broke" not in out
-    assert "Exported." in out
-
-
-def test_a_workflow_run_is_not_followed_after_its_call_ends() -> None:
-    host = FakeHost()
-    gate = _workflow_script(host, [_step("step.started", "scan"), Gate()])
-
-    async def script(d: ReplDriver) -> None:
-        d.type("export it" + ENTER)
-        await d.until(lambda: d.repl.running() and d.repl.foreground.current_tool() is not None
-                      and d.repl.foreground.current_tool().note == "step scan")
-        gate.open()
-        await d.idle()
-        # The run's stream is still open on the host; the REPL let go of it.
-        assert d.repl._workflow_tasks == {}
-        assert not d.repl._child_tasks
-
-    assert "Exported." in run(script, host).output
-
-
-# --- piped input --------------------------------------------------------------
 
 
 def _piped(lines: str, host: FakeHost) -> str:
@@ -1103,62 +1016,6 @@ def test_a_browser_handoff_prints_and_opens_the_link_then_answers_done() -> None
 
 def test_a_browser_handoff_can_be_cancelled() -> None:
     assert _browser(DOWN + ENTER)[0].answers[0]["response"] == "cancel"
-
-
-def test_a_childs_interaction_is_asked_through_the_parent_and_names_the_child() -> None:
-    host = FakeHost()
-    child_gate = Gate()
-    _companion_script(
-        host,
-        energy=[
-            chat_end("tool_call", tool_calls=[
-                {"id": "x", "name": "run_code", "arguments": {"language": "shell", "code": "rm -r out"}}
-            ]),
-            interaction("ci-1", "approval", "Approve execution of: run_code?"),
-            child_gate, ack("ci-1", "approve"), completed("e"),
-        ],
-        review=[completed("r")],
-    )
-    parent_gate = _parent_gate(host)
-    index = host.scripts["r-1"].index(parent_gate)
-    hold, relayed_gate = Gate(), Gate()
-    host.scripts["r-1"][index:index] = [
-        hold,
-        interaction(
-            "relay-1", "approval", "Approve execution of: run_code?",
-            origin={"agent_id": "energy", "request_id": "c-0", "interaction_id": "ci-1"},
-        ),
-        relayed_gate,
-        ack("relay-1", "approve"),
-    ]
-
-    async def script(d: ReplDriver) -> None:
-        d.type("go" + ENTER)
-        await d.until(lambda: d.repl.foreground is not None
-                      and len(d.repl.foreground.children) == 2
-                      and d.repl.foreground.children[0].pending_tool_calls)
-        hold.open()
-        await d.until(_asking(d))
-        d.type(ENTER)
-        await d.until(lambda: len(host.answers) == 1)
-        child_gate.open()
-        relayed_gate.open()
-        parent_gate.open()
-        await d.idle()
-
-    out = run(script, host, host_id="fudge").output
-    # The answer goes to the companion's request, under the relayed id; the
-    # child's own copy is not asked a second time.
-    assert host.answers == [
-        {"agent_id": "companion", "request_id": "r-1",
-         "interaction_id": "relay-1", "response": "approve"}
-    ]
-    assert out.count("Approve execution of: run_code?") == 1
-    lines = [line.rstrip() for line in out.splitlines()]
-    asked = lines.index("[energy] Approve execution of: run_code?")
-    # The child's call is shown, not the companion's RunSubAgents call.
-    assert lines[asked + 1] == "    $ rm -r out"
-    assert "✓ energy" in out
 
 
 def test_ctrl_c_at_an_interaction_cancels_the_request() -> None:
