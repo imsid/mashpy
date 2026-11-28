@@ -183,25 +183,19 @@ class AgentRuntime:
     def get_signal_definitions(self) -> dict[str, dict[str, Any]]:
         return dict(self.signal_collector.get_signal_definitions())
 
-    async def get_session_total_tokens(
+    async def get_context_tokens(
         self,
         session_id: str | None = None,
     ) -> int:
-        return await context_helpers.get_session_total_tokens(self, session_id)
+        return await context_helpers.get_context_tokens(self, session_id)
 
     async def compact_session(
         self,
         session_id: str | None = None,
         *,
         reason: str = "manual",
-        session_total_tokens_reset: int = 0,
     ) -> tuple[str | None, str | None]:
-        return await context_helpers.compact_session(
-            self,
-            session_id,
-            reason=reason,
-            session_total_tokens_reset=session_total_tokens_reset,
-        )
+        return await context_helpers.compact_session(self, session_id, reason=reason)
 
     async def submit_request(
         self,

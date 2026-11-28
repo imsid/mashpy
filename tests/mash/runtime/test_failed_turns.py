@@ -11,12 +11,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from conftest import build_test_stores
 from mash.core.llm import LLMProvider
 from mash.core.llm.types import LLMContentBlock, LLMResponse, LLMTokenUsage
-from mash.memory.compaction import compact_conversation
 from mash.memory.failed_turns import failed_turn_metadata, format_failed_request
 from mash.runtime import Host, HostBuilder
 from mash.runtime.engine import loop as loop_module
 from mash.runtime.engine.loop import RequestRun
-from mash.testing.runtime_fixtures import DeterministicAgentSpec, metadata, patch_companion_llm
+from mash.testing.runtime_fixtures import (
+    DeterministicAgentSpec,
+    RoutingLLMProvider,
+    metadata,
+    patch_companion_llm,
+)
 
 _MALFORMED = "Error code: 400 - bad request"
 
@@ -85,29 +89,43 @@ class FormatFailedRequestTests(unittest.TestCase):
         self.assertEqual(len(line), len("Error: ") + 300)
 
 
+class _FailingSecondSpec(DeterministicAgentSpec):
+    def __init__(self) -> None:
+        super().__init__(agent_id="research")
+        self.provider = _FailsSecondProvider()
+
+
 class FailedTurnReplayTests(unittest.IsolatedAsyncioTestCase):
     async def test_try_again_sees_the_failed_message_and_its_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            provider = _FailsSecondProvider()
+            spec = _FailingSecondSpec()
+            provider = spec.provider
             with patch.dict(
                 os.environ, {"MASH_DATA_DIR": tmp, "MASH_DATABASE_URL": ""}
-            ), patch_companion_llm(provider):
+            ), patch_companion_llm(RoutingLLMProvider("research")):
                 pool = (
                     HostBuilder()
-                    .agent(DeterministicAgentSpec(agent_id="research"), metadata=metadata())
+                    .agent(spec, metadata=metadata())
                     .host(Host(host_id="h", agents=("research",)))
                     .build()
                 )
                 pool.configure_runtime_database_url("postgresql://test/runtime")
                 await pool.start()
                 try:
-                    client = pool.get_client("companion")
-
                     async def _ask(message: str) -> str:
                         accepted = await pool.submit_host_request(
                             "h", message=message, session_id="s-1", app_id="app-1", policy_id="p-1"
                         )
-                        async for event in client.stream_response(accepted["request_id"], timeout=10):
+                        request_id = accepted["request_id"]
+                        async for event in pool.get_client("companion").stream_response(
+                            request_id, timeout=10
+                        ):
+                            if event.get("event") == "request.completed":
+                                route = event["data"]["response"]["metadata"]["routed"]
+                                break
+                        async for event in pool.get_client("research").stream_response(
+                            route["request_id"], timeout=10
+                        ):
                             if event.get("event") in {"request.completed", "request.error"}:
                                 return str(event["event"])
                         raise AssertionError("no terminal event")
@@ -115,29 +133,30 @@ class FailedTurnReplayTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(await _ask("refresh my follows"), "request.completed")
                     self.assertEqual(await _ask("dive into the Nvidia story"), "request.error")
 
-                    runtime = pool._agent_provider.agent_servers["companion"].runtime
-                    first, failed = await runtime.store.get_turns("s-1", "companion")
+                    runtime = pool._agent_provider.agent_servers["research"].runtime
+                    first, failed = await runtime.store.read_entries("s-1")
+                    self.assertEqual(failed["agent_id"], "research")
                     self.assertEqual(failed["user_message"], "dive into the Nvidia story")
                     self.assertEqual(failed["agent_response"], "")
                     self.assertEqual(failed["metadata"]["type"], "failed_request")
                     self.assertEqual(failed["metadata"]["error"]["error_code"], "invalid_request")
-                    self.assertEqual(
-                        failed["session_total_tokens"], first["session_total_tokens"]
-                    )
+                    # A failed entry adds nothing to the board's size.
+                    self.assertEqual(failed["board_tokens"], first["board_tokens"])
 
                     self.assertEqual(await _ask("try again"), "request.completed")
 
                     # The failed request adds no message of its own: the
-                    # history stays user / assistant / user, and the failure
-                    # sits at the top of the new message.
+                    # board reads user / assistant / user, and the failure sits
+                    # at the top of the new message.
                     third = provider.calls[2]
                     self.assertEqual(
                         [role for role, _ in third], ["user", "assistant", "user"]
                     )
-                    self.assertEqual(third[0][1], "refresh my follows")
+                    self.assertEqual(third[0][1], "[entry 1 · research]\nrefresh my follows")
                     self.assertEqual(third[1][1], "answer 1")
                     self.assertEqual(
                         third[2][1],
+                        "[entry 2 · research · failed]\n\n"
                         "<failed_request>\n"
                         "This user message got no reply: the request failed, "
                         "recorded by the system.\n"
@@ -181,39 +200,60 @@ class _SummaryLLM(LLMProvider):
 
 
 class FailedTurnCompactionTests(unittest.IsolatedAsyncioTestCase):
-    async def test_compaction_leaves_the_failed_turn_out(self) -> None:
-        _, store = build_test_stores()
-        await store.save_turn(
+    async def test_compaction_reads_the_failed_turn_as_replay_shows_it(self) -> None:
+        from types import SimpleNamespace
+
+        from mash.core.config import AgentConfig
+        from mash.runtime import context as context_helpers
+
+        runtime_store, store = build_test_stores()
+        await store.append_entry(
             trace_id="t0", session_id="s", agent_id="a", user_message="asked",
-            agent_response="answered", signals={}, session_total_tokens=0,
+            agent_response="answered", signals={}, context_tokens=0,
         )
-        await store.save_turn(
+        failed_metadata = failed_turn_metadata({"error_code": "timeout", "error": "boom"})
+        await store.append_entry(
             trace_id="t1", session_id="s", agent_id="a", user_message="failed ask",
-            agent_response="", signals={}, session_total_tokens=0,
-            metadata=failed_turn_metadata({"error_code": "timeout", "error": "boom"}),
+            agent_response="", signals={}, context_tokens=0, metadata=failed_metadata,
         )
         llm = _SummaryLLM()
-
-        _, trace_id = await compact_conversation(
-            store=store, llm=llm, agent_id="a", session_id="s", max_tokens=100,
-            temperature=0.0, turn_limit=5, reason="manual", session_total_tokens_reset=0,
+        runtime = SimpleNamespace(
+            agent_id="a",
+            session_id="s",
+            store=store,
+            runtime_store=runtime_store,
+            agent=SimpleNamespace(
+                llm=llm,
+                config=AgentConfig(agent_id="a", system_prompt="x"),
+            ),
         )
 
-        self.assertEqual(llm.seen, ["User: asked\nAssistant: answered"])
+        _, trace_id = await context_helpers.compact_session(runtime, "s")
+
+        # The failed request goes in as the block replay puts before the next
+        # message, so the summary can say what is left to retry.
+        self.assertEqual(
+            llm.seen,
+            [
+                "User: asked\nAssistant: answered\nUser: "
+                + format_failed_request("failed ask", failed_metadata)
+            ],
+        )
         [checkpoint] = [t for t in await store.get_turns("s", "a") if t["trace_id"] == trace_id]
-        self.assertEqual(checkpoint["metadata"]["turn_ids"], ["t0"])
+        self.assertEqual(checkpoint["metadata"]["turn_ids"], ["t0", "t1"])
 
 
 class FailedTurnScopeTests(unittest.IsolatedAsyncioTestCase):
     def _run(self, request_metadata: dict[str, Any]) -> RequestRun:
-        return RequestRun(
+        run = RequestRun(
             MagicMock(),
             request_id="r1",
             message="hello",
             session_id="s",
             request_metadata=request_metadata,
-            checkpoint={"trace_id": "t1"},
         )
+        run.trace_id = "t1"
+        return run
 
     async def test_a_request_with_a_parent_saves_no_failed_turn(self) -> None:
         for parent in (

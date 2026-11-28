@@ -28,6 +28,7 @@ from .types import (
     LLMRequest,
     LLMResponse,
     LLMTokenUsage,
+    token_sum,
     LLMToolDefinition,
     tool_result_images,
 )
@@ -388,12 +389,16 @@ class GeminiProvider(BaseLLMProvider):
             # Thought tokens are the model's thinking; they become the
             # call's reasoning tokens on its chat.end.
             thought_tokens = getattr(u, "total_thought_tokens", None)
+            input_tokens = getattr(u, "total_input_tokens", None)
+            output_tokens = getattr(u, "total_output_tokens", None)
             usage = LLMTokenUsage(
-                input_tokens=getattr(u, "total_input_tokens", None),
-                output_tokens=getattr(u, "total_output_tokens", None),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
                 total_tokens=getattr(u, "total_tokens", None),
                 cache_read_tokens=getattr(u, "total_cached_tokens", None),
                 reasoning_tokens=int(thought_tokens) if thought_tokens is not None else None,
+                # total_input_tokens counts cached input.
+                context_tokens=token_sum(input_tokens, output_tokens),
             )
 
         return LLMResponse(

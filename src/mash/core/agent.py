@@ -353,6 +353,8 @@ class Agent:
                 token_usage["cache_write"] = response.usage.cache_write_tokens
             if response.usage.reasoning_tokens is not None:
                 token_usage["reasoning"] = response.usage.reasoning_tokens
+            if response.usage.context_tokens is not None:
+                token_usage["context"] = response.usage.context_tokens
         if token_usage:
             input_tokens = token_usage.get("input")
             output_tokens = token_usage.get("output")
@@ -641,8 +643,10 @@ class Agent:
             action_metadata["stop_reason"] = stop_reason
 
         # Store the assistant's response in context
+        phase = response.provider_metadata.get("phase")
+        if phase:
+            action_metadata["phase"] = phase
         if blocks:
-            phase = response.provider_metadata.get("phase")
             msg_kwargs: Dict[str, Any] = {"phase": phase} if phase else {}
             context.add_message(MessageRole.ASSISTANT, blocks, **msg_kwargs)
 

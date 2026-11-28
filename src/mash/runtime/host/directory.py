@@ -1,4 +1,4 @@
-"""Agent metadata and the host agent directory."""
+"""Agent metadata, host access, and per-request context in a system prompt."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from ...core.config import SystemPrompt
 class AgentMetadata:
     """Self-description an agent supplies at registration.
 
-    The companion routes by it: a host request lists each of the host's
-    agents with its metadata in the companion's agent directory.
+    The companion routes by it: its classifier reads each of the host's
+    agents' metadata, and ``about`` answers from it.
     """
 
     display_name: str
@@ -42,39 +42,9 @@ class HostAccess(Protocol):
 
     def get_agent_metadata(self, agent_id: str) -> AgentMetadata | None: ...
 
+    def get_workflow(self, workflow_id: str) -> Any: ...
 
-def _directory_entry(agent_id: str, meta: AgentMetadata | None) -> list[str]:
-    if meta is None:
-        return [f"- {agent_id}"]
-    return [
-        f"- {agent_id} | {meta.display_name}: {meta.description}",
-        f"  Capabilities: {', '.join(meta.capabilities)}",
-        f"  Guidance: {meta.usage_guidance}",
-    ]
-
-
-def build_agent_directory(
-    base_prompt: SystemPrompt,
-    agents: dict[str, AgentMetadata | None],
-) -> SystemPrompt:
-    """Append the ``AGENTS`` directory of a host's agents to a system prompt."""
-    if not agents:
-        return base_prompt
-
-    lines = [
-        "AGENTS",
-        "Run them with RunSubAgents(requests=[{agent_id, prompt, session_id?}], timeout_seconds).",
-        "Each item runs as its own request, and all items run at the same time.",
-        "Split a task into several items only when its parts do not depend on each other.",
-        "The host's agents:",
-    ]
-    for agent_id in sorted(agents.keys()):
-        lines.extend(_directory_entry(agent_id, agents[agent_id]))
-    guidance = "\n".join(lines)
-
-    if isinstance(base_prompt, list):
-        return [*base_prompt, {"type": "text", "text": guidance}]
-    return f"{base_prompt}\n\n{guidance}"
+    def get_workflow_client(self) -> Any: ...
 
 
 def append_context_block(

@@ -83,13 +83,14 @@ The timeout defaults are conservative: an unanswered approval is a denial, and `
 
 ## The pause machinery
 
-The whole flow is visible in `RequestRun._run_interaction`. The loop opens the interaction in a step whose result it keeps in its checkpoint, then waits for the answer:
+The whole flow is visible in `RequestRun._run_interaction`. The loop opens the interaction under an id derived from its place in the request, then waits for the answer:
 
 ```python
 # src/mash/runtime/engine/loop.py (trimmed)
-opened = await self._step(
-    f"{step_prefix}.open.{loop_index}.{attempt}",
-    self._open_interaction, ...,       # derives the id, appends interaction.create
+step_name = f"{step_prefix}.open.{loop_index}.{attempt}"
+opened = await self._open_interaction(
+    interaction_id=derive_interaction_id(f"{self.request_id}:{step_name}"),
+    ...,                               # appends interaction.create, or finds it stored
 )
 response, timed_out = await self._await_answer(
     opened["interaction_id"], deadline=opened["deadline"], ...
@@ -98,7 +99,7 @@ response, timed_out = await self._await_answer(
 
 The answer is an event: the interaction's `mash.interaction.end`, keyed `interaction.ack.<id>`. `_await_answer` waits in process until the deadline, then reads the log. At the deadline it appends the default answer itself (`deny` for an approval), under the same key, so an answer and a timeout that race leave one row, and both sides read it.
 
-The process can die and restart any number of times while the request waits. The recovered loop finds the interaction's id and deadline in its checkpoint, reads the answer from the log if one arrived while it was down, and otherwise waits out the rest of the deadline.
+The process can die and restart any number of times while the request waits. The recovered loop derives the same id and finds the interaction already open; its deadline is the stored open time plus its stored timeout. The loop reads the answer from the log if one arrived while it was down, and otherwise waits out the rest of that deadline.
 
 On the wire, the client sees the pause as a pair of frames in the event stream from [the request lifecycle post](request-lifecycle.md):
 

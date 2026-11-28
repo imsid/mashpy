@@ -1,8 +1,8 @@
 """H2A relay for calls agent processes make to the host.
 
-The companion, in its process, starts its RunSubAgents children through these
-routes, never directly, answers the interactions it relays for them, and
-starts and reads its RunWorkflow runs here. They
+The companion, in its process, starts the request of the agent it routed a
+message to through these routes, never directly, and starts and reads the
+workflow runs it routes to. A ``RunSubAgents`` call starts its children here. They
 speak H2A as ``AgentServer`` does (no ``{data}`` envelope), so the agent uses a
 plain ``AgentClient`` pointed at ``{host}/h2a``. Each call authenticates with
 the caller's agent token; the host checks it against the request's ``parent``
@@ -19,6 +19,7 @@ from typing import AsyncIterator
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from mash.agents.companion import COMPANION_AGENT_ID
 from mash.runtime.client import (
     AgentClientError,
     AgentUnavailableError,
@@ -137,9 +138,14 @@ def build_h2a_router() -> APIRouter:
             parent_request_metadata(parent, agent_id=agent_id)
         except ValueError as exc:
             return h2a_error(400, "INVALID_PARENT", str(exc))
-        if parent.get("kind") != "subagent" or parent.get("agent_id") != caller:
+        kind = parent.get("kind")
+        if kind not in ("subagent", "conversation") or parent.get("agent_id") != caller:
             return h2a_error(
                 403, "FORBIDDEN", f"agent '{caller}' may only submit its own subagent calls"
+            )
+        if kind == "conversation" and caller != COMPANION_AGENT_ID:
+            return h2a_error(
+                403, "FORBIDDEN", "only the companion routes a conversation's requests"
             )
 
         state = state_from_request(request)
@@ -183,9 +189,18 @@ def build_h2a_router() -> APIRouter:
                 validate_request_id(request_id)
             except ValueError as exc:
                 return h2a_error(400, "INVALID_REQUEST", str(exc))
+        if kind == "conversation":
+            # A routed request runs in the companion's session, where it reads
+            # and writes the conversation's board.
+            if session_id.strip() != identity.session_id:
+                return h2a_error(
+                    403,
+                    "FORBIDDEN",
+                    "a routed request runs in the session of the request that routed it",
+                )
         # A session other than the child's own new one continues earlier work:
         # it must be one this agent ran for children of the caller's session.
-        if session_id.strip() != request_id:
+        elif session_id.strip() != request_id:
             refused = await _check_continued_session(
                 state.pool,
                 store,
@@ -324,12 +339,18 @@ def build_h2a_router() -> APIRouter:
         refused = await _own_child(request, agent_id, request_id)
         if refused is not None:
             return refused
+        try:
+            after = max(0, int(request.query_params.get("after") or 0))
+        except ValueError:
+            return h2a_error(400, "INVALID_REQUEST", "after must be an integer")
         client = state_from_request(request).pool.get_client(agent_id)
 
+        # The child's seq goes through as each frame's id, so a caller whose
+        # stream broke reads on after the last event it has.
         async def _generate() -> AsyncIterator[str]:
-            async for event in client.stream_response(request_id):
+            async for event in client.stream_response(request_id, after=after):
                 yield build_runtime_event_sse_payload(
-                    str(event.get("event") or ""), event.get("data")
+                    str(event.get("event") or ""), event.get("data"), seq=event.get("seq")
                 )
 
         return StreamingResponse(

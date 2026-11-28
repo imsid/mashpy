@@ -40,7 +40,8 @@ policy in its token.
     environment (`HOME`, `PATH`, `LANG`, `PWD`, `PYTHONUSERBASE=<folder>/.local`
     so `pip install --user` lands in the folder, plus the caller's `MASH_*`
     variables), and returns `{output, exit_code, timed_out}`. Each call is a
-    fresh shell. Output is cut to 30000 characters; the default
+    fresh shell. Output comes back whole up to 10 MB, a guard against runaway
+    output; past that it stops with a line giving the size written. The default
     timeout is 30 seconds, after which the command's whole process group is
     killed. A job the command leaves running in the background does not hold
     the call open, and keeps running.

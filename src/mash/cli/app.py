@@ -820,11 +820,11 @@ def main(argv: Sequence[str] | None = None, *, app: App = MASH) -> int:
                 [
                     str(session.get("session_id") or ""),
                     str(session.get("turn_count") or 0),
-                    str(session.get("session_total_tokens") or 0),
+                    str(session.get("context_tokens") or 0),
                 ]
                 for session in sessions_payload
             ]
-            renderer.table(["Session ID", "Turns", "Tokens"], rows)
+            renderer.table(["Session ID", "Turns", "Context tokens"], rows)
             return 0
 
         if args.command == "history":

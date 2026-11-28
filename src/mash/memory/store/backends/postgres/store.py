@@ -10,7 +10,7 @@ from mash.storage.pool import acquire_pool, release_pool
 
 from .....logging.events import inflate_logged_event
 from ....search.types import SearchColumn
-from ...protocol import MemoryStore
+from ...protocol import BOARD_SUMMARY, MemoryStore
 
 
 import asyncio
@@ -212,7 +212,7 @@ class PostgresStore(MemoryStore):
             for row in rows
         ]
 
-    async def save_turn(
+    async def append_entry(
         self,
         trace_id: str,
         session_id: str,
@@ -220,34 +220,47 @@ class PostgresStore(MemoryStore):
         user_message: str,
         agent_response: str,
         signals: Dict[str, Any],
-        session_total_tokens: int,
+        context_tokens: int,
         metadata: Optional[Dict[str, Any]] = None,
         *,
+        tokens: int = 0,
         workflow_id: Optional[str] = None,
         workflow_run_id: Optional[str] = None,
         task_id: Optional[str] = None,
         replayable: bool = True,
         app_id: Optional[str] = None,
-    ) -> str:
+    ) -> int:
         timestamp = time.time()
         metadata_json = json.dumps(metadata or {}, default=str)
+        is_summary = (metadata or {}).get("type") == BOARD_SUMMARY
 
         await self.open()
         async with self._pool.connection() as conn:
             async with conn.transaction():
                 async with conn.cursor() as cursor:
-                    # A turn saved again inserts nothing, so its session row
-                    # counts it once.
+                    # The session's next number, and the board's size after
+                    # this entry: a summary starts the count again. An entry
+                    # saved again inserts nothing, so its session row counts
+                    # it once.
                     await cursor.execute(
                         """
-                        WITH turn AS (
+                        WITH last AS (
+                            SELECT seq, board_tokens FROM memory_turns
+                            WHERE session_id = %s
+                            ORDER BY seq DESC
+                            LIMIT 1
+                        ),
+                        turn AS (
                         INSERT INTO memory_turns (
                             trace_id,
                             session_id,
+                            seq,
                             agent_id,
                             user_message,
                             agent_response,
-                            session_total_tokens,
+                            context_tokens,
+                            tokens,
+                            board_tokens,
                             workflow_id,
                             workflow_run_id,
                             task_id,
@@ -256,32 +269,47 @@ class PostgresStore(MemoryStore):
                             created_at,
                             app_id
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
+                        VALUES (
+                            %s, %s,
+                            COALESCE((SELECT seq FROM last), 0) + 1,
+                            %s, %s, %s, %s, %s,
+                            CASE WHEN %s THEN %s
+                                 ELSE COALESCE((SELECT board_tokens FROM last), 0) + %s
+                            END,
+                            %s, %s, %s, %s, %s::jsonb, %s, %s
+                        )
                         ON CONFLICT (trace_id) DO NOTHING
-                        RETURNING agent_id, session_id, created_at, session_total_tokens
+                        RETURNING agent_id, session_id, created_at, context_tokens
                         )
                         INSERT INTO memory_session AS s (
                             agent_id, session_id, turn_count, last_activity_at,
-                            session_total_tokens
+                            context_tokens
                         )
-                        SELECT agent_id, session_id, 1, created_at, session_total_tokens
+                        SELECT agent_id, session_id, 1, created_at, context_tokens
                         FROM turn
                         ON CONFLICT (agent_id, session_id) DO UPDATE
                         SET turn_count = s.turn_count + 1,
                             last_activity_at = GREATEST(
                                 s.last_activity_at, EXCLUDED.last_activity_at
                             ),
-                            session_total_tokens = GREATEST(
-                                s.session_total_tokens, EXCLUDED.session_total_tokens
-                            )
+                            context_tokens = CASE
+                                WHEN EXCLUDED.last_activity_at >= s.last_activity_at
+                                THEN EXCLUDED.context_tokens
+                                ELSE s.context_tokens
+                            END
                         """,
                         (
+                            session_id,
                             trace_id,
                             session_id,
                             agent_id,
                             user_message,
                             agent_response,
-                            int(session_total_tokens),
+                            int(context_tokens),
+                            int(tokens),
+                            is_summary,
+                            int(tokens),
+                            int(tokens),
                             workflow_id,
                             workflow_run_id,
                             task_id,
@@ -315,7 +343,157 @@ class PostgresStore(MemoryStore):
                                 for signal_name, signal_value in signals.items()
                             ],
                         )
-        return trace_id
+                    await cursor.execute(
+                        "SELECT seq FROM memory_turns WHERE trace_id = %s", (trace_id,)
+                    )
+                    row = await cursor.fetchone()
+        return int(row["seq"])
+
+    _ENTRY_COLUMNS = """
+        trace_id, session_id, seq, agent_id, user_message, agent_response,
+        tokens, board_tokens, metadata, created_at
+    """
+
+    def _entry_from_row(self, row: Any) -> Dict[str, Any]:
+        metadata = self._load_json_value(row["metadata"])
+        return {
+            "trace_id": str(row["trace_id"]),
+            "session_id": str(row["session_id"]),
+            "seq": int(row["seq"]),
+            "agent_id": str(row["agent_id"]),
+            "user_message": str(row["user_message"] or ""),
+            "agent_response": str(row["agent_response"] or ""),
+            "tokens": int(row["tokens"] or 0),
+            "board_tokens": int(row["board_tokens"] or 0),
+            "metadata": metadata if isinstance(metadata, dict) else {},
+            "created_at": float(row["created_at"] or 0.0),
+        }
+
+    async def read_entries(
+        self,
+        session_id: str,
+        *,
+        after: Optional[int] = None,
+        before: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        clauses = ["session_id = %s"]
+        params: List[Any] = [session_id]
+        if after is not None:
+            clauses.append("seq > %s")
+            params.append(int(after))
+        if before is not None:
+            clauses.append("seq < %s")
+            params.append(int(before))
+        # With only ``before``, the entries just before it; otherwise the
+        # first ones after ``after``.
+        newest_first = after is None and before is not None and limit is not None
+        sql = f"""
+            SELECT {self._ENTRY_COLUMNS}
+            FROM memory_turns
+            WHERE {' AND '.join(clauses)}
+            ORDER BY seq {'DESC' if newest_first else 'ASC'}
+        """
+        if limit is not None:
+            sql += "\nLIMIT %s"
+            params.append(max(0, int(limit)))
+        await self.open()
+        async with self._pool.connection() as conn:
+            rows = await self._fetchall(conn, sql, params)
+        entries = [self._entry_from_row(row) for row in rows]
+        return list(reversed(entries)) if newest_first else entries
+
+    async def search_entries(
+        self,
+        session_id: str,
+        query: str,
+        *,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        normalized_query = self._build_keyword_query_text(query)
+        if not normalized_query or limit <= 0:
+            return []
+        user_tsv = self._search_tsv_expression("user_message")
+        reply_tsv = self._search_tsv_expression("agent_response")
+        sql = f"""
+            WITH q AS (SELECT plainto_tsquery('simple', %s) AS query)
+            SELECT trace_id, session_id, seq, agent_id, metadata, created_at,
+                   ts_headline(
+                       'simple',
+                       COALESCE(user_message, '') || E'\\n' || COALESCE(agent_response, ''),
+                       q.query,
+                       'MaxWords=40, MinWords=15, MaxFragments=2'
+                   ) AS snippet,
+                   ts_rank_cd({user_tsv}, q.query) + ts_rank_cd({reply_tsv}, q.query) AS rank_score
+            FROM memory_turns, q
+            WHERE session_id = %s
+              AND ({user_tsv} @@ q.query OR {reply_tsv} @@ q.query)
+            ORDER BY rank_score DESC, seq DESC
+            LIMIT %s
+        """
+        await self.open()
+        async with self._pool.connection() as conn:
+            rows = await self._fetchall(conn, sql, [normalized_query, session_id, int(limit)])
+        results: List[Dict[str, Any]] = []
+        for row in rows:
+            metadata = self._load_json_value(row["metadata"])
+            results.append(
+                {
+                    "trace_id": str(row["trace_id"]),
+                    "session_id": str(row["session_id"]),
+                    "seq": int(row["seq"]),
+                    "agent_id": str(row["agent_id"]),
+                    "snippet": str(row["snippet"] or ""),
+                    "metadata": metadata if isinstance(metadata, dict) else {},
+                    "created_at": float(row["created_at"] or 0.0),
+                }
+            )
+        return results
+
+    async def last_entry(self, session_id: str) -> Optional[Dict[str, Any]]:
+        await self.open()
+        async with self._pool.connection() as conn:
+            rows = await self._fetchall(
+                conn,
+                f"""
+                SELECT {self._ENTRY_COLUMNS}
+                FROM memory_turns
+                WHERE session_id = %s
+                ORDER BY seq DESC
+                LIMIT 1
+                """,
+                [session_id],
+            )
+        return self._entry_from_row(rows[0]) if rows else None
+
+    async def read_board(
+        self,
+        session_id: str,
+        *,
+        up_to: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        bound = "AND seq <= %s" if up_to is not None else ""
+        bound_params: List[Any] = [int(up_to)] if up_to is not None else []
+        await self.open()
+        async with self._pool.connection() as conn:
+            rows = await self._fetchall(
+                conn,
+                f"""
+                WITH summary AS (
+                    SELECT seq FROM memory_turns
+                    WHERE session_id = %s AND metadata ->> 'type' = %s {bound}
+                    ORDER BY seq DESC
+                    LIMIT 1
+                )
+                SELECT {self._ENTRY_COLUMNS}
+                FROM memory_turns
+                WHERE session_id = %s
+                  AND seq >= COALESCE((SELECT seq FROM summary), 0) {bound}
+                ORDER BY seq ASC
+                """,
+                [session_id, BOARD_SUMMARY, *bound_params, session_id, *bound_params],
+            )
+        return [self._entry_from_row(row) for row in rows]
 
     async def get_turns(
         self,
@@ -330,7 +508,7 @@ class PostgresStore(MemoryStore):
                 rows = await self._fetchall(
                     conn,
                     """
-                    SELECT trace_id, user_message, agent_response, session_total_tokens, replayable, metadata, created_at
+                    SELECT trace_id, user_message, agent_response, context_tokens, replayable, metadata, created_at
                     FROM memory_turns
                     WHERE session_id = %s AND agent_id = %s
                     ORDER BY created_at ASC, trace_id ASC
@@ -341,7 +519,7 @@ class PostgresStore(MemoryStore):
                 rows = await self._fetchall(
                     conn,
                     """
-                    SELECT trace_id, user_message, agent_response, session_total_tokens, replayable, metadata, created_at
+                    SELECT trace_id, user_message, agent_response, context_tokens, replayable, metadata, created_at
                     FROM memory_turns
                     WHERE session_id = %s AND agent_id = %s
                     ORDER BY created_at DESC, trace_id DESC
@@ -368,7 +546,7 @@ class PostgresStore(MemoryStore):
                         if row["agent_response"] is None
                         else str(row["agent_response"])
                     ),
-                    "session_total_tokens": int(row["session_total_tokens"] or 0),
+                    "context_tokens": int(row["context_tokens"] or 0),
                     "replayable": bool(row.get("replayable", True)),
                     "signals": signals_by_trace.get(str(row["trace_id"]), {}),
                     "metadata": metadata if isinstance(metadata, dict) else {},
@@ -418,41 +596,64 @@ class PostgresStore(MemoryStore):
     async def get_replay_turns(
         self,
         session_id: str,
-        agent_id: str,
-        turns: int,
+        *,
+        turns: Optional[int] = None,
+        trace_ids: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         await self.open()
         async with self._pool.connection() as conn:
-            rows = await self._fetchall(
-                conn,
-                """
-                WITH summary AS (
-                    SELECT trace_id, created_at FROM memory_turns
-                    WHERE session_id = %s AND agent_id = %s
-                      AND replayable AND metadata ->> 'type' = 'summary_checkpoint'
-                    ORDER BY created_at DESC, trace_id DESC
-                    LIMIT 1
-                ),
-                tail AS (
-                    SELECT trace_id FROM memory_turns AS turn
-                    WHERE session_id = %s AND agent_id = %s
-                      AND replayable
-                      AND (
-                          NOT EXISTS (SELECT 1 FROM summary)
-                          OR (turn.created_at, turn.trace_id)
-                              > (SELECT created_at, trace_id FROM summary)
-                      )
-                    ORDER BY created_at DESC, trace_id DESC
-                    LIMIT %s
+            if trace_ids is not None:
+                # The turns a request recorded at its context load, by primary key.
+                rows = await self._fetchall(
+                    conn,
+                    """
+                    SELECT trace_id, user_message, agent_response, context_tokens,
+                           replayable, metadata, created_at
+                    FROM memory_turns
+                    WHERE trace_id = ANY(%s) AND session_id = %s
+                    ORDER BY seq ASC
+                    """,
+                    (list(trace_ids), session_id),
                 )
-                SELECT trace_id, user_message, agent_response, session_total_tokens,
-                       replayable, metadata, created_at
-                FROM memory_turns
-                WHERE trace_id IN (SELECT trace_id FROM summary UNION ALL SELECT trace_id FROM tail)
-                ORDER BY created_at ASC, trace_id ASC
-                """,
-                (session_id, agent_id, session_id, agent_id, max(0, int(turns))),
-            )
+            else:
+                # The latest summary checkpoint, then the last ``turns`` turns
+                # after it (every one when ``turns`` is None).
+                rows = await self._fetchall(
+                    conn,
+                    """
+                    WITH summary AS (
+                        SELECT trace_id, seq FROM memory_turns
+                        WHERE session_id = %s
+                          AND replayable AND metadata ->> 'type' = 'summary_checkpoint'
+                        ORDER BY seq DESC
+                        LIMIT 1
+                    ),
+                    tail AS (
+                        SELECT trace_id FROM memory_turns AS turn
+                        WHERE session_id = %s
+                          AND replayable
+                          AND (
+                              NOT EXISTS (SELECT 1 FROM summary)
+                              OR turn.seq > (SELECT seq FROM summary)
+                          )
+                        ORDER BY seq DESC
+                        LIMIT %s
+                    )
+                    SELECT trace_id, user_message, agent_response, context_tokens,
+                           replayable, metadata, created_at
+                    FROM memory_turns
+                    WHERE trace_id IN (SELECT trace_id FROM summary UNION ALL SELECT trace_id FROM tail)
+                    ORDER BY seq ASC
+                    """,
+                    (
+                        session_id,
+                        session_id,
+                        None if turns is None else max(0, int(turns)),
+                    ),
+                )
+        return self._replay_turns_from_rows(rows)
+
+    def _replay_turns_from_rows(self, rows: List[Any]) -> List[Dict[str, Any]]:
         replay: List[Dict[str, Any]] = []
         for row in rows:
             metadata = self._load_json_value(row["metadata"])
@@ -463,7 +664,7 @@ class PostgresStore(MemoryStore):
                     "agent_response": (
                         "" if row["agent_response"] is None else str(row["agent_response"])
                     ),
-                    "session_total_tokens": int(row["session_total_tokens"] or 0),
+                    "context_tokens": int(row["context_tokens"] or 0),
                     "replayable": bool(row["replayable"]),
                     "metadata": metadata if isinstance(metadata, dict) else {},
                     "created_at": float(row["created_at"] or 0.0),
@@ -655,7 +856,7 @@ class PostgresStore(MemoryStore):
                 conn,
                 f"""
                 SELECT s.session_id, s.turn_count, s.last_activity_at,
-                       s.session_total_tokens,
+                       s.context_tokens,
                        (
                            SELECT LEFT(t.user_message, {FIRST_MESSAGE_CHARS})
                            FROM memory_turns AS t
@@ -676,7 +877,62 @@ class PostgresStore(MemoryStore):
                 "session_id": str(row["session_id"]),
                 "turn_count": int(row["turn_count"] or 0),
                 "last_activity_at": float(row["last_activity_at"] or 0.0),
-                "session_total_tokens": int(row["session_total_tokens"] or 0),
+                "context_tokens": int(row["context_tokens"] or 0),
+                "first_message": str(row["first_message"] or ""),
+            }
+            for row in rows
+        ]
+
+    async def list_board_sessions(
+        self, *, limit: int, app_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        params: List[Any] = []
+        app_filter = ""
+        if app_id is not None:
+            app_filter = """
+                WHERE EXISTS (
+                    SELECT 1 FROM memory_turns AS u
+                    WHERE u.session_id = c.session_id AND u.app_id = %s
+                )"""
+            params.append(app_id)
+        params.append(int(limit))
+        await self.open()
+        async with self._pool.connection() as conn:
+            rows = await self._fetchall(
+                conn,
+                f"""
+                WITH c AS (
+                    SELECT s.session_id,
+                           SUM(m.turn_count) AS turn_count,
+                           MAX(m.last_activity_at) AS last_activity_at
+                    FROM sessions AS s
+                    JOIN memory_session AS m ON m.session_id = s.session_id
+                    GROUP BY s.session_id
+                )
+                SELECT c.session_id, c.turn_count, c.last_activity_at,
+                       (
+                           SELECT t.board_tokens FROM memory_turns AS t
+                           WHERE t.session_id = c.session_id
+                           ORDER BY t.seq DESC LIMIT 1
+                       ) AS context_tokens,
+                       (
+                           SELECT LEFT(t.user_message, {FIRST_MESSAGE_CHARS})
+                           FROM memory_turns AS t
+                           WHERE t.session_id = c.session_id
+                           ORDER BY t.seq ASC LIMIT 1
+                       ) AS first_message
+                FROM c{app_filter}
+                ORDER BY c.last_activity_at DESC, c.session_id ASC
+                LIMIT %s
+                """,
+                params,
+            )
+        return [
+            {
+                "session_id": str(row["session_id"]),
+                "turn_count": int(row["turn_count"] or 0),
+                "last_activity_at": float(row["last_activity_at"] or 0.0),
+                "context_tokens": int(row["context_tokens"] or 0),
                 "first_message": str(row["first_message"] or ""),
             }
             for row in rows

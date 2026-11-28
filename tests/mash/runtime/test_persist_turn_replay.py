@@ -1,4 +1,4 @@
-"""Replaying the turn.persist step must not fail or double-count tokens."""
+"""Saving a turn twice stores it once, so a recovered request can save again."""
 
 from __future__ import annotations
 
@@ -23,17 +23,8 @@ class PersistTurnReplayTests(unittest.IsolatedAsyncioTestCase):
         _, memory_store = build_test_stores()
         self.store = memory_store
         self.runtime = SimpleNamespace(store=memory_store, agent_id="agent-a")
-        await memory_store.save_turn(
-            trace_id="earlier",
-            session_id="s-1",
-            agent_id="agent-a",
-            user_message="hi",
-            agent_response="hello",
-            signals={},
-            session_total_tokens=100,
-        )
 
-    async def _persist(self) -> dict:
+    async def _persist(self, context_tokens: int) -> dict:
         return await _persist_turn_payload(
             self.runtime,
             message="plan it",
@@ -41,22 +32,22 @@ class PersistTurnReplayTests(unittest.IsolatedAsyncioTestCase):
             response=_response("tr-1"),
             signals={},
             compaction_payload={},
+            context_tokens=context_tokens,
         )
 
-    async def test_first_persist_adds_turn_tokens_to_session_total(self) -> None:
-        payload = await self._persist()
+    async def test_the_turn_records_its_context_size(self) -> None:
+        payload = await self._persist(42)
 
-        self.assertEqual(payload["session_total_tokens"], 142)
-        turns = await self.store.get_turns(session_id="s-1", agent_id="agent-a")
-        self.assertEqual([t["trace_id"] for t in turns][-1], "tr-1")
+        self.assertEqual(payload["context_tokens"], 42)
+        [turn] = await self.store.get_turns(session_id="s-1", agent_id="agent-a")
+        self.assertEqual((turn["trace_id"], turn["context_tokens"]), ("tr-1", 42))
 
-    async def test_replayed_persist_reuses_stored_turn(self) -> None:
-        first = await self._persist()
-        replayed = await self._persist()
+    async def test_a_second_save_stores_nothing_new(self) -> None:
+        await self._persist(42)
+        await self._persist(99)
 
-        self.assertEqual(replayed["session_total_tokens"], first["session_total_tokens"])
-        turns = await self.store.get_turns(session_id="s-1", agent_id="agent-a")
-        self.assertEqual(sum(1 for t in turns if t["trace_id"] == "tr-1"), 1)
+        [turn] = await self.store.get_turns(session_id="s-1", agent_id="agent-a")
+        self.assertEqual(turn["context_tokens"], 42)
 
 
 if __name__ == "__main__":

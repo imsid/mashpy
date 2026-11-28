@@ -24,7 +24,7 @@ This README lists the exposed routes, the common request/response conventions, a
 - The OpenAPI schema and Swagger UI sit under `/api/v1`, so they need the key too.
 - A request body under `/api/v1`, or to `POST /admin/session`, may be at most 4 MiB (`MAX_API_BODY_BYTES` in `middleware.py`). FastAPI reads a body before it checks the key, so `BodyLimitMiddleware` answers a larger one with `413 BODY_TOO_LARGE` first: at once when `Content-Length` says so, otherwise once the body passes the cap.
 - Serving `/admin` sets no cookie. The SPA asks for the key when the API answers `401` and posts it to `POST /admin/session` as `{"api_key": "..."}`. A wrong key is `401 UNAUTHORIZED`; the right one sets the `mash_api_key` cookie (`HttpOnly`, `SameSite=Strict`, `Path=/api/v1`, and `Secure` over HTTPS). With no key configured it answers `200` and sets nothing.
-- `/h2a/*` and `/sandbox/*` are the relays agent processes use for the companion's children and workflow runs and for the sandbox tools. They do not use the API key: each call carries the caller's agent token, derived from `MASH_HOST_SECRET` and the agent id. Without a host secret they return `503 H2A_UNAVAILABLE` and `503 SANDBOX_UNAVAILABLE`.
+- `/h2a/*` and `/sandbox/*` are the relays agent processes use for the companion's routed requests and workflow runs, `RunSubAgents` children, and the sandbox tools. They do not use the API key: each call carries the caller's agent token, derived from `MASH_HOST_SECRET` and the agent id. Without a host secret they return `503 H2A_UNAVAILABLE` and `503 SANDBOX_UNAVAILABLE`.
 - `/s/<link token>/*` are links into a policy's sandbox (see Sandbox Links). They do not use the API key: the link token names the policy and only the host can make one.
 - `/browser/*` is the relay agent processes use for the browser tools, with the agent token like `/sandbox/*`. `/s/<view token>/browser/*` are live views of a policy's browser during a sign-in (see Browser Live Views); the view token names the policy and the request, and lapses when the interaction closes or the token expires; a view connected then is closed.
 
@@ -32,28 +32,30 @@ This README lists the exposed routes, the common request/response conventions, a
 
 Raw H2A (no `{data}` envelope), so an agent process calls it with a plain `AgentClient` at `{host}/h2a`.
 
-An agent process starts, follows, answers and cancels its `RunSubAgents` children here.
+The companion's process starts the request it routes a message to here, and starts and reads the workflow runs it routes to. A `RunSubAgents` call starts, follows, answers and cancels its children here.
 
 `POST /h2a/agent/{agent_id}/request`
-- Body: an H2A request (section 6.1 of the RFC) with `parent.kind = "subagent"` and the request's `host` snapshot. The companion sends it for each `RunSubAgents` item.
+- Body: an H2A request (section 6.1 of the RFC) with `parent.kind` `conversation` or `subagent` and the request's `host` snapshot. The companion sends a `conversation` request for each agent route; a `RunSubAgents` call sends a `subagent` request per item.
 - `agent_id` must be one of the `agents` in the host snapshot stored with the parent request; a parent without a host has no targets.
-- `session_id` is the child's own request id for a new session. Any other session must have no requests yet, or only requests of `agent_id` whose turns name `parent.session_id` as their caller's session.
+- A `conversation` request comes only from the companion, and its `session_id` must be the parent request's session: the conversation whose board it reads.
+- For a `subagent` request, `session_id` is the child's own request id for a new session. Any other session must have no requests yet, or only requests of `agent_id` whose turns name `parent.session_id` as their caller's session.
 - `401 UNAUTHORIZED` for a token that matches no agent; `403 FORBIDDEN` when the caller is not `parent.agent_id`, `agent_id` is not in the host, or the session is not one the child may continue.
 - The child gets the parent request's `app_id`, `policy_id` and policy snapshot; a body that names other values gets `403 FORBIDDEN`.
 - Forwards to the agent's client and returns `202` with the accepted payload.
 
 `GET /h2a/agent/{agent_id}/request/{request_id}`
 - Streams the child request's events as SSE. Only the agent that submitted it (its `parent.agent_id`) may stream it; others get `403`.
+- Each frame's `id:` is the child's event seq; `?after=<seq>` starts after that event, so a caller whose stream broke reads on from where it was.
 
 `POST /h2a/agent/{agent_id}/request/{request_id}/cancel`
 - Cancels the child through its agent's client. Only the agent that submitted it may cancel it; others get `403`, and an unknown request `404`.
 
 `POST /h2a/agent/{agent_id}/request/{request_id}/interaction`
-- Body: `{interaction_id, response}`. Answers one of the child's interactions, with the answer the app gave the companion's relayed copy. Only the agent that submitted the child may answer it; others get `403`, and an unknown request `404`. `400 INVALID_RESPONSE` for an answer the schema does not allow, `409 INTERACTION_CLOSED` once the interaction has an answer.
+- Body: `{interaction_id, response}`. Answers one of the child's interactions. Only the agent that submitted the child may answer it; others get `403`, and an unknown request `404`. `400 INVALID_RESPONSE` for an answer the schema does not allow, `409 INTERACTION_CLOSED` once the interaction has an answer.
 
 `POST /h2a/workflow/{workflow_id}/run`
-- Body: `{parent: {request_id}, input, dedup_key?}`. Sent by `RunWorkflow` with the agent's token.
-- The parent request must belong to the caller, and the workflow must be in the host snapshot stored with it. The run acts for the parent request's app and policy. `dedup_key` must begin with the parent request id; a key that names a queued or running run returns that run with `200` instead of starting another. The call's `execute_tool.start` event carries `workflow_run: {workflow_id, dedup_key}`, so a client following the request can find the run in `GET /workflow/{workflow_id}/runs` and read its events.
+- Body: `{parent: {request_id}, input, dedup_key?}`. Sent by the companion, with its token, for a workflow route; its dedup key is `{request_id}-route`.
+- The parent request must belong to the caller, and the workflow must be in the host snapshot stored with it. The run acts for the parent request's app and policy. `dedup_key` must begin with the parent request id; a key that names a queued or running run returns that run with `200` instead of starting another.
 - Returns `{run_id, workflow_id, status, result, error}` with `202`. An input the workflow's `input_model` refuses is `422 INVALID_INPUT` with the validation errors in `error.details`.
 
 `GET /h2a/workflow/{workflow_id}/runs/{run_id}?parent_request_id=`
@@ -169,8 +171,7 @@ Every call names the request it serves, and the host checks it as the sandbox re
 
 ```json
 {
-  "reason": "manual",
-  "session_total_tokens_reset": 0
+  "reason": "manual"
 }
 ```
 
@@ -262,12 +263,15 @@ Every call names the request it serves, and the host checks it as the sandbox re
 ### Sessions And Events
 
 Every input to a host is an event in a session. Events in a session run one
-at a time, in `seq` order; each runs as one request on the host's companion,
-with the host's composition and the policy snapshotted onto it when it
-starts. An event's status is `queued`, `running`, `waiting` (its request has
-an open interaction, its own or a relayed child's), `completed`, `failed` or
-`cancelled`. When the request ends, its `response` or `error` is copied onto
-the event, which keeps them after retention deletes the request.
+at a time, in `seq` order. Each starts as one request on the host's
+companion, with the host's composition and the policy snapshotted onto it.
+The companion classifies the message and either answers it itself (`about`,
+a workflow run) or starts one agent's request in the same session; the event
+then follows that routed request. An event's status is `queued`, `running`,
+`waiting` (the companion's request or the routed one has an open
+interaction), `completed`, `failed` or `cancelled`. When the last request
+ends, its `response` or `error` is copied onto the event, which keeps them
+after retention deletes the requests. `request_id` stays the companion's.
 
 `POST /api/v1/sessions/{session_id}/events`
 - A new event: body as in Bodies. The first event creates the session and
@@ -288,32 +292,33 @@ the event, which keeps them after retention deletes the request.
   the caller's trace; an invalid one is dropped.
 - An event for a host that is not defined (an API-defined host after a
   restart) stays queued until `PUT /hosts/{host_id}` defines it.
-- `context` is a freeform string appended to the companion's system prompt
-  for this request only (after the agent directory). Use it for per-event
+- `context` is a freeform string the companion passes to the routed request,
+  appended to that agent's system prompt for this request only. Use it for per-event
   facts like the thread's channel and author, workspace state, or the current
   date.
 - `metadata` is an opaque JSON object for code, not the model. It is stored
   on the request (a crash-replayed request reruns with the same metadata),
   bound for the duration of the run so tools can read it via
-  `mash.logging.get_request_metadata()`, and inherited by `RunSubAgents`
-  children.
-- Tools in the event's request and in every `RunSubAgents` child under it
-  read the event's session with `mash.logging.get_event_session_id()`. The
-  H2A relay sets a child's value from the parent request as stored, never
-  from the caller's body.
+  `mash.logging.get_request_metadata()`, and passed to the routed request.
+- Tools in the routed request read the event's session with
+  `mash.logging.get_event_session_id()`. The H2A relay sets it from the
+  companion's request as stored, never from the caller's body.
+- `structured_output` goes to the routed request, whose response carries it.
 
 `POST /api/v1/sessions/{session_id}/events` with `interaction_id`
 - An answer: `{event_id, interaction_id, response}` and nothing else, else
-  `400 INVALID_REQUEST`. It goes to the event's request and stores no event.
+  `400 INVALID_REQUEST`. It goes to whichever of the event's requests asked,
+  the companion's or the routed one, and stores no event.
 - Interactions arrive on the stream as `request.interaction.create` with
   `interaction_id`, `type`, `prompt`, `schema` and `timeout_seconds`:
-  - `info`: `response` is text. `choice`: a list of the options picked.
+  - `info`: `response` is text. The companion asks one for each required
+    workflow input it could not fill.
+  - `choice`: a list of the options picked. The companion asks one, over the
+    host's agent ids, when it cannot tell which agent a message is for.
   - `approval`: `approve`, `deny` or `skip`, for an approval-gated tool.
   - `browser`: a sign-in handoff from `browser_handoff`. Get a link from the
     handoff route below, show it to the user (a button that opens it, or the
     view in an iframe), then answer `done` when they finish or `cancel`.
-- A relayed child interaction carries `origin` (`agent_id`, `request_id`,
-  `session_id`, `trace_id`, `interaction_id`); answer it like any other.
 - `request.interaction.ack` follows with the `response`, plus `timed_out` or
   `cancelled` when set.
 - Returns `200 {event_id, request_id, status, interaction_id}`.
@@ -324,13 +329,16 @@ the event, which keeps them after retention deletes the request.
   it. Repeating the stored answer returns `200`.
 
 `GET /api/v1/sessions/{session_id}/events/{event_id}`
-- The event's state: `request_id`, `seq`, `status`, the request's open
-  `interactions`, `response`, `error`, and the timestamps. `404
+- The event's state: `request_id`, `seq`, `status`, the open `interactions`
+  of the companion's and the routed request, `response`, `error`, and the timestamps. `404
   EVENT_NOT_FOUND`.
 
 `GET /api/v1/sessions/{session_id}/events/{event_id}/stream`
-- Server-Sent Events: the request's stream, each frame with `id: <seq>`,
-  `event: <name>` and `data: <json>`.
+- Server-Sent Events: the companion request's frames, then the routed
+  request's, each with `id: <seq>`, `event: <name>` and `data: <json>`. The
+  companion's `request.completed` is left out when it routed the message, and
+  the routed request's ids are numbered on from the companion's last, so one
+  `after` covers both.
 - Query params: `after` (default `0`), the `id` of the last frame the reader
   has. A reader that lost its connection passes it and misses or repeats
   nothing.
@@ -355,17 +363,16 @@ the event, which keeps them after retention deletes the request.
   `status=running,waiting`.
 
 `POST /api/v1/sessions/{session_id}/events/{event_id}/cancel`
-- A queued event becomes `cancelled`. A running one has its request
-  cancelled, with its running `RunSubAgents` children and its open
-  interactions acked as cancelled; the event closes when the request ends.
+- A queued event becomes `cancelled`. A running one has the companion's
+  request cancelled, with the routed request and their open interactions
+  acked as cancelled; the event closes when the request it follows ends.
 - Returns the event. `409 EVENT_TERMINAL` once it has ended.
 
 `POST /api/v1/sessions/{session_id}/events/{event_id}/interactions/{interaction_id}/handoff`
-- For an open `browser` interaction of the event's request (or one a child
-  relayed to it), mints a live-view link and returns `{url, expires_at}`. Each
-  call mints a new link, valid `MASH_BROWSER_HANDOFF_SECONDS` (default 900);
-  earlier ones keep working until they expire or the interaction closes. A
-  relayed interaction's link opens the asking child's tab.
+- For an open `browser` interaction of the routed request, mints a live-view
+  link to that request's tab and returns `{url, expires_at}`. Each call mints
+  a new link, valid `MASH_BROWSER_HANDOFF_SECONDS` (default 900); earlier ones
+  keep working until they expire or the interaction closes.
 - `404 INTERACTION_NOT_FOUND` for an interaction that is not an open browser
   one; `503 BROWSER_UNAVAILABLE` when the host has no browsers.
 
@@ -375,7 +382,8 @@ Requests start only from a session's queue. These routes read them.
 
 `GET /api/v1/agent/{agent_id}/request/{request_id}/events`
 - Server-Sent Events stream for one request, the same frames as an event's
-  stream. Use it for a `RunSubAgents` child.
+  stream. Use it for one request on its own: the routed request, or a
+  `RunSubAgents` child.
 - Query params:
   - `after` (optional, default `0`): the `id` of the last frame the reader
     has.
@@ -398,9 +406,13 @@ Requests start only from a session's queue. These routes read them.
 
 `GET /api/v1/agent/{agent_id}/sessions`
 - Lists the agent's most recently active sessions, newest first, each with
-  `session_id`, `turn_count`, `last_activity_at`, `session_total_tokens` and
+  `session_id`, `turn_count`, `last_activity_at`, `context_tokens` (the latest
+  turn's context size) and
   `first_message` (the first 200 characters of the session's first user
   message).
+- For `companion`, the sessions are the host's conversations: rows of the
+  `sessions` table, counted over every agent's entries, with `context_tokens`
+  set to the board's size (the last entry's `board_tokens`).
 - Path params:
   - `agent_id`
 - Query params:
@@ -414,9 +426,11 @@ Requests start only from a session's queue. These routes read them.
   - `agent_id`
   - `session_id`
 - Returns `agent_id`, `session_id`, `model`, `max_steps`,
-  `session_total_tokens` (the context budget, which compaction resets), and
-  what the session's requests spent with the subagent runs they started, which
-  run in sessions of their own: `total_tokens` (input plus output),
+  `context_tokens` (the latest turn's context: the input and output tokens of
+  its last model call; the session compacts once it reaches the agent's
+  `compaction_token_threshold`; for `companion`, the board's size, which it
+  compacts at its own threshold), and
+  what the session's requests spent with the child runs they started: `total_tokens` (input plus output),
   `cache_read_tokens`, `cache_write_tokens`, and `usage`:
   `{ request_count, subagent_count, input_tokens, output_tokens, total_tokens,
   cache_read_tokens, cache_write_tokens, agents }`. `agents` has a row per
@@ -434,7 +448,8 @@ Requests start only from a session's queue. These routes read them.
   `started_at`.
 
 `GET /api/v1/agent/{agent_id}/sessions/{session_id}/history`
-- Returns session history turns.
+- Returns session history turns. For `companion`, the conversation's board:
+  every entry with its `seq` and `agent_id`, whichever agent wrote it.
 - Path params:
   - `agent_id`
   - `session_id`
@@ -766,8 +781,8 @@ messages, which can quote inputs; without it a failed span keeps its
 - Rolls up sessions from their requests (`runtime_request`), most recent
   activity first. A session is the container for traces; its owner is the
   agent of its first request (the companion for a host chat session). Traces
-  within a session may run on other agents (cross-agent workflow tasks); the
-  companion's children run in sessions of their own.
+  within a session may run on other agents: the agents the companion routed
+  to in a conversation, or cross-agent workflow tasks.
   Activity is the latest lifecycle or model-call event of any request.
 - Query params:
   - `agent_id` optional; when set, scopes to sessions the agent ran a request in, its runs as a child included

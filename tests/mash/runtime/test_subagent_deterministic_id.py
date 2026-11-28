@@ -67,8 +67,8 @@ class LoopBindingTests(unittest.IsolatedAsyncioTestCase):
             message="hi",
             session_id="s-1",
             request_metadata={},
-            checkpoint={"trace_id": "trace-1"},
         )
+        run.trace_id = "trace-1"
         with patch.object(engine_loop, "run_step_tool_call", _tool_call):
             await run._tool_call(
                 {},

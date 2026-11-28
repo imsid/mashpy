@@ -3,10 +3,17 @@
 An event is inserted ``queued``. Dequeue starts a session's oldest queued
 event when the session has none started and its host is defined, and submits
 it to the host's companion as a request whose id is derived from the session
-and event ids. A watcher per started event follows that request's stream to
-its end, copies the outcome onto the row, and dequeues the next event. Every
-step is idempotent, so the host can restart at any point: on start it watches
-every started event again and dequeues every session with queued events.
+and event ids. The companion routes the message: it answers itself, or starts
+one agent's request in the session and ends with ``routed`` naming it. A
+watcher per started event follows the companion's request, then the routed
+request, to its end, copies the outcome onto the row, and dequeues the next
+event. Every step is idempotent, so the host can restart at any point: on
+start it watches every started event again and dequeues every session with
+queued events.
+
+The event's stream, answers and handoffs reach the routed request directly,
+through the host, with no model call. Its frames follow the companion's,
+numbered on from the companion's last, so a reader resumes with one ``after``.
 """
 
 from __future__ import annotations
@@ -211,42 +218,47 @@ class EventService:
     async def answer(
         self, session_id: str, event_id: str, interaction_id: str, response: Any
     ) -> EventRecord:
-        """Forward an answer to the event's request; the request's errors propagate.
+        """Forward an answer to the request that asked: the companion's or the
+        routed one. The request's errors propagate.
 
         Raises ``EventNotFoundError``, and ``KeyError`` when the event has no
-        request yet or its request has no such interaction.
+        request yet or none of its requests has such an interaction.
         """
         record = await self._require(session_id, event_id)
         if not record.request_id:
             raise KeyError(f"interaction '{interaction_id}' not found")
         runtime_store = self._pool.get_runtime_store()
-        events = await runtime_store.list_request_events(record.request_id)
-        if not any(
-            e.event_type == RuntimeEventType.INTERACTION_START.value
-            and (e.payload or {}).get("interaction_id") == interaction_id
-            for e in events
-        ):
-            raise KeyError(f"interaction '{interaction_id}' not found")
-        await self._companion().post_interaction(
-            record.request_id, interaction_id=interaction_id, response=response
-        )
-        return record
+        for agent_id, request_id in await self._requests(record):
+            events = await runtime_store.list_request_events(request_id)
+            if any(
+                e.event_type == RuntimeEventType.INTERACTION_START.value
+                and (e.payload or {}).get("interaction_id") == interaction_id
+                for e in events
+            ):
+                await self._pool.get_client(agent_id).post_interaction(
+                    request_id, interaction_id=interaction_id, response=response
+                )
+                return record
+        raise KeyError(f"interaction '{interaction_id}' not found")
 
     async def handoff_target(
         self, session_id: str, event_id: str, interaction_id: str
     ) -> tuple[str, str]:
         """``(policy_id, request_id)`` whose browser an open handoff shows.
 
-        The request is the event's, or for a relayed interaction the child's
-        that asked. Raises ``EventNotFoundError``, and ``KeyError`` unless the
-        event's request has that ``browser`` interaction open.
+        The request is the routed one that asked. Raises
+        ``EventNotFoundError``, and ``KeyError`` unless one of the event's
+        requests has that ``browser`` interaction open.
         """
         record = await self._require(session_id, event_id)
         if not record.request_id:
             raise KeyError(interaction_id)
         runtime_store = self._pool.get_runtime_store()
-        events = await runtime_store.list_request_events(record.request_id)
-        if interaction_id not in pending_interactions(events):
+        for _, request_id in await self._requests(record):
+            events = await runtime_store.list_request_events(request_id)
+            if interaction_id in pending_interactions(events):
+                break
+        else:
             raise KeyError(interaction_id)
         opened = next(
             dict(e.payload or {})
@@ -256,12 +268,6 @@ class EventService:
         )
         if opened.get("type") != "browser":
             raise KeyError(interaction_id)
-        origin = opened.get("origin")
-        request_id = (
-            str(origin.get("request_id"))
-            if isinstance(origin, dict) and origin.get("request_id")
-            else record.request_id
-        )
         identity = await runtime_store.get_request_identity(request_id)
         if identity is None or not identity.policy_id:
             raise KeyError(interaction_id)
@@ -284,7 +290,8 @@ class EventService:
         status = record.status
         interactions: list[dict[str, Any]] = []
         if status == STARTED and record.request_id:
-            interactions = await self._open_interactions(record.request_id)
+            for _, request_id in await self._requests(record):
+                interactions += await self._open_interactions(request_id)
             status = WAITING if interactions else RUNNING
         return {
             "session_id": record.session_id,
@@ -408,10 +415,76 @@ class EventService:
                 **(record.error or {}),
             }, None
             return
-        async for frame in self._companion().stream_response(str(record.request_id), after=after):
+        async for frame in self._frames(record, after=after):
             name = str(frame.get("event") or "message")
             yield name, frame.get("data"), frame.get("seq")
             if name in END_FRAMES:
+                return
+
+    async def _routed(self, record: EventRecord) -> tuple[str, str, int] | None:
+        """``(agent_id, request_id, offset)`` of the request the companion routed
+        the event to, once the companion's request has ended with ``routed``.
+
+        ``offset`` is the seq of the companion's end event: the routed
+        request's frames are numbered on from it.
+        """
+        runtime_store = self._pool.get_runtime_store()
+        if runtime_store is None or not record.request_id:
+            return None
+        events = await runtime_store.list_request_events(record.request_id)
+        end = next(
+            (e for e in events if e.event_type == RuntimeEventType.INVOKE_AGENT_END.value),
+            None,
+        )
+        if end is None:
+            return None
+        payload = end.payload or {}
+        routed = ((payload.get("response") or {}).get("metadata") or {}).get("routed")
+        if payload.get("status") != "ok" or not isinstance(routed, dict):
+            return None
+        return str(routed["agent_id"]), str(routed["request_id"]), int(end.request_seq or 0)
+
+    async def _requests(self, record: EventRecord) -> list[tuple[str, str]]:
+        """``(agent_id, request_id)`` of the event's requests: the companion's,
+        and the routed one once there is one."""
+        from mash.agents.companion import COMPANION_AGENT_ID
+
+        requests = [(COMPANION_AGENT_ID, str(record.request_id))]
+        routed = await self._routed(record)
+        if routed is not None:
+            requests.append((routed[0], routed[1]))
+        return requests
+
+    async def _frames(self, record: EventRecord, *, after: int = 0) -> AsyncIterator[dict[str, Any]]:
+        """The event's request frames after seq ``after``, to the end frame.
+
+        The companion's frames come first. When its request ends with
+        ``routed``, its end frame is left out and the routed request's frames
+        follow, each seq raised by the companion's end seq.
+        """
+        routed = await self._routed(record)
+        if routed is None or after < routed[2]:
+            async for frame in self._companion().stream_response(
+                str(record.request_id), after=after
+            ):
+                name = str(frame.get("event") or "")
+                if name == "request.completed":
+                    routed = routed or await self._routed(record)
+                    if routed is not None:
+                        break
+                yield frame
+                if name in END_FRAMES:
+                    return
+            if routed is None:
+                return
+        agent_id, request_id, offset = routed
+        async for frame in self._pool.get_client(agent_id).stream_response(
+            request_id, after=max(0, after - offset)
+        ):
+            if frame.get("seq") is not None:
+                frame = {**frame, "seq": int(frame["seq"]) + offset}
+            yield frame
+            if str(frame.get("event") or "") in END_FRAMES:
                 return
 
     async def _has_request(self, record: EventRecord) -> bool:
@@ -464,7 +537,11 @@ class EventService:
         session: SessionRecord | None,
         policy: dict[str, Any] | None,
     ) -> None:
-        """Follow a started event's request to its end, then close it and dequeue."""
+        """Follow a started event's requests to the end, then close it and dequeue.
+
+        The companion's request, then the request it routed to: the event's
+        outcome is the routed request's.
+        """
         key = (record.session_id, record.event_id)
         request_id = str(record.request_id)
         delay = _RETRY_BASE_SECONDS
@@ -481,7 +558,7 @@ class EventService:
                         # Cancelled while it was being submitted.
                         self._cancelling.discard(key)
                         await self._cancel_tree(request_id)
-                async for frame in self._companion().stream_response(request_id):
+                async for frame in self._frames(record):
                     name = str(frame.get("event") or "")
                     if name in END_FRAMES:
                         data = frame.get("data") or {}

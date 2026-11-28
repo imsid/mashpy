@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -11,11 +12,10 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from ...core.context import Context, Response, ToolCall
+from ...core.context import Context, MessageRole, Response, ToolCall
 from ...core.context import ToolResult as ContextToolResult
 from ...core.llm.types import LLMContentBlock, LLMMessage, LLMRequest
 from ...memory.failed_turns import failed_turn_metadata
-from ...memory.ledger import build_ledger
 from ...logging.trace_context import (
     bound_loop_index,
     bound_subagent_id_prefix,
@@ -23,7 +23,9 @@ from ...logging.trace_context import (
     get_workflow_id,
 )
 from ...otel import semconv
+from ...tools.sandbox import write_sandbox_file
 from ...tools.subagent import child_request_id
+from ...tools.tool_results import SAVED_TO, result_file_path
 from .. import context as context_helpers
 from .. import factory as factory_helpers
 from ..events import RequestStatus, RuntimeEvent, RuntimeEventType
@@ -32,11 +34,14 @@ from ..host.directory import append_context_block
 from ..requests import (
     app_id_from_request_metadata,
     append_runtime_event,
+    is_conversation_request,
     policy_from_request_metadata,
 )
 
 if TYPE_CHECKING:
     from ..service import AgentRuntime
+
+log = logging.getLogger(__name__)
 
 
 def _merge_tool_usage(
@@ -124,14 +129,6 @@ def _tool_start_payload(tool_call: ToolCall) -> dict[str, Any]:
                 }
                 for index, item in enumerate(items)
             ]
-    elif tool_call.name == "RunWorkflow":
-        # The run's id is the host's to assign, but its dedup key is fixed by
-        # this call's position, so a reader can find the run and follow its
-        # steps while the call runs.
-        prefix = get_subagent_id_prefix()
-        workflow_id = str((tool_call.arguments or {}).get("workflow_id") or "").strip()
-        if prefix and workflow_id:
-            payload["workflow_run"] = {"workflow_id": workflow_id, "dedup_key": prefix}
     return payload
 
 
@@ -276,6 +273,7 @@ async def _plan_step_payload(
         "assistant_text": action.metadata.get("assistant_text"),
         "assistant_blocks": list(action.metadata.get("assistant_blocks") or []),
         "stop_reason": action.metadata.get("stop_reason"),
+        "phase": action.metadata.get("phase"),
         "tool_calls": [
             {
                 "id": tool_call.id,
@@ -286,6 +284,10 @@ async def _plan_step_payload(
             for tool_call in action.tool_calls
         ],
         "token_usage": dict(plan.token_usage or {}),
+        # The context this call read and wrote: the turn compacts on it. On
+        # chat.end beside the usage attributes, since providers differ in
+        # whether input tokens count cached input.
+        "context_tokens": _context_size(plan.token_usage),
         "tool_usage": dict(plan.tool_usage or {}),
         "duration_ms": int(plan.duration_ms),
         "trace_id": plan.trace_id or trace_id,
@@ -317,7 +319,7 @@ async def _run_tool_call_payload(
     return result, int((time.time() - started_at) * 1000)
 
 
-async def _commit_step_payload(
+def _commit_step_payload(
     runtime: "AgentRuntime",
     *,
     context: Context,
@@ -327,7 +329,10 @@ async def _commit_step_payload(
     tool_usage: dict[str, Any] | None,
 ) -> dict[str, Any]:
     action = context_helpers.action_from_payload(action_payload)
-    results = context_helpers.result_payloads_to_context_results(result_payloads)
+    results = context_helpers.result_payloads_to_context_results(
+        result_payloads,
+        limit=runtime.agent.config.tool_result_context_chars,
+    )
     commit = runtime.agent.commit_step(
         context,
         action,
@@ -340,6 +345,14 @@ async def _commit_step_payload(
         "done": bool(commit.done),
         "signals": dict(commit.signals or {}),
     }
+
+
+def _context_size(token_usage: dict[str, Any] | None) -> int:
+    """A call's context size: the provider's count, or input plus output."""
+    usage = dict(token_usage or {})
+    if usage.get("context") is not None:
+        return int(usage["context"])
+    return int(usage.get("input", 0) or 0) + int(usage.get("output", 0) or 0)
 
 
 def _int_or_zero(value: Any) -> int:
@@ -357,6 +370,7 @@ async def _persist_turn_payload(
     response: Response,
     signals: dict[str, Any],
     compaction_payload: dict[str, Any],
+    context_tokens: int,
     extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     response_metadata = dict(response.metadata or {})
@@ -370,48 +384,33 @@ async def _persist_turn_payload(
     )
     if extra_metadata:
         response_metadata.update(dict(extra_metadata))
-    total_tokens = context_helpers.compute_turn_tokens(response_metadata)
     trace_id = response_metadata.get("trace_id")
     resolved_trace_id = str(trace_id or uuid.uuid4())
-    latest_turns = await runtime.store.get_turns(
-        session_id=session_id, agent_id=runtime.agent_id, limit=1
+    # Workflow task turns (their request_metadata carries
+    # workflow_id/run_id/task_id) are kept out of the model's replayed
+    # conversation history. Subagent turns run in sessions of their own,
+    # so a continued child session replays them. Saving the turn again (a
+    # recovered request) stores nothing new.
+    workflow_id = response_metadata.get("workflow_id") or None
+    workflow_run_id = response_metadata.get("workflow_run_id") or None
+    task_id = response_metadata.get("task_id") or None
+    await runtime.store.append_entry(
+        app_id=app_id_from_request_metadata(response_metadata),
+        trace_id=resolved_trace_id,
+        session_id=session_id,
+        agent_id=runtime.agent_id,
+        user_message=message,
+        agent_response=response.text,
+        signals=signals,
+        context_tokens=int(context_tokens),
+        # The entry's size on the board: the request's context size.
+        tokens=int(context_tokens),
+        metadata=response_metadata,
+        workflow_id=workflow_id,
+        workflow_run_id=workflow_run_id,
+        task_id=task_id,
+        replayable=workflow_id is None,
     )
-    latest_turn = latest_turns[-1] if latest_turns else None
-    if latest_turn is not None and str(latest_turn.get("trace_id")) == resolved_trace_id:
-        # This step is being replayed after its insert committed but before
-        # the loop checkpointed it. The turn is already stored, and its
-        # session total already counts this turn, so reuse it instead of
-        # adding the turn's tokens a second time.
-        session_total_tokens = _int_or_zero(latest_turn.get("session_total_tokens"))
-    else:
-        previous_total = (
-            _int_or_zero(latest_turn.get("session_total_tokens"))
-            if latest_turn is not None
-            else 0
-        )
-        session_total_tokens = previous_total + total_tokens
-        # Workflow task turns (their request_metadata carries
-        # workflow_id/run_id/task_id) are kept out of the model's replayed
-        # conversation history. Subagent turns run in sessions of their own,
-        # so a continued child session replays them.
-        workflow_id = response_metadata.get("workflow_id") or None
-        workflow_run_id = response_metadata.get("workflow_run_id") or None
-        task_id = response_metadata.get("task_id") or None
-        await runtime.store.save_turn(
-            app_id=app_id_from_request_metadata(response_metadata),
-            trace_id=resolved_trace_id,
-            session_id=session_id,
-            agent_id=runtime.agent_id,
-            user_message=message,
-            agent_response=response.text,
-            signals=signals,
-            session_total_tokens=session_total_tokens,
-            metadata=response_metadata,
-            workflow_id=workflow_id,
-            workflow_run_id=workflow_run_id,
-            task_id=task_id,
-            replayable=workflow_id is None,
-        )
     response_payload = {
         "text": response.text,
         "signals": dict(signals or {}),
@@ -424,7 +423,7 @@ async def _persist_turn_payload(
     return {
         "trace_id": resolved_trace_id,
         "response": response_payload,
-        "session_total_tokens": session_total_tokens,
+        "context_tokens": int(context_tokens),
         "signals": dict(signals or {}),
         "response_metadata": dict(response_metadata or {}),
         "compaction_summary_text": compaction_payload.get("compaction_summary_text"),
@@ -473,6 +472,37 @@ async def start_request_trace(
     return str(started.trace_id)
 
 
+def initial_state(
+    *,
+    context: dict[str, Any],
+    compaction: dict[str, Any],
+    request_metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """The loop state before the first step, from the loaded context.
+
+    The host, app, policy and parent come from the request metadata stored
+    on ``invoke_agent.start``, so a recovered request keeps the original
+    composition even if the host is redefined while it runs.
+    """
+    metadata = dict(request_metadata or {})
+    parent = metadata.get("parent")
+    return {
+        "context": dict(context or {}),
+        "compaction": dict(compaction or {}),
+        "host": metadata.get("host") or None,
+        "app_id": app_id_from_request_metadata(metadata),
+        "policy": policy_from_request_metadata(metadata),
+        "parent_kind": parent.get("kind") if isinstance(parent, dict) else None,
+        "loop_index": 0,
+        "aggregate_usage": {"input": 0, "output": 0},
+        "tool_usage": {},
+        "action": None,
+        "result_payloads": [],
+        "signals": {},
+        "done": False,
+    }
+
+
 async def load_request_context(
     runtime: "AgentRuntime",
     request_id: str,
@@ -481,23 +511,20 @@ async def load_request_context(
     message: str,
     request_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    # The host snapshot is captured in this persisted step output, so recovery
-    # replays the original composition even if the host is redefined while the
-    # request is in flight.
+    """Load the request's context and record it on ``mash.context_load.end``.
+
+    The event holds what a recovered request needs to build the same context:
+    the system prompt as rendered now (the Cortex profile changes over time),
+    and for a request the companion routed the board position it read
+    (``board.up_to``), or else the trace ids of the turns replayed and the
+    compaction this load ran.
+    """
     metadata = dict(request_metadata or {})
-    host = metadata.get("host") or None
-    request_context = metadata.get("context")
     app_id = app_id_from_request_metadata(metadata)
-    policy = policy_from_request_metadata(metadata)
-    parent = metadata.get("parent")
-    parent_kind = parent.get("kind") if isinstance(parent, dict) else None
-    system_prompt = factory_helpers.resolve_host_system_prompt(
-        runtime, host, request_context, parent_kind=parent_kind
-    )
+    # The caller's per-request context goes after the agent's own prompt.
+    system_prompt = append_context_block(runtime.system_prompt, metadata.get("context"))
     cortex = runtime.get_cortex()
     if cortex is not None and app_id:
-        # Read inside this checkpointed step, so a replay sees the profile the
-        # request originally saw.
         system_prompt = append_context_block(
             system_prompt, await cortex.profile_block(app_id)
         )
@@ -506,7 +533,15 @@ async def load_request_context(
         session_id=session_id,
         message=message,
         system_prompt=system_prompt,
+        conversation=is_conversation_request(metadata),
     )
+    compaction = dict(context_payload.get("compaction") or {})
+    loaded: dict[str, Any] = {"status": EndStatus.OK.value, "system_prompt": system_prompt}
+    if "board" in context_payload:
+        loaded["board"] = dict(context_payload["board"])
+    else:
+        loaded["history"] = list(context_payload.get("history") or [])
+        loaded["compaction"] = compaction
     await append_runtime_event(
         runtime,
         RuntimeEvent(
@@ -516,24 +551,14 @@ async def load_request_context(
             session_id=session_id,
             event_type=RuntimeEventType.CONTEXT_LOAD_END.value,
             dedupe_key="context.loaded",
-            payload={"status": EndStatus.OK.value},
+            payload=loaded,
         ),
     )
-    return {
-        "context": dict(context_payload.get("context") or {}),
-        "compaction": dict(context_payload.get("compaction") or {}),
-        "host": host,
-        "app_id": app_id,
-        "policy": policy,
-        "parent_kind": parent_kind,
-        "loop_index": 0,
-        "aggregate_usage": {"input": 0, "output": 0},
-        "tool_usage": {},
-        "action": None,
-        "result_payloads": [],
-        "signals": {},
-        "done": False,
-    }
+    return initial_state(
+        context=dict(context_payload.get("context") or {}),
+        compaction=compaction,
+        request_metadata=metadata,
+    )
 
 
 async def plan_request_step(
@@ -594,21 +619,63 @@ async def plan_request_step(
             payload=_chat_end_payload(runtime, action_payload),
         ),
     )
+    return apply_plan(
+        runtime,
+        workflow_state,
+        with_approval(runtime, action_payload),
+        step_started_at=step_started_at,
+    )
+
+
+def with_approval(runtime: "AgentRuntime", action_payload: dict[str, Any]) -> dict[str, Any]:
+    """The action with its approval interaction, when a call needs one."""
     tool_call_names = [
         str(tc.get("name") or "")
         for tc in list(action_payload.get("tool_calls") or [])
         if isinstance(tc, dict)
     ]
     needs_approval = runtime.agent.tools.tools_requiring_approval(tool_call_names)
-    if needs_approval:
-        action_payload["interaction"] = {
+    if not needs_approval:
+        return action_payload
+    return {
+        **action_payload,
+        "interaction": {
             "type": "approval",
             "prompt": f"Approve execution of: {', '.join(needs_approval)}?",
             "timeout_seconds": 300,
-        }
+        },
+    }
+
+
+def apply_plan(
+    runtime: "AgentRuntime",
+    workflow_state: dict[str, Any],
+    action_payload: dict[str, Any],
+    *,
+    step_started_at: float,
+) -> dict[str, Any]:
+    """The loop state after a model call: its assistant message and usage.
+
+    The running loop and the rebuild from ``chat.end`` both use it, so a
+    recovered request holds the context the running one held. It adds what
+    ``Agent._parse_response_to_action`` adds to the context: the assistant
+    blocks, and the truncation marks of a text answer cut at max_tokens.
+    """
+    context = context_helpers.deserialize_context(
+        runtime, workflow_state.get("context") or {}
+    )
+    blocks = list(action_payload.get("assistant_blocks") or [])
+    if blocks:
+        phase = action_payload.get("phase")
+        context.add_message(
+            MessageRole.ASSISTANT, blocks, **({"phase": phase} if phase else {})
+        )
+    if not action_payload.get("tool_calls") and action_payload.get("stop_reason") == "max_tokens":
+        context.metadata["truncated"] = True
+        context.metadata["stop_reason"] = "max_tokens"
 
     aggregate_usage = dict(workflow_state.get("aggregate_usage") or {})
-    token_usage = dict(plan_payload.get("token_usage") or {})
+    token_usage = dict(action_payload.get("token_usage") or {})
     aggregate_usage["input"] = int(aggregate_usage.get("input", 0) or 0) + int(
         token_usage.get("input", 0) or 0
     )
@@ -617,11 +684,17 @@ async def plan_request_step(
     )
     return {
         **dict(workflow_state or {}),
-        "context": dict(plan_payload.get("context") or {}),
+        "context": context_helpers.serialize_context(context),
         "aggregate_usage": aggregate_usage,
+        # The context as the model last read it: the turn compacts on this.
+        "context_tokens": int(
+            action_payload["context_tokens"]
+            if action_payload.get("context_tokens") is not None
+            else _context_size(token_usage)
+        ),
         "tool_usage": _merge_tool_usage(
             workflow_state.get("tool_usage"),
-            plan_payload.get("tool_usage"),
+            action_payload.get("tool_usage"),
         ),
         "action": action_payload,
         "result_payloads": [],
@@ -629,6 +702,82 @@ async def plan_request_step(
         "done": False,
         "step_started_at": step_started_at,
     }
+
+
+def counts_as_invocation(result_payload: dict[str, Any]) -> bool:
+    """Whether a call was invoked, for the tool-usage signals: a call the user
+    denied was not; every other call was, the ones the loop answers itself
+    (AskUser, browser_handoff) included."""
+    metadata = (result_payload.get("result") or {}).get("metadata") or {}
+    return not (isinstance(metadata, dict) and metadata.get("denied"))
+
+
+def record_invocation(
+    workflow_state: dict[str, Any], result_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """The state with the call counted in ``tool_usage`` when it was invoked."""
+    if not counts_as_invocation(result_payload):
+        return workflow_state
+    return {
+        **workflow_state,
+        "tool_usage": _record_tool_invocation(
+            workflow_state.get("tool_usage"), str(result_payload.get("tool_name") or "")
+        ),
+    }
+
+
+async def record_tool_start(
+    runtime: "AgentRuntime",
+    *,
+    request_id: str,
+    session_id: str,
+    trace_id: str,
+    loop_index: int,
+    tool_call: ToolCall,
+) -> None:
+    """Append the call's ``execute_tool.start``; a repeat is a no-op."""
+    await append_runtime_event(
+        runtime,
+        RuntimeEvent(
+            request_id=request_id,
+            agent_id=runtime.agent_id,
+            trace_id=trace_id,
+            session_id=session_id,
+            loop_index=loop_index,
+            step_key=f"execute_tool.start.{loop_index}.{tool_call.id}",
+            event_type=RuntimeEventType.EXECUTE_TOOL_START.value,
+            dedupe_key=f"tool.call.started.{loop_index}.{tool_call.id}",
+            payload=_tool_start_payload(tool_call),
+        ),
+    )
+
+
+async def record_tool_end(
+    runtime: "AgentRuntime",
+    *,
+    request_id: str,
+    session_id: str,
+    trace_id: str,
+    loop_index: int,
+    tool_call: ToolCall,
+    result_payload: dict[str, Any],
+) -> None:
+    """Append the call's ``execute_tool.end``: every result the loop uses has one,
+    so a recovered request finds it there."""
+    await append_runtime_event(
+        runtime,
+        RuntimeEvent(
+            request_id=request_id,
+            agent_id=runtime.agent_id,
+            trace_id=trace_id,
+            session_id=session_id,
+            loop_index=loop_index,
+            step_key=f"execute_tool.end.{loop_index}.{tool_call.id}",
+            event_type=RuntimeEventType.EXECUTE_TOOL_END.value,
+            dedupe_key=f"tool.call.{loop_index}.{tool_call.id}",
+            payload=_tool_end_payload(tool_call, result_payload),
+        ),
+    )
 
 
 async def _execute_and_record_tool_call(
@@ -650,20 +799,14 @@ async def _execute_and_record_tool_call(
     serial step and the parallel batch step, so event keys and result shape are
     identical no matter which path executed the call.
     """
-    await append_runtime_event(
-        runtime,
-        RuntimeEvent(
-            request_id=request_id,
-            agent_id=runtime.agent_id,
-            trace_id=trace_id,
-            session_id=session_id,
-            loop_index=loop_index,
-            step_key=f"execute_tool.start.{loop_index}.{tool_call.id}",
-            event_type=RuntimeEventType.EXECUTE_TOOL_START.value,
-            dedupe_key=f"tool.call.started.{loop_index}.{tool_call.id}",
-            payload=_tool_start_payload(tool_call),
-        ),
-    )
+    ids = {
+        "request_id": request_id,
+        "session_id": session_id,
+        "trace_id": trace_id,
+        "loop_index": loop_index,
+        "tool_call": tool_call,
+    }
+    await record_tool_start(runtime, **ids)
     result, duration_ms = await _run_tool_call_payload(
         runtime,
         tool_call=tool_call,
@@ -679,21 +822,55 @@ async def _execute_and_record_tool_call(
         result,
         duration_ms=duration_ms,
     )
-    await append_runtime_event(
+    await _save_long_result(
         runtime,
-        RuntimeEvent(
-            request_id=request_id,
-            agent_id=runtime.agent_id,
-            trace_id=trace_id,
-            session_id=session_id,
-            loop_index=loop_index,
-            step_key=f"execute_tool.end.{loop_index}.{tool_call.id}",
-            event_type=RuntimeEventType.EXECUTE_TOOL_END.value,
-            dedupe_key=f"tool.call.{loop_index}.{tool_call.id}",
-            payload=_tool_end_payload(tool_call, result_payload),
-        ),
+        request_id=request_id,
+        trace_id=trace_id,
+        tool_call=tool_call,
+        result_payload=result_payload,
+        policy=policy,
     )
+    await record_tool_end(runtime, **ids, result_payload=result_payload)
     return result_payload
+
+
+async def _save_long_result(
+    runtime: "AgentRuntime",
+    *,
+    request_id: str,
+    trace_id: str,
+    tool_call: ToolCall,
+    result_payload: dict[str, Any],
+    policy: dict[str, Any] | None,
+) -> None:
+    """Save a result too long for the context to the request's sandbox.
+
+    The file's path goes in the result's metadata as ``saved_to``, and the
+    model sees a note naming it (``context_content``). Without a sandbox, or
+    when the write fails, the result stays as it is and the model gets all of
+    it.
+    """
+    result = result_payload["result"]
+    content = str(result.get("content") or "")
+    if len(content) <= runtime.agent.config.tool_result_context_chars:
+        return
+    sandbox = factory_helpers.request_sandbox(runtime, policy)
+    if sandbox is None:
+        return
+    host_api_url, token = sandbox
+    path = result_file_path(trace_id, tool_call.id)
+    try:
+        await write_sandbox_file(
+            host_api_url=host_api_url,
+            token=token,
+            request_id=request_id,
+            path=path,
+            data=content.encode("utf-8"),
+        )
+    except Exception as exc:
+        log.warning("could not save the result of %s to the sandbox: %s", tool_call.id, exc)
+        return
+    result["metadata"] = {**dict(result.get("metadata") or {}), SAVED_TO: path}
 
 
 def _tool_call_from_payload(tool_call_payload: dict[str, Any]) -> ToolCall:
@@ -796,7 +973,7 @@ async def run_step_tool_batch(
 
     max_parallel = max(1, int(runtime.agent.config.max_parallel_tools))
     async def _run_one(index: int) -> dict[str, Any]:
-        # A RunWorkflow call in the batch gets the dedup key of its position.
+        # A RunSubAgents call in the batch gets the id prefix of its position.
         with bound_subagent_id_prefix(tool_call_payloads[index].get("call_prefix")):
             return await _execute_and_record_tool_call(
                 runtime,
@@ -825,6 +1002,50 @@ async def run_step_tool_batch(
     }
 
 
+def commit_state(
+    runtime: "AgentRuntime",
+    workflow_state: dict[str, Any],
+    structured_output_request: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The loop state after a step's commit: its results observed into the context.
+
+    Pure: the running loop and the rebuild from the event log both use it.
+    Raises ``MaxStepsExhaustedError`` when the agent wants another step and
+    has none left.
+    """
+    loop_index = int(workflow_state.get("loop_index") or 0)
+    context = context_helpers.deserialize_context(
+        runtime, workflow_state.get("context") or {}
+    )
+    action_payload = dict(workflow_state.get("action") or {})
+    result_payloads = list(workflow_state.get("result_payloads") or [])
+    commit_payload = _commit_step_payload(
+        runtime,
+        context=context,
+        action_payload=action_payload,
+        result_payloads=result_payloads,
+        step_index=loop_index,
+        tool_usage=dict(workflow_state.get("tool_usage") or {}),
+    )
+    done = bool(commit_payload.get("done"))
+    updated: dict[str, Any] = {
+        **dict(workflow_state or {}),
+        "context": dict(commit_payload.get("context") or {}),
+        "loop_index": loop_index if done else loop_index + 1,
+        "signals": dict(commit_payload.get("signals") or {}),
+        "action": None,
+        "result_payloads": [],
+        "done": done,
+        "step_started_at": None,
+    }
+    if done and isinstance(structured_output_request, dict):
+        tool_so = _extract_tool_structured_output(result_payloads)
+        if tool_so is not None:
+            _validate_tool_structured_output(tool_so, structured_output_request)
+            updated["structured_output"] = tool_so
+    return updated
+
+
 async def commit_request_step(
     runtime: "AgentRuntime",
     request_id: str,
@@ -834,21 +1055,8 @@ async def commit_request_step(
     structured_output_request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     loop_index = int(workflow_state.get("loop_index") or 0)
-    context = context_helpers.deserialize_context(
-        runtime, workflow_state.get("context") or {}
-    )
     action_payload = dict(workflow_state.get("action") or {})
-    result_payloads = list(workflow_state.get("result_payloads") or [])
-    commit_payload = await _commit_step_payload(
-        runtime,
-        context=context,
-        action_payload=action_payload,
-        result_payloads=result_payloads,
-        step_index=loop_index,
-        tool_usage=dict(workflow_state.get("tool_usage") or {}),
-    )
-    done = bool(commit_payload.get("done"))
-    next_loop_index = loop_index if done else loop_index + 1
+    updated = commit_state(runtime, workflow_state, structured_output_request)
     step_started_at = workflow_state.get("step_started_at")
     if step_started_at is None:
         step_duration_ms = 0
@@ -876,21 +1084,6 @@ async def commit_request_step(
             },
         ),
     )
-    updated: dict[str, Any] = {
-        **dict(workflow_state or {}),
-        "context": dict(commit_payload.get("context") or {}),
-        "loop_index": next_loop_index,
-        "signals": dict(commit_payload.get("signals") or {}),
-        "action": None,
-        "result_payloads": [],
-        "done": done,
-        "step_started_at": None,
-    }
-    if done and isinstance(structured_output_request, dict):
-        tool_so = _extract_tool_structured_output(result_payloads)
-        if tool_so is not None:
-            _validate_tool_structured_output(tool_so, structured_output_request)
-            updated["structured_output"] = tool_so
     return updated
 
 
@@ -915,11 +1108,6 @@ async def persist_completed_turn(
     structured_output = workflow_state.get("structured_output")
     if structured_output is not None:
         response.metadata["structured_output"] = structured_output
-    # What this request's RunSubAgents and RunWorkflow calls returned, read
-    # from the context the save already holds; replay shows it to the model.
-    ledger = build_ledger(dict(workflow_state.get("context") or {}), session_id)
-    if ledger:
-        response.metadata["ledger"] = ledger
     turn_payload = await _persist_turn_payload(
         runtime,
         message=message,
@@ -927,6 +1115,7 @@ async def persist_completed_turn(
         response=response,
         signals=dict(workflow_state.get("signals") or {}),
         compaction_payload=dict(workflow_state.get("compaction") or {}),
+        context_tokens=int(workflow_state.get("context_tokens") or 0),
         extra_metadata=request_metadata,
     )
     return turn_payload
@@ -943,8 +1132,9 @@ async def persist_failed_turn(
     """Save a failed request's user message as a turn with no reply.
 
     Replay shows the message and the error before the next user message, so
-    "try again" refers to this request. The session's token total is carried
-    over unchanged.
+    "try again" refers to this request. It carries over the latest turn's
+    context size, since the failed request leaves the session's context as it
+    was.
     """
     resolved_trace_id = str(trace_id or uuid.uuid4())
     latest_turns = await runtime.store.get_turns(
@@ -958,7 +1148,7 @@ async def persist_failed_turn(
     metadata.update(failed_turn_metadata(error_payload))
     metadata["trace_id"] = resolved_trace_id
     metadata["token_usage"] = {}
-    await runtime.store.save_turn(
+    await runtime.store.append_entry(
         app_id=app_id_from_request_metadata(metadata),
         trace_id=resolved_trace_id,
         session_id=session_id,
@@ -966,8 +1156,9 @@ async def persist_failed_turn(
         user_message=message,
         agent_response="",
         signals={},
-        session_total_tokens=(
-            _int_or_zero(latest_turn.get("session_total_tokens"))
+        # The session's context is still the size its latest turn left it.
+        context_tokens=(
+            _int_or_zero(latest_turn.get("context_tokens"))
             if latest_turn is not None
             else 0
         ),
@@ -1068,8 +1259,8 @@ def interaction_response_error(schema: Any, response: Any) -> str | None:
 
 
 # Interaction ids are UUID5s in this namespace, derived from a key that names
-# the interaction's place in a request, so a recovered request, and the
-# companion relaying it, arrive at the same id.
+# the interaction's place in a request, so a recovered request arrives at the
+# same id.
 INTERACTION_NAMESPACE = uuid.UUID("3c9a6f52-1d7e-4b8a-9f0c-5e2d8b4a7c16")
 
 
@@ -1109,8 +1300,7 @@ async def emit_interaction_create(
             event_type=RuntimeEventType.INTERACTION_START.value,
             dedupe_key=f"interaction.create.{interaction_id}",
             payload={
-                # Type-specific fields: a browser handoff's url and expires_at,
-                # a relayed interaction's origin.
+                # Type-specific fields: a browser handoff's url and expires_at.
                 **dict(extra or {}),
                 "interaction_id": interaction_id,
                 "type": interaction_type,

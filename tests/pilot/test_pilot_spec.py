@@ -126,10 +126,11 @@ def test_agents_get_sandbox_and_browser_tools() -> None:
                     host=pool.snapshot_for(pool.get_host(GUIDE_HOST_ID)),
                     app_id="app-1",
                 )
-                assert {
-                    "RunSubAgents", "RunWorkflow", "ListAgentTraces",
+                # The companion routes with a classifier, not tools.
+                assert not {
+                    "RunSubAgents", "RunWorkflow", "ForwardAnswer", "ListAgentTraces",
                     "InspectAgentTrace", "GetAgentTurns",
-                } <= set(companion_turn.tools.list_tools())
+                } & set(companion_turn.tools.list_tools())
                 assert "run_code" not in companion_turn.tools
 
                 builder = _agent_runtime(pool, BUILDER_AGENT_ID)

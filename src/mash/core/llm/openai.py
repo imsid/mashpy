@@ -16,6 +16,7 @@ from .types import (
     LLMRequest,
     LLMResponse,
     LLMTokenUsage,
+    token_sum,
     LLMToolDefinition,
 )
 from .utils import block_value
@@ -352,11 +353,15 @@ class OpenAIProvider(BaseLLMProvider):
         cache_read_tokens = block_value(input_details, "cached_tokens")
         cache_write_tokens = block_value(input_details, "cache_creation_tokens")
         reasoning_tokens = block_value(output_details, "reasoning_tokens")
+        input_tokens = getattr(usage, "input_tokens", None)
+        output_tokens = getattr(usage, "output_tokens", None)
         return LLMTokenUsage(
-            input_tokens=getattr(usage, "input_tokens", None),
-            output_tokens=getattr(usage, "output_tokens", None),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             total_tokens=getattr(usage, "total_tokens", None),
             cache_read_tokens=cache_read_tokens,
             cache_write_tokens=cache_write_tokens,
             reasoning_tokens=int(reasoning_tokens) if reasoning_tokens is not None else None,
+            # input_tokens counts cached input.
+            context_tokens=token_sum(input_tokens, output_tokens),
         )

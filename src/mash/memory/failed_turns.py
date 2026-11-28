@@ -3,8 +3,8 @@
 A request the user started that fails saves a turn with the user's message,
 no reply, and ``metadata["type"] == "failed_request"`` with the error. Replay
 puts it in a ``<failed_request>`` block at the top of the next user message,
-so the agent knows what "try again" refers to. Compaction and Cortex leave it
-out: it holds no answer.
+so the agent knows what "try again" refers to. Compaction reads the same
+block; Cortex leaves the turn out, since it holds no answer.
 """
 
 from __future__ import annotations

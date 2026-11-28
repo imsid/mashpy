@@ -44,16 +44,16 @@ WORKSPACES_ROOT = "/home/agent/workspaces"
 BASH_DEFAULT_TIMEOUT = 30
 # Longest a command may run: one call holds a sandbox slot that long.
 BASH_MAX_TIMEOUT = 1800
-# Enough to read a whole source file in one call.
-BASH_MAX_OUTPUT_CHARS = 30_000
+# The most output one command returns. It guards the daemon and the event
+# log against runaway output; the runtime saves long output as a file for the
+# model, so this is not a context limit.
+MAX_OUTPUT_BYTES = 10 * 1024 * 1024
 # Largest file /files reads or writes.
 MAX_FILE_BYTES = 100 * 1024 * 1024
 
 _AGENT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 # Agent ids name folders, so they are kept to a safe charset.
 _AGENT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-# Output read back per call; enough to count lines well past the limits.
-_READ_LIMIT = 1024 * 1024
 # Time between asking a timed-out command to stop and killing what is left.
 _KILL_GRACE = 2.0
 # How long a file read or write may take.
@@ -140,13 +140,21 @@ def valid_timeout(timeout: Any) -> bool:
     )
 
 
-def truncate_output(text: str) -> str:
-    """Keep the first characters of a command's output."""
-    text = text.rstrip("\n")
-    if len(text) <= BASH_MAX_OUTPUT_CHARS:
+def read_output(out: Any) -> str:
+    """A command's output from its file: all of it, up to ``MAX_OUTPUT_BYTES``.
+
+    Past the limit the output says so, with the size the command wrote.
+    """
+    total = out.seek(0, os.SEEK_END)
+    out.seek(0)
+    text = out.read(MAX_OUTPUT_BYTES).decode("utf-8", errors="replace").rstrip("\n")
+    if total <= MAX_OUTPUT_BYTES:
         return text
-    kept = text[:BASH_MAX_OUTPUT_CHARS].rstrip()
-    return f"{kept}\n\n... Output truncated (first {BASH_MAX_OUTPUT_CHARS} of {len(text)} chars) ..."
+    return (
+        f"{text}\n\n[Output stopped at the {MAX_OUTPUT_BYTES // (1024 * 1024)} MB limit: "
+        f"the command wrote {total:,} bytes. Write output this large to a file and "
+        "read it from there.]"
+    )
 
 
 @dataclass(frozen=True)
@@ -208,11 +216,10 @@ async def run_command(
         except asyncio.TimeoutError:
             timed_out = True
             await _stop(proc)
-        out.seek(0)
-        text = out.read(_READ_LIMIT).decode("utf-8", errors="replace")
+        text = read_output(out)
     if timed_out:
-        return ExecResult(output=truncate_output(text), exit_code=None, timed_out=True)
-    return ExecResult(output=truncate_output(text), exit_code=proc.returncode)
+        return ExecResult(output=text, exit_code=None, timed_out=True)
+    return ExecResult(output=text, exit_code=proc.returncode)
 
 
 class FileNotFound(Exception):
@@ -489,7 +496,6 @@ def resolve_sandbox_token(explicit_value: str | None = None) -> str | None:
 __all__ = [
     "BASH_DEFAULT_TIMEOUT",
     "BASH_MAX_TIMEOUT",
-    "BASH_MAX_OUTPUT_CHARS",
     "ExecResult",
     "FileNotFound",
     "MASH_SANDBOX_TOKEN_ENV",
@@ -502,8 +508,8 @@ __all__ = [
     "read_file",
     "resolve_sandbox_token",
     "resolve_workspace_path",
+    "read_output",
     "run_command",
-    "truncate_output",
     "valid_timeout",
     "write_file",
 ]

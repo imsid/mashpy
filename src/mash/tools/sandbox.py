@@ -34,7 +34,6 @@ import httpx
 
 from mash.logging.trace_context import get_request_id
 from mash.sandbox.daemon import (
-    BASH_MAX_OUTPUT_CHARS,
     BASH_MAX_TIMEOUT,
     MAX_FILE_BYTES,
     TIMEOUT_ERROR,
@@ -187,8 +186,9 @@ class RunCodeTool:
             "which stops at the first command that fails.\n"
             "- `code` is passed as it is, so it needs no quoting. Change files with "
             "edit_file.\n"
-            f"- Output is stdout and stderr together, cut to {BASH_MAX_OUTPUT_CHARS} "
-            "characters. Write larger results to a file and print a summary.\n"
+            "- Output is stdout and stderr together. Long output is saved whole to "
+            "a file under tool-results/ in your folder, and you get its path and "
+            "size instead: read it with run_code (tail, grep -n, sed -n).\n"
             "- A non-zero exit returns the output and exit code: read the error, fix "
             "the code, run it again.\n"
             "\n"
@@ -608,6 +608,28 @@ def _write_local(roots: FileRoots, path: Path, data: bytes) -> None:
         fh.write(data)
 
 
+async def write_sandbox_file(
+    *, host_api_url: str, token: str, request_id: str, path: str, data: bytes
+) -> None:
+    """Write ``data`` to ``path`` in the agent's folder of the request's sandbox.
+
+    Raises ``RuntimeError`` when the sandbox refuses the write or cannot be reached.
+    """
+    relay = _Relay(host_api_url, token)
+    try:
+        async with httpx.AsyncClient(timeout=_FILE_RELAY_TIMEOUT) as client:
+            response = await client.put(
+                f"{relay.base_url}/files",
+                params={"request_id": request_id, "path": path},
+                content=data,
+                headers=relay.headers,
+            )
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"Error reaching the sandbox: {exc}") from exc
+    if response.status_code != 200:
+        raise RuntimeError(f"Sandbox error: {_error_message(response)}")
+
+
 def build_sandbox_tools(
     *,
     host_api_url: str,
@@ -652,4 +674,5 @@ __all__ = [
     "SandboxVariable",
     "build_sandbox_tools",
     "check_sandbox_env",
+    "write_sandbox_file",
 ]

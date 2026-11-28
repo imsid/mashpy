@@ -67,9 +67,7 @@ from .views import (
     Interaction,
     Output,
     RequestView,
-    Tool,
     ToolCall,
-    Workflow,
     answer_text,
     final_text,
     reduce,
@@ -77,8 +75,6 @@ from .views import (
 
 # How long the REPL waits for a RunSubAgents child to be submitted.
 CHILD_SUBMIT_WAIT_SECONDS = 30.0
-# How long the REPL looks for the run a RunWorkflow call started.
-WORKFLOW_RUN_WAIT_SECONDS = 30.0
 # How long a finished request waits for its children's streams to end.
 CHILD_DRAIN_SECONDS = 5.0
 # A second Ctrl-C within this many seconds of the first leaves the REPL.
@@ -219,8 +215,6 @@ class Repl:
         self.foreground: RequestView | None = None
         self._foreground_task: asyncio.Task[None] | None = None
         self._child_tasks: set[asyncio.Task[None]] = set()
-        # RunWorkflow call id -> the task following that call's run.
-        self._workflow_tasks: dict[str, asyncio.Task[None]] = {}
         # The last request that started children, for /subagent.
         self.last_parent: RequestView | None = None
         # The last answer printed in the foreground, for /copy.
@@ -602,8 +596,8 @@ class Repl:
     def _handle(self, output: Output) -> None:
         """Print an output, and act on the ones that need more than printing."""
         if isinstance(output, Interaction):
-            # A child's own interaction only changes its row: the companion
-            # relays it, and that copy is the one the user answers.
+            # The user answers the interactions of the message's own event; a
+            # RunSubAgents child's only changes its row.
             if output.view.parent is None:
                 self._interactions.append(output)
                 self._wake_input()
@@ -614,17 +608,7 @@ class Repl:
             return
         if isinstance(output, End) and output.view.parent is None:
             return
-        if isinstance(output, Workflow):
-            self._workflow_tasks[output.call.call_id] = self._child_task(
-                self._follow_workflow(output)
-            )
-            return
         self.printer.print(output, self.now())
-        if isinstance(output, Tool):
-            # The call ended, so its run needs no more following.
-            task = self._workflow_tasks.pop(output.call.call_id, None)
-            if task is not None:
-                task.cancel()
         if isinstance(output, Children):
             if output.view.parent is None:
                 self.last_parent = output.view
@@ -686,55 +670,6 @@ class Repl:
                 child.ended_at = self.now()
                 self.printer.child_end(child, self.now())
         self._invalidate()
-
-    async def _find_workflow_run(self, workflow: Workflow) -> str | None:
-        """The id of the run a RunWorkflow call started, found by its dedup key."""
-        deadline = self.now() + WORKFLOW_RUN_WAIT_SECONDS
-        while self.now() < deadline:
-            runs = await asyncio.to_thread(
-                self.client.list_workflow_runs, workflow.workflow_id
-            )
-            for run in runs:
-                if run.get("dedup_key") == workflow.dedup_key and run.get("run_id"):
-                    return str(run["run_id"])
-            await asyncio.sleep(0.5)
-        return None
-
-    async def _follow_workflow(self, workflow: Workflow) -> None:
-        """Show the step a RunWorkflow call's run is on; best effort.
-
-        The call's own result says how the run ended, so a failure to find or
-        read the run only leaves the row without a step.
-        """
-        call = workflow.call
-        try:
-            run_id = await self._find_workflow_run(workflow)
-            if run_id is None:
-                return
-            async for event in self.client.workflow_run_events(
-                workflow.workflow_id, run_id
-            ):
-                name = str(event.get("event") or "")
-                data = event.get("data")
-                step_id = str(data.get("step_id") or "") if isinstance(data, dict) else ""
-                if name == "step.started":
-                    call.note = f"step {step_id}"
-                elif name in ("step.completed", "step.failed"):
-                    ok = name == "step.completed"
-                    call.note = f"step {step_id} {'done' if ok else 'failed'}"
-                    if self.detail:
-                        mark = "[ok]✓[/ok]" if ok else "[error]✗[/error]"
-                        self.renderer.print(
-                            f"  [muted]{escape(workflow.workflow_id)} │[/muted] {mark} "
-                            f"[muted]step {escape(step_id)}[/muted]"
-                        )
-                elif name in ("workflow.completed", "workflow.error"):
-                    return
-                self._invalidate()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            return
 
     async def _drain_children(self) -> None:
         """Let the children's streams reach their end, briefly."""
@@ -867,9 +802,8 @@ class Repl:
         )
         async for event in self.client.request_events(child.agent_id, child.request_id):
             for output in reduce(view, event, self.now()):
-                # Its interactions were asked through the parent, and its own
-                # children are not followed here.
-                if not isinstance(output, (Interaction, Ack, Children, Workflow, End)):
+                # Its interactions and its own children are not followed here.
+                if not isinstance(output, (Interaction, Ack, Children, End)):
                     printer.print(output, self.now())
         self._print_end(view)
 
@@ -968,19 +902,10 @@ class Repl:
     def _approval_calls(self, interaction: Interaction) -> list[ToolCall]:
         """The tool calls an approval is about, from the turn that asked.
 
-        A relayed approval is about a child's calls. Only calls the prompt
-        names are returned: other calls of the turn need no approval.
+        Only calls the prompt names are returned: other calls of the turn need
+        no approval.
         """
         view = interaction.view
-        origin = interaction.payload.get("origin")
-        if isinstance(origin, dict):
-            request_id = str(origin.get("request_id") or "")
-            view = next(
-                (child for child in view.children if child.request_id == request_id),
-                None,
-            )
-            if view is None:
-                return []
         prompt = str(interaction.payload.get("prompt") or "")
         return [
             ToolCall(
@@ -1000,10 +925,6 @@ class Repl:
         prompt = str(payload.get("prompt") or "Input required:")
         schema = payload.get("schema")
         options = list(schema.get("options") or []) if isinstance(schema, dict) else []
-        # A relayed interaction names the agent that asked.
-        origin = payload.get("origin")
-        if isinstance(origin, dict) and origin.get("agent_id"):
-            prompt = f"[{origin['agent_id']}] {prompt}"
         if self._interactions:
             prompt = f"{prompt} · {len(self._interactions)} more waiting"
         self.renderer.section(escape(prompt))

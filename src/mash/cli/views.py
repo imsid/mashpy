@@ -23,7 +23,6 @@ CANCELLED = "cancelled"
 ENDED = frozenset({COMPLETED, FAILED, CANCELLED})
 
 RUN_SUBAGENTS = "RunSubAgents"
-RUN_WORKFLOW = "RunWorkflow"
 
 
 @dataclass
@@ -37,9 +36,6 @@ class ToolCall:
     duration_ms: int | None = None
     is_error: bool = False
     result: str = ""
-    # What the call is doing now, shown after it in the live row: the step a
-    # RunWorkflow call's run is on.
-    note: str = ""
 
 
 @dataclass
@@ -147,16 +143,6 @@ class Children:
 
 
 @dataclass(frozen=True)
-class Workflow:
-    """A ``RunWorkflow`` call started; its run is found by ``dedup_key``."""
-
-    view: RequestView
-    call: ToolCall
-    workflow_id: str
-    dedup_key: str
-
-
-@dataclass(frozen=True)
 class Interaction:
     """The request waits on the user."""
 
@@ -179,7 +165,7 @@ class End:
     view: RequestView
 
 
-Output = Text | Step | Tool | Children | Workflow | Interaction | Ack | End
+Output = Text | Step | Tool | Children | Interaction | Ack | End
 
 
 def split_complete_markdown(buffer: str) -> tuple[str, str]:
@@ -371,12 +357,6 @@ def _reduce_trace(view: RequestView, data: Mapping[str, Any], now: float) -> lis
             if children:
                 view.children.extend(children)
                 return [Children(view, children)]
-        if call.name == RUN_WORKFLOW:
-            run = payload.get("workflow_run")
-            if isinstance(run, Mapping) and run.get("workflow_id") and run.get("dedup_key"):
-                return [
-                    Workflow(view, call, str(run["workflow_id"]), str(run["dedup_key"]))
-                ]
         return []
 
     if event_type == RuntimeEventType.EXECUTE_TOOL_END.value:

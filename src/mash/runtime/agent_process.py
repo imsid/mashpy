@@ -2,8 +2,9 @@
 
 The host runs ``mash agent serve`` as a child process per agent. It imports the
 same ``build_pool()`` the host runs, serves one agent from it behind an
-``AgentServer`` on a localhost port, and reaches the host for everything else: the companion's RunSubAgents calls go to the host's H2A relay (``{host}/h2a``) with the
-agent's token, and the host checks them against the request's host snapshot.
+``AgentServer`` on a localhost port, and reaches the host for everything else: the companion's routed requests and workflow runs go to the host's H2A relay
+(``{host}/h2a``) with the agent's token, and the host checks them against the
+request's host snapshot.
 When the host has sandboxes, every agent served here gets ``run_code``,
 ``sandbox_put`` and ``sandbox_get``, which act in the request policy's sandbox
 through the host's ``/sandbox`` relay, unless its spec's ``enable_sandbox()``
@@ -51,6 +52,13 @@ class HostRelay:
 
     def get_agent_metadata(self, agent_id: str) -> AgentMetadata | None:
         return self._pool.get_agent_metadata(agent_id)
+
+    def get_workflow(self, workflow_id: str) -> Any:
+        """The workflow's spec, as the pool registered it, or None."""
+        try:
+            return self._pool.get_workflow_registry().get(workflow_id)
+        except KeyError:
+            return None
 
     def get_workflow_client(self) -> WorkflowRelayClient:
         if self._workflow_client is None:

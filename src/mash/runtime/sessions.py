@@ -23,11 +23,24 @@ async def session_usage(
     return await runtime_store.session_usage(session_id)
 
 
-async def session_total_tokens(store: MemoryStore, *, agent_id: str, session_id: str) -> int:
+def _is_companion(agent_id: str) -> bool:
+    from mash.agents.companion import COMPANION_AGENT_ID
+
+    return agent_id == COMPANION_AGENT_ID
+
+
+async def context_tokens(store: MemoryStore, *, agent_id: str, session_id: str) -> int:
+    """The latest turn's context size: its last model call's input, cached included, plus output.
+
+    On the companion the session is a conversation, and its size is the board's.
+    """
+    if _is_companion(agent_id):
+        last = await store.last_entry(session_id)
+        return int((last or {}).get("board_tokens") or 0)
     turns = await store.get_turns(session_id=session_id, agent_id=agent_id, limit=1)
     if not turns:
         return 0
-    value = turns[-1].get("session_total_tokens", 0)
+    value = turns[-1].get("context_tokens", 0)
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -45,15 +58,15 @@ async def session_info(
 ) -> dict[str, Any]:
     # total_tokens is the true spend recorded in the event log: every agent's
     # requests in the session and the subagent runs they started, in sessions
-    # of their own. session_total_tokens is the memory context budget, which
-    # compaction resets.
+    # of their own. context_tokens is the size of the latest turn's context,
+    # which the session compacts on.
     usage = await session_usage(runtime_store, session_id)
     return {
         "agent_id": agent_id,
         "session_id": session_id,
         "model": model,
         "max_steps": max_steps,
-        "session_total_tokens": await session_total_tokens(
+        "context_tokens": await context_tokens(
             store, agent_id=agent_id, session_id=session_id
         ),
         "total_tokens": usage["total_tokens"],
@@ -66,12 +79,41 @@ async def session_info(
 async def history_turns(
     store: MemoryStore, *, agent_id: str, session_id: str, limit: int | None = None
 ) -> list[dict[str, Any]]:
-    return await store.get_turns(session_id=session_id, agent_id=agent_id, limit=limit)
+    """The session's turns, oldest first: the last ``limit`` when given.
+
+    On the companion the session is a conversation, and its turns are the
+    board's entries, whichever agent wrote them.
+    """
+    if not _is_companion(agent_id):
+        return await store.get_turns(session_id=session_id, agent_id=agent_id, limit=limit)
+    if limit is None:
+        entries = await store.read_entries(session_id)
+    else:
+        last = await store.last_entry(session_id)
+        entries = (
+            []
+            if last is None
+            else await store.read_entries(
+                session_id, before=int(last["seq"]) + 1, limit=max(0, int(limit))
+            )
+        )
+    return [
+        {
+            **entry,
+            "context_tokens": entry["board_tokens"],
+            "replayable": True,
+            "signals": {},
+        }
+        for entry in entries
+    ]
 
 
 async def list_sessions(
     store: MemoryStore, *, agent_id: str, limit: int, app_id: str | None = None
 ) -> list[dict[str, Any]]:
+    """The agent's most recently active sessions; on the companion, its conversations."""
+    if _is_companion(agent_id):
+        return await store.list_board_sessions(limit=limit, app_id=app_id)
     return await store.list_sessions(agent_id=agent_id, limit=limit, app_id=app_id)
 
 

@@ -12,10 +12,10 @@ from mash.runtime.spec import AgentSpec
 from mash.skills.registry import SkillRegistry
 from mash.tools.registry import ToolRegistry
 
-from .logs import AgentLogReader, GetAgentTurnsTool, InspectAgentTraceTool, ListAgentTracesTool
-from .prompt import COMPANION_PROMPT
+from .classifier import CLASSIFIER_PROMPT
 
 COMPANION_AGENT_ID = "companion"
+BOARD_COMPACTION_TOKENS = 100_000
 
 
 class _UnconfiguredLLM(LLMProvider):
@@ -43,10 +43,10 @@ def build_companion_metadata() -> AgentMetadata:
     return AgentMetadata(
         display_name="Companion",
         description=(
-            "Built-in router: decides which agents and workflows handle each "
-            "user message, waits for them and writes the answer."
+            "Built-in router: picks the agent or workflow for each user "
+            "message with a classifier and hands the message to it."
         ),
-        capabilities=["routing", "agent sessions", "workflow runs", "agent logs"],
+        capabilities=["routing", "workflow runs", "board summaries"],
         usage_guidance=(
             "Every request to a host goes to it. Hosts do not list it among "
             "their agents."
@@ -55,7 +55,7 @@ def build_companion_metadata() -> AgentMetadata:
 
 
 def _routing_provider_options() -> dict:
-    """Low thinking on Gemini: routing needs little, and each call is ~1.5-2s faster.
+    """Low thinking on Gemini: routing needs little, and each call is faster.
 
     ``COMPANION_AGENT_THINKING_LEVEL`` overrides the level; other providers
     get no options.
@@ -67,28 +67,16 @@ def _routing_provider_options() -> dict:
 
 
 class CompanionSpec(AgentSpec):
-    """Routes with RunSubAgents and RunWorkflow, which the runtime registers,
-    and reads its agents' logs with its own tools."""
+    """Routes each host request with a classifier; it runs no agent loop.
 
-    def __init__(self) -> None:
-        self.logs = AgentLogReader(COMPANION_AGENT_ID)
+    Its model is the classifier, and writes a conversation's board summary.
+    """
 
     def get_agent_id(self) -> str:
         return COMPANION_AGENT_ID
 
     def build_tools(self) -> ToolRegistry:
-        tools = ToolRegistry()
-        for tool in (
-            ListAgentTracesTool(self.logs),
-            InspectAgentTraceTool(self.logs),
-            GetAgentTurnsTool(self.logs),
-        ):
-            tools.register(tool)
-        return tools
-
-    def on_startup(self, runtime) -> None:
-        # The process's own stores: the same Postgres every agent writes to.
-        self.logs.bind(runtime.runtime_store, runtime.memory_store)
+        return ToolRegistry()
 
     def build_skills(self) -> SkillRegistry:
         return SkillRegistry()
@@ -105,9 +93,12 @@ class CompanionSpec(AgentSpec):
     def build_agent_config(self) -> AgentConfig:
         return AgentConfig(
             agent_id=COMPANION_AGENT_ID,
-            system_prompt=COMPANION_PROMPT,
-            # Ledger entries are short, so the companion keeps more turns.
-            conversation_history_turns=10,
+            system_prompt=CLASSIFIER_PROMPT,
+            # The board's threshold: the companion summarizes a conversation's
+            # board once its entries since the last summary reach this many
+            # tokens. The board is in every model call of every request in the
+            # conversation, so it sits well below the per-request default.
+            compaction_token_threshold=BOARD_COMPACTION_TOKENS,
             provider_options=_routing_provider_options(),
         )
 

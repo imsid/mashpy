@@ -37,7 +37,7 @@ host serves.
    │  /home/agent/workspaces/research  ◄── volume mash-sandbox-<key>
    └──────────────────────────────────────┘
 
-   Postgres: policies, sessions and events, request logs and checkpoints,
+   Postgres: policies, sessions and events, request event logs,
              turns, workflow runs (host and agents only)
 ```
 
@@ -71,7 +71,7 @@ host serves.
 - A host that cannot reach a Docker daemon runs without sandboxes, and its
   agents get no sandbox tools. This is how a host runs on a platform with no
   Docker socket (Render, Cloud Run, Fargate). The host logs which mode it chose.
-- All durable state (events, request checkpoints, sessions, workflow runs)
+- All durable state (events, request event logs, sessions, workflow runs)
   lives in Postgres. Workspace files live on the sandbox volumes.
 
 A deployment runs one host replica.
@@ -298,7 +298,7 @@ curl http://127.0.0.1:8000/api/v1/agent -H "Authorization: Bearer dev-key"   # e
 - Disable returns `409 AGENT_IN_USE`, naming the references, while a host
   composition or workflow names the agent.
 - Requests in flight are not cancelled. They stay running and continue from
-  their checkpoints when the agent is enabled again. A host cannot name a
+  their events when the agent is enabled again. A host cannot name a
   disabled agent, and a companion child or workflow step for one gets
   `409 AGENT_DISABLED`.
 - The enabled set is in memory and resets on restart. Adding an agent that is
@@ -331,11 +331,11 @@ mash sandbox stop acme-ws                        # stop now and remove its netwo
 
 ## Durability
 
-- A request checkpoints its loop state to its `runtime_request` row after
-  every step. Images in it, such as browser screenshots, are stored once
-  each in `runtime_blob`, and the checkpoint keeps a reference. After a crash, a restart, or being enabled again, an agent
-  process continues its own agent's `running` requests from their
-  checkpoints. A request continued 10 times without finishing fails.
+- A request records each step's output in its event log. After a crash, a
+  restart, or being enabled again, an agent process rebuilds its own agent's
+  `running` requests from their events and continues them, running only the
+  work with no recorded end. A request continued 10 times without finishing
+  fails.
 - Each agent process works on at most `MASH_AGENT_MAX_RUNNING` requests at
   once (default 32). The others stay `running` and wait for a slot, recovered
   requests included, so a restart doesn't start every request at once. A
@@ -362,11 +362,13 @@ hour after:
 
 - requests that finished (completed, failed or cancelled) more than that many
   days ago, with their event logs, unless the session event they ran is
-  still running;
+  still running or a session still replays their turn;
 - event log rows that belong to no request, older than the window;
 - workflow runs that finished before the window, with their steps and step
-  events, unless an eval experiment points at the run;
-- checkpoint images no remaining request references.
+  events, unless an eval experiment points at the run.
+
+A request whose turn a session still replays (no summary checkpoint after it)
+is kept with its events, since replay rebuilds the turn from them.
 
 A request that is still running is kept however old it is. A deleted
 request's trace is gone from the admin UI and the telemetry API; its session

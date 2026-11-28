@@ -18,7 +18,6 @@ import httpx
 import uvicorn
 
 from mash.sandbox.daemon import (
-    BASH_MAX_OUTPUT_CHARS,
     SandboxDaemon,
     build_bash_env,
     resolve_workspace_path,
@@ -112,16 +111,17 @@ class SandboxDaemonTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(time.monotonic() - started, 2)
         self.assertEqual(result["output"], "started")
 
-    async def test_truncates_output(self) -> None:
-        many = await self._exec("seq 1 1000")
+    async def test_returns_long_output_whole(self) -> None:
+        many = await self._exec("seq 1 100000")
         self.assertTrue(many["output"].startswith("1\n2\n"))
-        self.assertTrue(many["output"].endswith("\n1000"))
+        self.assertTrue(many["output"].endswith("\n100000"))
+        self.assertEqual(len(many["output"].splitlines()), 100000)
 
-        wide = await self._exec(f"printf 'x%.0s' $(seq 1 {BASH_MAX_OUTPUT_CHARS + 10})")
-        self.assertIn(
-            f"first {BASH_MAX_OUTPUT_CHARS} of {BASH_MAX_OUTPUT_CHARS + 10} chars",
-            wide["output"],
-        )
+    async def test_output_past_the_limit_says_so(self) -> None:
+        with patch("mash.sandbox.daemon.MAX_OUTPUT_BYTES", 1000):
+            wide = await self._exec("printf 'x%.0s' $(seq 1 1500)")
+        self.assertTrue(wide["output"].startswith("x" * 1000))
+        self.assertIn("the command wrote 1,500 bytes", wide["output"])
 
     async def test_environment_is_clean(self) -> None:
         with patch.dict(os.environ, {"MASH_SANDBOX_TOKEN": TOKEN, "MASH_HOST_SECRET": "secret"}):

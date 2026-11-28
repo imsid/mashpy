@@ -81,7 +81,6 @@ class RetentionPurgeTests(unittest.IsolatedAsyncioTestCase):
             conn.execute("DELETE FROM runtime_event_log WHERE agent_id LIKE %s", (like,))
             conn.execute("DELETE FROM runtime_request WHERE request_id LIKE %s", (like,))
             conn.execute("DELETE FROM runtime_request_seq WHERE request_id LIKE %s", (like,))
-            conn.execute("DELETE FROM runtime_blob WHERE sha256 LIKE %s", (like,))
             conn.execute("DELETE FROM workflow_step_events WHERE run_id LIKE %s", (like,))
             conn.execute("DELETE FROM workflow_runs WHERE run_id LIKE %s", (like,))
             conn.execute("DELETE FROM eval WHERE eval_id LIKE %s", (like,))
@@ -94,12 +93,11 @@ class RetentionPurgeTests(unittest.IsolatedAsyncioTestCase):
             cursor = conn.execute(sql, params)
             return cursor.fetchall() if cursor.description else []
 
-    def _request(self, name: str, status: str, updated_at: float, refs: list[str] = ()) -> str:
+    def _request(self, name: str, status: str, updated_at: float) -> str:
         request_id = f"{self.tag}-{name}"
         self._sql(
-            "INSERT INTO runtime_request (request_id, status, updated_at, blob_refs) "
-            "VALUES (%s, %s, %s, %s)",
-            (request_id, status, updated_at, list(refs)),
+            "INSERT INTO runtime_request (request_id, status, updated_at) VALUES (%s, %s, %s)",
+            (request_id, status, updated_at),
         )
         self._sql(
             "INSERT INTO runtime_request_seq (request_id, last_seq) VALUES (%s, 2)",
@@ -136,15 +134,6 @@ class RetentionPurgeTests(unittest.IsolatedAsyncioTestCase):
         )
         return run_id
 
-    def _blob(self, name: str, last_used_at: float) -> str:
-        sha = f"{self.tag}-{name}"
-        self._sql(
-            "INSERT INTO runtime_blob (sha256, media_type, data, last_used_at) "
-            "VALUES (%s, 'image/png', 'x', %s)",
-            (sha, last_used_at),
-        )
-        return sha
-
     def _exists(self, table: str, column: str, value: str) -> bool:
         return bool(self._sql(f"SELECT 1 FROM {table} WHERE {column} = %s", (value,)))
 
@@ -176,14 +165,9 @@ class RetentionPurgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((status, response), ("completed", {"text": "kept"}))
 
     async def test_purge_deletes_only_what_finished_before_the_cutoff(self) -> None:
-        held_blob = self._blob("held", OLD)
-        freed_blob = self._blob("freed", OLD)
-        loose_blob = self._blob("loose", OLD)
-        fresh_blob = self._blob("fresh", RECENT)
-
-        old_done = self._request("old-done", "completed", OLD, [freed_blob])
+        old_done = self._request("old-done", "completed", OLD)
         old_failed = self._request("old-failed", "failed", OLD)
-        old_running = self._request("old-running", "running", OLD, [held_blob])
+        old_running = self._request("old-running", "running", OLD)
         new_done = self._request("new-done", "completed", RECENT)
         self._event(None, None, OLD)
         self._event(None, None, RECENT)
@@ -229,11 +213,6 @@ class RetentionPurgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(self._exists("workflow_runs", "run_id", run_id))
             self.assertTrue(self._exists("workflow_step_events", "run_id", run_id))
 
-        self.assertTrue(self._exists("runtime_blob", "sha256", held_blob))
-        self.assertTrue(self._exists("runtime_blob", "sha256", fresh_blob))
-        self.assertFalse(self._exists("runtime_blob", "sha256", freed_blob))
-        self.assertFalse(self._exists("runtime_blob", "sha256", loose_blob))
-
         self.assertGreaterEqual(counts["requests"], 2)
         self.assertGreaterEqual(counts["workflow_runs"], 1)
 
@@ -262,7 +241,7 @@ class RetentionPurgeTests(unittest.IsolatedAsyncioTestCase):
             del pool
             cutoffs.append(cutoff)
             ran.set()
-            return {"requests": 0, "unowned_events": 0, "workflow_runs": 0, "blobs": 0}
+            return {"requests": 0, "unowned_events": 0, "workflow_runs": 0}
 
         original = retention_module.purge
         retention_module.purge = _record

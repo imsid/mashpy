@@ -1,8 +1,8 @@
 """The request engine: runs an agent's requests in its process.
 
 Each request runs as an asyncio task over a ``RequestRun``. Its durable state
-is the request's row in ``runtime_request`` (status and checkpoint) and its
-events, so the engine holds nothing that a restart would lose:
+is the request's row in ``runtime_request`` (its status) and its events, so
+the engine holds nothing that a restart would lose:
 
 - ``open`` continues every request of the agent whose status is ``running``.
   That one query is all recovery costs; an idle engine makes no others.
@@ -11,7 +11,7 @@ events, so the engine holds nothing that a restart would lose:
   slot back while it waits on the user or on its ``RunSubAgents`` children.
 - ``cancel_request`` records the request cancelled and stops its loop at the
   next step boundary.
-- ``continue_request`` runs a request on from its checkpoint; recovery
+- ``continue_request`` runs a request on from its events; recovery
   calls it for each running request when the engine opens.
 - ``answer_interaction`` checks the answer against the interaction's schema,
   stores it and wakes the loop waiting on it.
@@ -119,17 +119,36 @@ class RequestEngine:
             message=message,
             session_id=session_id,
             request_metadata=request_metadata,
-            checkpoint=None,
             slots=self._slots,
         )
+        # A cancelled run in the session still finishes the step it was on
+        # (a tool call, a model call); the new request starts after it, so
+        # the two never run in one session at once. Cancel reports the
+        # request cancelled at once, so a caller may resubmit to the session
+        # before that step ends (RunSubAgents after a timeout).
+        finishing = [
+            task
+            for other_id, other in self._runs.items()
+            if other.session_id == session_id
+            and other.cancelled.is_set()
+            and (task := self._tasks.get(other_id)) is not None
+            and not task.done()
+        ]
         self._runs[request_id] = run
-        self._spawn(request_id, run.run())
+        self._spawn(request_id, self._run_after(finishing, run))
+
+    @staticmethod
+    async def _run_after(finishing: list[asyncio.Task[None]], run: RequestRun) -> None:
+        if finishing:
+            # wait() leaves the tasks running if this one is cancelled.
+            await asyncio.wait(finishing)
+        await run.run()
 
     async def continue_request(self, request_id: str) -> None:
-        """Run the request again from its checkpoint, once it is recorded running.
+        """Run the request again from its events, once it is recorded running.
 
         A cancelled loop may still be finishing its last step; the new loop
-        starts after it, from the checkpoint that step leaves.
+        starts after it, from the events that step leaves.
         """
         previous = self._tasks.get(request_id)
         run = self._runs.get(request_id)
@@ -157,8 +176,7 @@ class RequestEngine:
         events = await self._store.list_request_events(request_id)
         trace_id = next((e.trace_id for e in events if e.trace_id), None)
         session_id = next((e.session_id for e in events if e.session_id), None)
-        # Clears the prompts: the request's own, and those it relays for its
-        # children. A later resume opens new ones.
+        # Clears the request's open prompts. A later resume opens new ones.
         for interaction_id in pending_interactions(events):
             await emit_interaction_ack(
                 self._runtime,
@@ -278,7 +296,6 @@ class RequestEngine:
             message=accepted["message"],
             session_id=accepted["session_id"],
             request_metadata=accepted["request_metadata"],
-            checkpoint=await self._store.get_checkpoint(request_id),
             slots=self._slots,
         )
         self._runs[request_id] = run

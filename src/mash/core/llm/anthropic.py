@@ -14,6 +14,7 @@ from .types import (
     LLMRequest,
     LLMResponse,
     LLMTokenUsage,
+    token_sum,
     LLMToolDefinition,
 )
 from .utils import block_value, coerce_block_dict
@@ -380,10 +381,14 @@ class AnthropicProvider(BaseLLMProvider):
         if input_tokens is not None and output_tokens is not None:
             total_tokens = input_tokens + output_tokens
 
+        cache_write_tokens = getattr(usage, "cache_creation_input_tokens", None)
+        cache_read_tokens = getattr(usage, "cache_read_input_tokens", None)
         return LLMTokenUsage(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             total_tokens=total_tokens,
-            cache_write_tokens=getattr(usage, "cache_creation_input_tokens", None),
-            cache_read_tokens=getattr(usage, "cache_read_input_tokens", None),
+            cache_write_tokens=cache_write_tokens,
+            cache_read_tokens=cache_read_tokens,
+            # Anthropic's input_tokens leaves out cached input: add it back.
+            context_tokens=token_sum(input_tokens, output_tokens, cache_read_tokens, cache_write_tokens),
         )

@@ -1,7 +1,7 @@
 """Operational metrics for one scored eval row.
 
 Every dataset row runs through the host under test as one companion request,
-plus the requests its RunSubAgents calls start on the host's agents. Their
+plus the request it routes the row to on one of the host's agents. Their
 runtime events are a self-contained record of what the run *cost* — tokens,
 steps, tool calls, latency — independent of the qualitative rubric score.
 

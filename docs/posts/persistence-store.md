@@ -85,7 +85,7 @@ flowchart TD
 
 A request that fails mid-loop leaves a complete trail in `runtime_event_log` but no row in `memory_turns` or `memory_signals`. The next request in that session sees conversation history as if the failed attempt never happened.
 
-A request's checkpoint is a separate write path: its loop state while it is in flight, overwritten after every step in `runtime_request.checkpoint`. It is scoped to one request and is not a public surface.
+A request in flight keeps its loop state in memory. Its events are its only record: a request recovered after a crash rebuilds the state from them.
 
 ## The two protocols side by side
 

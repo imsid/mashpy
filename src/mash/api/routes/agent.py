@@ -376,11 +376,7 @@ def build_agent_router() -> APIRouter:
                 message="session_id is required",
                 status_code=400,
             )
-        result = await client.compact_session(
-            session_id.strip(),
-            reason=body.reason,
-            session_total_tokens_reset=body.session_total_tokens_reset,
-        )
+        result = await client.compact_session(session_id.strip(), reason=body.reason)
         return success(
             {"summary_text": result.get("summary_text"), "trace_id": result.get("trace_id")}
         )

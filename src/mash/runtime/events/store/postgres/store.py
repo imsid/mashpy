@@ -129,14 +129,6 @@ class PostgresRuntimeStore(RuntimeStore):
         await self.open()
         return await loaders.get_other_session_policy(self._pool, session_id, policy_id)
 
-    async def save_checkpoint(self, request_id: str, checkpoint: dict[str, Any]) -> None:
-        await self.open()
-        await loaders.save_checkpoint(self._pool, request_id, checkpoint)
-
-    async def get_checkpoint(self, request_id: str) -> dict[str, Any] | None:
-        await self.open()
-        return await loaders.get_checkpoint(self._pool, request_id)
-
     async def list_running_requests(self, agent_id: str) -> list[str]:
         await self.open()
         return await loaders.list_running_requests(self._pool, agent_id)

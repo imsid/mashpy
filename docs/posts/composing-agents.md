@@ -42,7 +42,7 @@ curl -X PUT http://127.0.0.1:8000/api/v1/hosts/cli-help \
   -d '{"agents": ["cli-copilot"], "workflows": []}'
 ```
 
-An event posted to a host (`POST /v1/sessions/{session_id}/events` with its `host_id`) runs as a request on the companion, which snapshots `{host_id, agents, workflows}` when the event starts. The snapshot rides inside the request's checkpointed state, so a crashed request recovers with the composition it started with, even if someone re-`PUT` the host mid-flight. Redefining a host only affects events that start later.
+An event posted to a host (`POST /v1/sessions/{session_id}/events` with its `host_id`) runs as a request on the companion, which snapshots `{host_id, agents, workflows}` when the event starts. The snapshot rides in the request's metadata on its `invoke_agent.start` event, so a crashed request recovers with the composition it started with, even if someone re-`PUT` the host mid-flight. Redefining a host only affects events that start later.
 
 An agent can be in any number of hosts at once. Hosts are a few strings, so they're cheap to create: a client application can compose a host per task, post a few events to it, and forget it.
 
@@ -90,7 +90,9 @@ Each agent runs in its own process, so starting a child is an HTTP call. The com
 
 Each child runs in a session of its own. Without a `session_id` in its item, the child starts a new session named after its request id, so a replayed call lands in the same one. With the `session_id` of an earlier entry, it continues that session and replays its own earlier briefs and answers. Two runs of one agent in two sessions never see each other's work, and the companion's conversation never replays a child's turns, since memory is keyed by session and `agent_id`. The relay lets a child continue only a session of the same agent that was started from the companion's session.
 
-The companion keeps track of which session produced which answer in a ledger. When its turn is saved, every `RunSubAgents` entry of the request becomes a line in the turn's metadata: the agent, its session, its trace, the status, the brief and the answer, both clipped. Replay puts the ledger at the top of the user message that follows the reply, for the model only, so a follow-up such as "why did you use feedparser?" goes back to the session the ledger lists for that reply. It stays out of the reply itself, where the model would copy it into new answers.
+The companion keeps track of which session produced which answer in its routes. When its turn is saved, every `RunSubAgents` entry of the request becomes a route in the turn's metadata: the agent, its session, its trace and the status. The companion replays its last 10 turns as text, and puts each reply's routes at the top of the user message that follows it, for the model only, so a follow-up such as "why did you use feedparser?" goes back to the session the routes list for that reply. They stay out of the reply itself, where the model would copy them into new answers. What the agent was asked and answered stays in the event log; the companion reads it with its log tools when it needs to.
+
+After reading the results, the companion picks how to answer. When one agent's answer answers the message as asked, it calls `ForwardAnswer` with that entry's request id, and the user gets the answer unchanged with no further model call. When the answer misses, it runs the same session again with a corrected brief. When several agents answered, or the results need combining, it writes its own reply.
 
 The child's events stay in its own log, under its own request id. The companion's `execute_tool.start` for `RunSubAgents` names each child's agent and request id, so a client streaming the companion's request can open each child's stream and watch the routing happen live, which is what the REPL does. The [trace projection](reading-a-trace.md) uses the same ids to nest each child's `invoke_agent` span under the call that started it, so the admin UI, trace analysis and an OTLP export all show the request as one trace.
 
@@ -105,7 +107,7 @@ flowchart TD
     C -- "child request" --> H
     H -- "checked against snapshot" --> A
     H -- "checked against snapshot" --> B
-    PG[("Postgres\nevents, sessions, checkpoints")]
+    PG[("Postgres\nevents, sessions, event logs")]
     H --- PG
     C --- PG
     A --- PG

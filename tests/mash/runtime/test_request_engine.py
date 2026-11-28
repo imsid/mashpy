@@ -1,4 +1,4 @@
-"""The request engine: checkpoints, crash recovery, interactions, cancel and resume.
+"""The request engine: crash recovery from the event log, interactions, cancel.
 
 A crash is an engine closed mid-request: its tasks are cancelled and the
 request stays ``running``, as when the agent process dies. A second runtime
@@ -137,7 +137,7 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
     def _ask_spec(self) -> _Spec:
         return _Spec(AskUserTool(), tool_name="AskUser", arguments={"question": "Which one?"})
 
-    async def test_a_crashed_request_continues_from_its_checkpoint(self) -> None:
+    async def test_a_crashed_request_continues_from_its_events(self) -> None:
         tool = _BlockingTool()
         spec = _Spec(tool, tool_name="work", arguments={})
         first = await self._runtime(spec)
@@ -156,10 +156,34 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(end.payload["status"], "ok")
         self.assertEqual(end.payload["response"]["text"], "worked")
-        # The tool was mid-call, so it runs again; the model's first turn was
-        # checkpointed, so the model is asked only for its final answer.
+        # The tool was mid-call, so it runs again; the model's first turn has
+        # its chat.end, so the model is asked only for its final answer.
         self.assertEqual(tool.runs, 2)
         self.assertEqual(spec.model_calls, 2)
+
+    async def test_a_request_starts_after_a_cancelled_run_in_its_session_stops(self) -> None:
+        tool = _BlockingTool()
+        runtime = await self._runtime(_Spec(tool, tool_name="work", arguments={}))
+        first = (await runtime.submit_request(message="go", session_id="s-1", **TEST_IDENTITY))[
+            "request_id"
+        ]
+        await self._wait_for(first, RuntimeEventType.EXECUTE_TOOL_START.value)
+        await runtime.cancel_request(first)  # reported cancelled; the tool call goes on
+
+        second = (
+            await runtime.submit_request(message="again", session_id="s-1", **TEST_IDENTITY)
+        )["request_id"]
+        other = (
+            await runtime.submit_request(message="elsewhere", session_id="s-2", **TEST_IDENTITY)
+        )["request_id"]
+        # Another session does not wait.
+        await self._wait_for(other, RuntimeEventType.CHAT_START.value)
+        await asyncio.sleep(0.1)
+        self.assertEqual(await self._events(second, RuntimeEventType.CHAT_START.value), [])
+
+        tool.release.set()
+        end = await self._terminal(second)
+        self.assertEqual(end.payload["status"], "ok")
 
     async def test_an_answer_wakes_the_request(self) -> None:
         runtime = await self._runtime(self._ask_spec())
@@ -178,6 +202,20 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
             await runtime.answer_interaction(request_id, "itr_unknown", "x")
 
     async def test_the_policy_caps_an_interactions_deadline(self) -> None:
+        from mash.runtime.engine.loop import RequestRun
+
+        deadlines: dict[str, float] = {}
+        await_answer = RequestRun._await_answer
+
+        async def _recorded(run, interaction_id, *, deadline, interaction_type):
+            deadlines[run.request_id] = deadline
+            return await await_answer(
+                run, interaction_id, deadline=deadline, interaction_type=interaction_type
+            )
+
+        patcher = patch.object(RequestRun, "_await_answer", _recorded)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         runtime = await self._runtime(self._ask_spec())
         for wait_max, expected in ((60, 60), (86400, 3600), (None, 3600)):
             with self.subTest(wait_max=wait_max):
@@ -193,14 +231,13 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
                     request_id, RuntimeEventType.INTERACTION_START.value
                 )
                 self.assertEqual(opened.payload["timeout_seconds"], expected)
-                # The deadline the loop waits on, recorded in the checkpoint.
-                checkpoint = await self.runtime_store.get_checkpoint(request_id)
-                [deadline] = [
-                    step["deadline"]
-                    for name, step in checkpoint["memo"].items()
-                    if name.startswith("ask_user.0.open.")
-                ]
-                self.assertAlmostEqual(deadline - opened.created_at, expected, delta=5)
+                # The deadline the loop waits on: the stored open time plus the
+                # stored timeout.
+                for _ in range(300):
+                    if request_id in deadlines:
+                        break
+                    await asyncio.sleep(0.01)
+                self.assertEqual(deadlines[request_id], opened.created_at + expected)
                 await runtime.cancel_request(request_id)
 
     async def test_a_child_asks_the_user_under_a_derived_id(self) -> None:
@@ -230,10 +267,14 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
         end = await self._terminal(request_id)
         self.assertEqual(end.payload["response"]["text"], "red")
 
-    async def _approval(self) -> tuple[_GatedTool, AgentRuntime, str, str]:
+    async def _approval(
+        self, session_id: str = "s-1"
+    ) -> tuple[_GatedTool, AgentRuntime, str, str]:
         tool = _GatedTool()
         runtime = await self._runtime(_Spec(tool, tool_name="deploy", arguments={}))
-        accepted = await runtime.submit_request(message="ship", session_id="s-1", **TEST_IDENTITY)
+        accepted = await runtime.submit_request(
+            message="ship", session_id=session_id, **TEST_IDENTITY
+        )
         request_id = accepted["request_id"]
         [opened] = await self._wait_for(request_id, RuntimeEventType.INTERACTION_START.value)
         self.assertEqual(opened.payload["type"], "approval")
@@ -251,7 +292,11 @@ class RequestEngineTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_deny_or_skip_does_not_run_the_tool(self) -> None:
         for answer in ("deny", "skip"):
             with self.subTest(answer=answer):
-                tool, runtime, request_id, interaction_id = await self._approval()
+                # A session each: the history of a session holds its earlier
+                # tool results, and this model answers once it sees one.
+                tool, runtime, request_id, interaction_id = await self._approval(
+                    f"s-{answer}"
+                )
 
                 await runtime.answer_interaction(request_id, interaction_id, answer)
                 await self._terminal(request_id)
