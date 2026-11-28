@@ -9,6 +9,17 @@ Mash follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While
 Mash is pre-1.0, breaking changes (`feat!:` / `fix!:` / a `BREAKING CHANGE:`
 footer) bump the **minor** version; once 1.0.0 ships they bump the major.
 
+## [0.42.0](https://github.com/imsid/mashpy/compare/mashpy-v0.41.0...mashpy-v0.42.0) (2026-11-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **companion:** classifier routing over a shared conversation board, the event log as the request's state ([#300](https://github.com/imsid/mashpy/issues/300))
+
+### Features
+
+* **companion:** classifier routing over a shared conversation board, the event log as the request's state ([#300](https://github.com/imsid/mashpy/issues/300)) ([4a4f900](https://github.com/imsid/mashpy/commit/4a4f900135a8828d35e33865cbd89830c0b9b616))
+
 ## [0.41.0](https://github.com/imsid/mashpy/compare/mashpy-v0.40.1...mashpy-v0.41.0) (2026-11-25)
 
 
